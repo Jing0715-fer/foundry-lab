@@ -1,0 +1,191 @@
+// Foundry Lab — merged schema (foundry-ui job substrate + Vitrual-lab-V2 agent layer + cryoflow canvas)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Agents ──────────────────────────────────────────────────────────────────
+
+model Agent {
+  id          String   @id @default(cuid())
+  title       String
+  expertise   String
+  goal        String
+  role        String
+  model       String   @default("default")
+  color       String   @default("#10b981")
+  icon        String   @default("bot")
+  knowledge   String?  // JSON: AgentKnowledgeConfig
+  builtin     Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  chatMessages ChatMessage[]
+
+  @@unique([title])
+}
+
+model ChatMessage {
+  id        String   @id @default(cuid())
+  agentId   String
+  role      String   // user | assistant
+  content   String
+  toolCalls String?  // JSON: ToolCall[]
+  createdAt DateTime @default(now())
+  agent     Agent    @relation(onDelete: Cascade, fields: [agentId], references: [id])
+}
+
+// ─── Manual Tasks (preserved manual submission) ──────────────────────────────
+
+model Task {
+  id          String   @id @default(cuid())
+  title       String
+  prompt      String
+  taskType    String   @default("general") // general | design | analysis | research
+  agentIds    String?  // JSON: string[]
+  status      String   @default("queued") // queued|running|completed|failed|cancelled
+  result      String?
+  logs        String   @default("")
+  tags        String?  // JSON: string[]
+  createdAt   DateTime @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+  updatedAt   DateTime @updatedAt
+}
+
+// ─── Meetings (team + individual unified) ────────────────────────────────────
+
+model Meeting {
+  id           String   @id @default(cuid())
+  type         String   @default("team") // team | individual
+  agenda       String
+  saveName     String?
+  numRounds    Int      @default(3)
+  temperature  Float    @default(0.7)
+  leadId       String?
+  memberIds    String?  // JSON: string[]
+  status       String   @default("draft") // draft|running|completed|failed
+  summary      String?
+  messages     String?  // JSON: DiscussionMessage[]
+  tags         String?  // JSON: string[]
+  pinned       Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ─── Research pipeline ───────────────────────────────────────────────────────
+
+model ResearchReport {
+  id           String   @id @default(cuid())
+  topic        String
+  description  String?
+  numRounds    Int      @default(2)
+  temperature  Float    @default(0.7)
+  leadId       String?
+  memberIds    String?  // JSON: string[]
+  status       String   @default("draft") // draft|planning|researching|writing|completed|failed
+  discussion   String?  // JSON: DiscussionMessage[]
+  report       String?  // markdown
+  tags         String?  // JSON: string[]
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+// ─── Computational tools ─────────────────────────────────────────────────────
+
+model ToolEnvironment {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  tool      String   // rfdiffusion | rfantibody | proteinmpnn | rosetta
+  runtime   String   @default("native") // native | conda | wsl
+  wslDistro String?
+  condaEnv  String?
+  workDir   String?
+  exePath   String?
+  extraEnv  String?  // JSON
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ToolPreset {
+  id        String   @id @default(cuid())
+  name      String
+  tool      String
+  params    String   // JSON
+  builtin   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ToolJob {
+  id          String   @id @default(cuid())
+  tool        String
+  presetName  String?
+  params      String   // JSON
+  status      String   @default("queued") // queued|running|completed|failed|cancelled
+  pid         Int?
+  stdout      String   @default("")
+  stderr      String   @default("")
+  outputFiles String?  // JSON: string[]
+  exitCode    Int?
+  command     String?
+  triggeredBy String   @default("user") // user | agent:<title> | workflow:<id>
+  agentId     String?
+  environmentId String?
+  startedAt   DateTime?
+  finishedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+// ─── Workflow canvas (cryoflow-style) ────────────────────────────────────────
+
+model Workflow {
+  id        String   @id @default(cuid())
+  name      String   @default("Untitled Workflow")
+  nodes     Node[]
+  edges     Edge[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Node {
+  id          String   @id @default(cuid())
+  workflowId  String
+  type        String   // agent | task | meeting | research | comptool | biotool | input | output
+  refId       String?  // agent id / tool key / etc.
+  name        String
+  x           Float    @default(0)
+  y           Float    @default(0)
+  status      String   @default("idle") // idle|pending|running|completed|failed
+  progress    Int      @default(0)
+  params      String   @default("{}") // JSON
+  result      String?
+  logs        String   @default("")
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  workflow    Workflow @relation(onDelete: Cascade, fields: [workflowId], references: [id])
+
+  @@index([workflowId])
+}
+
+model Edge {
+  id         String   @id @default(cuid())
+  workflowId String
+  fromNodeId String
+  toNodeId   String
+  fromPort   String?
+  toPort     String?
+  createdAt  DateTime @default(now())
+  workflow   Workflow @relation(onDelete: Cascade, fields: [workflowId], references: [id])
+
+  @@unique([workflowId, fromNodeId, toNodeId, fromPort, toPort])
+  @@index([workflowId])
+}

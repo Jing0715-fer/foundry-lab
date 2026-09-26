@@ -1,0 +1,157 @@
+"use client";
+
+import * as React from "react";
+import { useTheme } from "next-themes";
+import { FlaskConical, Moon, Play, Sun, Github, Loader2 } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useAppStore } from "@/lib/store";
+
+/**
+ * Top application bar.
+ * - Left: brand chip (FlaskConical in a teal pill) + "Foundry Lab" wordmark.
+ * - Center (md+): editable workflow name (read-only for now — PATCH later).
+ * - Right: Run Workflow (POST /api/workflow/run), theme toggle, GitHub link.
+ */
+export function Header() {
+  const { theme, setTheme } = useTheme();
+  const workflow = useAppStore((s) => s.workflow);
+  const toast = useAppStore((s) => s.toast);
+  const [running, setRunning] = React.useState(false);
+  const [mounted, setMounted] = React.useState(false);
+
+  React.useEffect(() => setMounted(true), []);
+
+  async function handleRun() {
+    if (!workflow) {
+      toast({
+        title: "No workflow",
+        description: "Load a workflow before running.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setRunning(true);
+    toast({
+      title: "Workflow started",
+      description: `Running "${workflow.name}"…`,
+    });
+    try {
+      const res = await fetch("/api/workflow/run", { method: "POST" });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      toast({
+        title: "Workflow complete",
+        description: `Started ${data?.started ?? 0} • Completed ${
+          data?.completed ?? 0
+        }`,
+        variant: "success",
+      });
+    } catch (err) {
+      toast({
+        title: "Run failed",
+        description: err instanceof Error ? err.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  function toggleTheme() {
+    setTheme(theme === "dark" ? "light" : "dark");
+  }
+
+  return (
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-background/80 px-4 backdrop-blur">
+      {/* Left: brand */}
+      <div className="flex items-center gap-3 min-w-0">
+        <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
+          <FlaskConical className="size-5" />
+        </div>
+        <div className="flex flex-col min-w-0">
+          <span className="font-semibold leading-none truncate">
+            Foundry Lab
+          </span>
+          <span className="hidden sm:inline text-xs text-muted-foreground leading-none mt-1">
+            Agentic Research Studio
+          </span>
+        </div>
+      </div>
+
+      {/* Center: workflow name (md+) */}
+      <div className="hidden md:flex flex-1 justify-center min-w-0 px-4">
+        {workflow ? (
+          <Input
+            value={workflow.name}
+            onChange={() => {
+              /* PATCH /api/workflow/:id wired later — keep display-only for now */
+            }}
+            readOnly
+            className="h-8 max-w-md text-center text-sm font-medium focus-visible:ring-0"
+            aria-label="Workflow name"
+          />
+        ) : (
+          <span className="text-sm text-muted-foreground">Loading workflow…</span>
+        )}
+      </div>
+
+      {/* Right: actions */}
+      <div className="flex items-center gap-2">
+        <Button
+          size="sm"
+          onClick={handleRun}
+          disabled={running || !workflow}
+          className="gap-1.5"
+        >
+          {running ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Play className="size-4" />
+          )}
+          <span className="hidden sm:inline">Run Workflow</span>
+        </Button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="icon"
+              onClick={toggleTheme}
+              aria-label="Toggle theme"
+            >
+              {mounted && theme === "dark" ? (
+                <Sun className="size-4" />
+              ) : (
+                <Moon className="size-4" />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Toggle theme</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="outline" size="icon" asChild>
+              <a
+                href="https://github.com/Jing0715-fer/foundry-lab"
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="GitHub repository"
+              >
+                <Github className="size-4" />
+              </a>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>GitHub</TooltipContent>
+        </Tooltip>
+      </div>
+    </header>
+  );
+}

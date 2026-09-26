@@ -1,0 +1,443 @@
+"use client";
+
+import React from "react";
+import {
+  Bot,
+  SquarePen,
+  Users,
+  BookOpen,
+  Cpu,
+  Database,
+  ArrowRightToLine,
+  Flag,
+  Box,
+  Loader2,
+  type LucideIcon,
+} from "lucide-react";
+import type { NodeDTO, NodeType, NodeSpec } from "@/lib/types";
+import { useAppStore, clampDrop } from "@/lib/store";
+import {
+  NODE_SPECS,
+  CARD_W,
+  CARD_H,
+  ZOOM_MIN,
+  ZOOM_MAX,
+  nodeSpec,
+} from "@/lib/workflow-catalog";
+import { EdgesLayer } from "./edges-layer";
+import { NodeCard } from "./node-card";
+import { LiveWire } from "./live-wire";
+
+const ICON_MAP: Record<string, LucideIcon> = {
+  bot: Bot,
+  "square-pen": SquarePen,
+  users: Users,
+  "book-open": BookOpen,
+  cpu: Cpu,
+  database: Database,
+  "arrow-right-to-line": ArrowRightToLine,
+  flag: Flag,
+};
+
+interface CreateMenuState {
+  screenX: number;
+  screenY: number;
+  worldX: number;
+  worldY: number;
+}
+
+/**
+ * WorkflowCanvas — the main cryoflow-style canvas.
+ * Owns: pan, wheel-zoom-to-cursor, rubber-band selection, double-click create,
+ * HTML5 drop from the palette. Does NOT render zoom controls (owned by 6-b).
+ */
+export function WorkflowCanvas() {
+  const workflow = useAppStore((s) => s.workflow);
+  const viewport = useAppStore((s) => s.viewport);
+  const band = useAppStore((s) => s.band);
+  const pendingFrom = useAppStore((s) => s.pendingFrom);
+  const dragActive = useAppStore((s) => s.dragActive);
+
+  const setViewport = useAppStore((s) => s.setViewport);
+  const panBy = useAppStore((s) => s.panBy);
+  const selectMany = useAppStore((s) => s.selectMany);
+  const select = useAppStore((s) => s.select);
+  const setBand = useAppStore((s) => s.setBand);
+  const setWorkflow = useAppStore((s) => s.setWorkflow);
+  const upsertNode = useAppStore((s) => s.upsertNode);
+  const cancelConnect = useAppStore((s) => s.cancelConnect);
+  const toast = useAppStore((s) => s.toast);
+
+  const rootRef = React.useRef<HTMLElement | null>(null);
+  const panState = React.useRef<{ startX: number; startY: number; vx: number; vy: number } | null>(null);
+  const fetchedRef = React.useRef(false);
+
+  const [createMenu, setCreateMenu] = React.useState<CreateMenuState | null>(null);
+
+  // Group specs for the create menu (constant; safe to memoize once).
+  const grouped = React.useMemo(() => {
+    const m = new Map<string, NodeSpec[]>();
+    for (const s of NODE_SPECS) {
+      if (!m.has(s.category)) m.set(s.category, []);
+      m.get(s.category)!.push(s);
+    }
+    return [...m.entries()];
+  }, []);
+
+  // ─── Initial workflow fetch (defensive; the page may also fetch). ────────
+  React.useEffect(() => {
+    if (fetchedRef.current) return;
+    fetchedRef.current = true;
+    if (workflow) return;
+    void (async () => {
+      try {
+        const res = await fetch("/api/workflow");
+        if (!res.ok) throw new Error("fetch failed");
+        const w = await res.json();
+        setWorkflow(w);
+      } catch {
+        // Stay in loading state; other agents may retry.
+      }
+    })();
+  }, [workflow, setWorkflow]);
+
+  // ─── Wheel: zoom-to-cursor (passive:false so we can preventDefault). ─────
+  React.useEffect(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const rect = el.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const curZoom = useAppStore.getState().viewport.zoom;
+      const factor = Math.pow(1.0015, -e.deltaY);
+      let next = curZoom * factor;
+      if (next < ZOOM_MIN) next = ZOOM_MIN;
+      if (next > ZOOM_MAX) next = ZOOM_MAX;
+      if (next === curZoom) return;
+      const vp = useAppStore.getState().viewport;
+      // Keep the workspace point under the cursor fixed.
+      const nx = sx - (sx - vp.x) * (next / curZoom);
+      const ny = sy - (sy - vp.y) * (next / curZoom);
+      setViewport({ x: nx, y: ny, zoom: next });
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [setViewport]);
+
+  // ─── Background detection (pan / band start only on empty area). ─────────
+  const isBackground = (target: EventTarget | null): boolean => {
+    const el = target as HTMLElement | null;
+    if (!el) return false;
+    // Reject anything that is a node card or port.
+    if (el.closest("[data-node-card]")) return false;
+    if (el.closest("[data-port]")) return false;
+    if (el.closest("[data-create-menu]")) return false;
+    return true;
+  };
+
+  // ─── Pointer handlers: pan + rubber-band. ───────────────────────────────
+  const onPointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (!isBackground(e.target)) return;
+    if (e.button !== 0 && e.button !== 1) return;
+    // Double-click creates — ignore the 2nd pointerdown of a dblclick.
+    if (e.detail >= 2) return;
+    // Cancel any pending connection on background click.
+    if (pendingFrom) {
+      cancelConnect();
+      return;
+    }
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const rect = e.currentTarget.getBoundingClientRect();
+    if (e.shiftKey) {
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      setBand({ x0: x, y0: y, x1: x, y1: y });
+    } else {
+      panState.current = {
+        startX: e.clientX,
+        startY: e.clientY,
+        vx: viewport.x,
+        vy: viewport.y,
+      };
+    }
+  };
+
+  const onPointerMove = (e: React.PointerEvent<HTMLElement>) => {
+    if (panState.current) {
+      const dx = e.clientX - panState.current.startX;
+      const dy = e.clientY - panState.current.startY;
+      panBy(dx, dy);
+      panState.current.startX = e.clientX;
+      panState.current.startY = e.clientY;
+      return;
+    }
+    if (band) {
+      const rect = e.currentTarget.getBoundingClientRect();
+      setBand({ ...band, x1: e.clientX - rect.left, y1: e.clientY - rect.top });
+    }
+  };
+
+  const onPointerUp = (e: React.PointerEvent<HTMLElement>) => {
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    if (panState.current) {
+      panState.current = null;
+      return;
+    }
+    if (band) {
+      const x0 = Math.min(band.x0, band.x1);
+      const y0 = Math.min(band.y0, band.y1);
+      const x1 = Math.max(band.x0, band.x1);
+      const y1 = Math.max(band.y0, band.y1);
+      const vp = viewport;
+      const tiny = (x1 - x0) < 4 && (y1 - y0) < 4;
+      if (!tiny) {
+        const hitIds =
+          workflow?.nodes
+            .filter((n) => {
+              const nx = n.x * vp.zoom + vp.x;
+              const ny = n.y * vp.zoom + vp.y;
+              const nw = CARD_W * vp.zoom;
+              const nh = CARD_H * vp.zoom;
+              return !(nx + nw < x0 || nx > x1 || ny + nh < y0 || ny > y1);
+            })
+            .map((n) => n.id) ?? [];
+        selectMany(hitIds);
+      } else {
+        select(null);
+      }
+      setBand(null);
+    }
+  };
+
+  // ─── Double-click empty area → create menu. ─────────────────────────────
+  const onDoubleClick = (e: React.PointerEvent<HTMLElement>) => {
+    if (!isBackground(e.target)) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const vp = viewport;
+    const wx = (sx - vp.x) / vp.zoom;
+    const wy = (sy - vp.y) / vp.zoom;
+    setCreateMenu({ screenX: sx, screenY: sy, worldX: wx, worldY: wy });
+  };
+
+  // ─── Create node from menu. ─────────────────────────────────────────────
+  const createNode = React.useCallback(
+    async (spec: NodeSpec) => {
+      if (!createMenu) return;
+      const { worldX, worldY } = createMenu;
+      const pos = clampDrop(worldX, worldY);
+      setCreateMenu(null);
+      try {
+        const res = await fetch("/api/workflow/nodes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: spec.type,
+            name: spec.label,
+            x: pos.x,
+            y: pos.y,
+          }),
+        });
+        if (!res.ok) throw new Error("create failed");
+        const created: NodeDTO = await res.json();
+        upsertNode(created);
+        toast({ title: `${spec.label} added` });
+      } catch {
+        toast({ title: "Failed to add node", variant: "destructive" });
+      }
+    },
+    [createMenu, upsertNode, toast],
+  );
+
+  // ─── HTML5 drop from palette. ───────────────────────────────────────────
+  const onDragOver = (e: React.DragEvent) => {
+    if (e.dataTransfer.types.includes("application/node-type")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+
+  const onDrop = async (e: React.DragEvent) => {
+    const type = e.dataTransfer.getData("application/node-type");
+    if (!type) return;
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+    const vp = viewport;
+    const wx = (sx - vp.x) / vp.zoom;
+    const wy = (sy - vp.y) / vp.zoom;
+    const pos = clampDrop(wx, wy);
+    const spec = nodeSpec(type);
+    try {
+      const res = await fetch("/api/workflow/nodes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type,
+          name: spec?.label ?? type,
+          x: pos.x,
+          y: pos.y,
+        }),
+      });
+      if (!res.ok) throw new Error("create failed");
+      const created: NodeDTO = await res.json();
+      upsertNode(created);
+      toast({ title: `${spec?.label ?? type} added` });
+    } catch {
+      toast({ title: "Failed to add node", variant: "destructive" });
+    }
+  };
+
+  // ─── Loading state. ─────────────────────────────────────────────────────
+  if (!workflow) {
+    return (
+      <section className="canvas-grid relative flex-1 overflow-hidden bg-background">
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+            <Loader2 className="h-7 w-7 animate-spin" />
+            <p className="text-sm">Loading workflow…</p>
+          </div>
+        </div>
+      </section>
+    );
+  }
+
+  const nodes = workflow.nodes;
+  const edges = workflow.edges;
+  const zoom = viewport.zoom;
+
+  // Band rect for rendering (normalized).
+  const bandRect = band
+    ? {
+        x: Math.min(band.x0, band.x1),
+        y: Math.min(band.y0, band.y1),
+        w: Math.abs(band.x1 - band.x0),
+        h: Math.abs(band.y1 - band.y0),
+      }
+    : null;
+
+  return (
+    <section
+      ref={rootRef}
+      className={cnCanvas(
+        "canvas-grid relative flex-1 overflow-hidden touch-none bg-background select-none",
+        dragActive ? "cursor-grabbing" : "cursor-grab",
+      )}
+      style={{
+        backgroundSize: `${22 / zoom}px ${22 / zoom}px`,
+        backgroundPosition: `${viewport.x}px ${viewport.y}px`,
+      }}
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerUp}
+      onPointerCancel={onPointerUp}
+      onDoubleClick={onDoubleClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+    >
+      {/* Workspace (transformed). */}
+      <div
+        className="absolute left-0 top-0 origin-top-left"
+        style={{
+          transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${zoom})`,
+          transformOrigin: "0 0",
+          width: 0,
+          height: 0,
+        }}
+      >
+        <EdgesLayer edges={edges} nodes={nodes} />
+        {nodes.map((n) => (
+          <div key={n.id} data-node-card>
+            <NodeCard node={n} />
+          </div>
+        ))}
+      </div>
+
+      {/* LiveWire overlay (screen-relative). */}
+      <LiveWire nodes={nodes} />
+
+      {/* Band selection overlay. */}
+      {bandRect && (
+        <svg className="pointer-events-none absolute inset-0 z-20" width="100%" height="100%">
+          <rect
+            x={bandRect.x}
+            y={bandRect.y}
+            width={bandRect.w}
+            height={bandRect.h}
+            className="band-ants"
+            fill="hsl(var(--primary) / 0.06)"
+            stroke="hsl(var(--primary))"
+            strokeWidth={1}
+            strokeDasharray="4 3"
+          />
+        </svg>
+      )}
+
+      {/* Empty state. */}
+      {nodes.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="rounded-lg border border-dashed border-border bg-card/60 px-6 py-4 text-center text-sm text-muted-foreground shadow-sm">
+            Drag a node from the palette, or double-click to add one.
+          </div>
+        </div>
+      )}
+
+      {/* Create-node popover. */}
+      {createMenu && (
+        <>
+          {/* Click-away catcher. */}
+          <div
+            data-create-menu
+            className="fixed inset-0 z-30"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              setCreateMenu(null);
+            }}
+          />
+          <div
+            data-create-menu
+            className="absolute z-40 max-h-[60vh] w-56 overflow-y-auto rounded-md border border-border bg-popover p-1 text-popover-foreground shadow-lg"
+            style={{ left: createMenu.screenX, top: createMenu.screenY }}
+          >
+            {grouped.map(([cat, specs]) => (
+              <div key={cat} className="mb-1">
+                <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  {cat}
+                </div>
+                {specs.map((spec) => {
+                  const Icon = ICON_MAP[spec.icon] ?? Box;
+                  return (
+                    <button
+                      key={spec.type}
+                      onClick={() => void createNode(spec)}
+                      className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    >
+                      <Icon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <span className="flex-1 truncate">{spec.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+// Tiny local cn helper to avoid pulling extra deps if not needed elsewhere here.
+function cnCanvas(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(" ");
+}
+
+// Re-export NodeType as a hint for consumers; keeps the file self-documenting.
+export type { NodeType };
