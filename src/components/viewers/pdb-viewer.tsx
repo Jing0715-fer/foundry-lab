@@ -7,7 +7,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// --- Types -------------------------------------------------------------------
 
 interface PdbAtom {
   atomName: string;
@@ -19,7 +19,7 @@ interface PdbAtom {
   z: number;
 }
 
-// ─── Sample PDB ───────────────────────────────────────────────────────────────
+// --- Sample PDB ---------------------------------------------------------------
 
 /**
  * Generate a synthetic PDB string (a 24-residue helix of CA atoms)
@@ -40,7 +40,7 @@ export function generateSamplePdb(): string {
   return lines.join("\n");
 }
 
-// ─── Parser ───────────────────────────────────────────────────────────────────
+// --- Parser -------------------------------------------------------------------
 
 /**
  * Parse ATOM/HETATM records from a PDB string. Uses token-based parsing
@@ -97,7 +97,7 @@ function parsePdb(text: string): PdbAtom[] {
   return atoms;
 }
 
-// ─── Color maps ───────────────────────────────────────────────────────────────
+// --- Color maps ---------------------------------------------------------------
 
 const CHAIN_PALETTE: Record<string, string> = {
   A: "#14b8a6", // teal-500
@@ -159,7 +159,7 @@ function residueColor(resName: string): string {
   return RESIDUE_COLORS[cls];
 }
 
-// ─── Viewer ───────────────────────────────────────────────────────────────────
+// --- Viewer -------------------------------------------------------------------
 
 export interface PdbViewerProps {
   pdbText: string | null;

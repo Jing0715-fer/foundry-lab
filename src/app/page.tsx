@@ -176,7 +176,7 @@ export default function Home() {
     }
   }, [toast]);
 
-  // ─── Onboarding tour auto-start ──────────────────────────────────────────
+  // --- Onboarding tour auto-start ------------------------------------------
   // On first visit (no localStorage flag), open the tour after an 800ms delay
   // so the page has time to render first. The tour store's `close()` persists
   // the flag for next time.
@@ -199,7 +199,7 @@ export default function Home() {
     };
   }, []);
 
-  // ─── Global keyboard shortcuts (Delete + Escape) ────────────────────────
+  // --- Global keyboard shortcuts (Delete + Escape) ------------------------
   // Cmd+K / Ctrl+K is owned by the CommandPalette component itself.
   const shortcuts = React.useMemo<ShortcutConfig[]>(
     () => [

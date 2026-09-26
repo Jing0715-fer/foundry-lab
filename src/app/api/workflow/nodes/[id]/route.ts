@@ -9,6 +9,7 @@ type PatchBody = {
   name?: string;
   x?: number;
   y?: number;
+  refId?: string | null;
   params?: Record<string, string | number | boolean>;
   status?: string;
   progress?: number;
@@ -33,6 +34,9 @@ export async function PATCH(
     if (typeof body.name === "string") data.name = body.name;
     if (typeof body.x === "number") data.x = body.x;
     if (typeof body.y === "number") data.y = body.y;
+    if (body.refId !== undefined) {
+      data.refId = body.refId === null ? null : String(body.refId);
+    }
     if (typeof body.status === "string") data.status = body.status;
     if (typeof body.progress === "number") data.progress = body.progress;
     if (body.result !== undefined) {

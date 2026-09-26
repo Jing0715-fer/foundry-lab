@@ -31,7 +31,7 @@ import type { ToolJobDTO } from "@/lib/types";
 import { PdbViewer, generateSamplePdb } from "./pdb-viewer";
 import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// --- Helpers ------------------------------------------------------------------
 
 const STRUCTURE_TOOLS = new Set(["rfdiffusion", "rfantibody", "rosetta"]);
 const SEQUENCE_TOOLS = new Set(["proteinmpnn"]);
@@ -46,7 +46,7 @@ function statusPillClass(status: string): string {
   return "bg-muted text-muted-foreground";
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
+// --- Component ----------------------------------------------------------------
 
 export interface OutputViewerDialogProps {
   job: ToolJobDTO | null;

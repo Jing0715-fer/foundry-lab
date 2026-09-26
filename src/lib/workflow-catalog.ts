@@ -54,7 +54,7 @@ function area(key: string, label: string, def: string, extra: Record<string, unk
 }
 
 export const NODE_SPECS: NodeSpec[] = [
-  // ─── Agents ───────────────────────────────────────────────────────────────
+  // --- Agents ---------------------------------------------------------------
   {
     type: "agent",
     label: "Agent",
@@ -73,7 +73,7 @@ export const NODE_SPECS: NodeSpec[] = [
       txt("refId", "Agent (pick one)", "", { hint: "Selected from the Agents panel" }),
     ],
   },
-  // ─── Tasks ────────────────────────────────────────────────────────────────
+  // --- Tasks ----------------------------------------------------------------
   {
     type: "task",
     label: "Task",
@@ -135,7 +135,7 @@ export const NODE_SPECS: NodeSpec[] = [
       num("temperature", "Temperature", 0.6, { min: 0, max: 1.5, step: 0.05 }),
     ],
   },
-  // ─── Tools ────────────────────────────────────────────────────────────────
+  // --- Tools ----------------------------------------------------------------
   {
     type: "comptool",
     label: "Comp Tool",
@@ -189,7 +189,7 @@ export const NODE_SPECS: NodeSpec[] = [
       num("maxResults", "Max results", 5, { min: 1, max: 10 }),
     ],
   },
-  // ─── I/O ──────────────────────────────────────────────────────────────────
+  // --- I/O ------------------------------------------------------------------
   {
     type: "input",
     label: "Input",

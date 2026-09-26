@@ -90,7 +90,7 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
         >
           <path
             d="M 0 0 L 10 5 L 0 10 z"
-            fill="hsl(var(--muted-foreground))"
+            style={{ fill: "var(--muted-foreground)" }}
           />
         </marker>
         {/* Primary-colored arrowhead for hovered/selected edges. */}
@@ -104,13 +104,13 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
           orient="auto-start-reverse"
           markerUnits="userSpaceOnUse"
         >
-          <path d="M 0 0 L 10 5 L 0 10 z" fill="hsl(var(--primary))" />
+          <path d="M 0 0 L 10 5 L 0 10 z" style={{ fill: "var(--primary)" }} />
         </marker>
         {/* Gradient for running source edges. */}
         <linearGradient id={gradRunId} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="hsl(var(--primary) / 0.35)" />
-          <stop offset="50%" stopColor="hsl(var(--primary))" />
-          <stop offset="100%" stopColor="hsl(var(--primary) / 0.35)" />
+          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 35%, transparent)" />
+          <stop offset="50%" stopColor="var(--primary)" />
+          <stop offset="100%" stopColor="color-mix(in oklab, var(--primary) 35%, transparent)" />
         </linearGradient>
         {/* Subtle teal gradient for completed→pending edges. */}
         <linearGradient id={gradDoneId} x1="0%" y1="0%" x2="100%" y2="0%">
@@ -147,11 +147,11 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
           strokeWidth = isHovered ? 3 : 2.25;
           markerEnd = `url(#${arrowId})`;
         } else if (highlighted) {
-          stroke = "hsl(var(--primary))";
+          stroke = "var(--primary)";
           strokeWidth = 3;
           markerEnd = `url(#${arrowSelId})`;
         } else {
-          stroke = "hsl(var(--border))";
+          stroke = "var(--border)";
           strokeWidth = 2;
           markerEnd = `url(#${arrowId})`;
         }
@@ -176,19 +176,20 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
             <path
               d={g.d}
               fill="none"
-              stroke={stroke}
+              stroke={stroke.startsWith("var(") || stroke.startsWith("url(") ? undefined : stroke}
               strokeWidth={strokeWidth}
               strokeLinecap="round"
               markerEnd={markerEnd}
               className={cnEdges(className, filterClass)}
+              style={stroke.startsWith("var(") || stroke.startsWith("url(") ? { stroke } : undefined}
             />
             {/* Running dashes: travelling dots via animateMotion */}
             {isRunning && (
               <>
-                <circle r={2.6} fill="hsl(var(--primary))">
+                <circle r={2.6} style={{ fill: "var(--primary)" }}>
                   <animateMotion dur="1.1s" repeatCount="indefinite" path={g.d} />
                 </circle>
-                <circle r={2.6} fill="hsl(var(--primary) / 0.55)">
+                <circle r={2.6} style={{ fill: "color-mix(in oklab, var(--primary) 55%, transparent)" }}>
                   <animateMotion
                     dur="1.1s"
                     begin="0.55s"
@@ -199,14 +200,13 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
               </>
             )}
             {/* Endpoints */}
-            <circle cx={g.src.x} cy={g.src.y} r={3} fill="hsl(var(--primary))" />
+            <circle cx={g.src.x} cy={g.src.y} r={3} style={{ fill: "var(--primary)" }} />
             {/* Target dot (kept alongside the arrowhead for a pro combo) */}
             <circle
               cx={g.tgt.x}
               cy={g.tgt.y}
               r={4.2}
-              fill="hsl(var(--background))"
-              stroke={highlighted ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.7)"}
+              style={{ fill: "var(--background)", stroke: highlighted ? "var(--primary)" : "color-mix(in oklab, var(--primary) 70%, transparent)" }}
               strokeWidth={2}
             />
             {/* Delete chip when hovered */}
@@ -222,13 +222,12 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
               >
                 <circle
                   r={9}
-                  fill="hsl(var(--background))"
-                  stroke="hsl(var(--destructive))"
+                  style={{ fill: "var(--background)", stroke: "var(--destructive)" }}
                   strokeWidth={1.5}
                 />
                 <path
                   d="M -3.5 -3.5 L 3.5 3.5 M 3.5 -3.5 L -3.5 3.5"
-                  stroke="hsl(var(--destructive))"
+                  style={{ stroke: "var(--destructive)" }}
                   strokeWidth={1.6}
                   strokeLinecap="round"
                 />

@@ -198,7 +198,7 @@ export function CommandPalette() {
 
   const toast = useAppStore((s) => s.toast);
 
-  // ─── Global Cmd+K / Ctrl+K toggle ────────────────────────────────────────
+  // --- Global Cmd+K / Ctrl+K toggle ----------------------------------------
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key.toLowerCase() !== "k") return;
@@ -213,7 +213,7 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // ─── Fetch agents once on mount (for the "Agents" group) ──────────────────
+  // --- Fetch agents once on mount (for the "Agents" group) ------------------
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -241,7 +241,7 @@ export function CommandPalette() {
     };
   }, []);
 
-  // ─── Action handlers ──────────────────────────────────────────────────────
+  // --- Action handlers ------------------------------------------------------
   const runWorkflow = React.useCallback(async () => {
     const { workflow, toast: t } = useAppStore.getState();
     if (!workflow) {
@@ -380,7 +380,7 @@ export function CommandPalette() {
       <CommandList>
         <CommandEmpty>No results found.</CommandEmpty>
 
-        {/* Navigation ─────────────────────────────────────────────────── */}
+        {/* Navigation --------------------------------------------------- */}
         <CommandGroup
           heading={
             <span className="flex items-center gap-1.5">
@@ -402,7 +402,7 @@ export function CommandPalette() {
 
         <CommandSeparator />
 
-        {/* Actions ─────────────────────────────────────────────────────── */}
+        {/* Actions ------------------------------------------------------- */}
         <CommandGroup
           heading={
             <span className="flex items-center gap-1.5">
@@ -442,7 +442,7 @@ export function CommandPalette() {
 
         <CommandSeparator />
 
-        {/* Add Node ───────────────────────────────────────────────────── */}
+        {/* Add Node ----------------------------------------------------- */}
         <CommandGroup
           heading={
             <span className="flex items-center gap-1.5">
@@ -462,7 +462,7 @@ export function CommandPalette() {
           ))}
         </CommandGroup>
 
-        {/* Agents ─────────────────────────────────────────────────────── */}
+        {/* Agents ------------------------------------------------------- */}
         {(agents.length > 0 || agentsLoading) && (
           <>
             <CommandSeparator />
@@ -494,7 +494,7 @@ export function CommandPalette() {
         )}
       </CommandList>
 
-      {/* Footer hint ──────────────────────────────────────────────────── */}
+      {/* Footer hint ---------------------------------------------------- */}
       <div className="border-t px-3 py-2 text-center text-[11px] text-muted-foreground">
         <span className="font-mono">↑↓</span> to navigate
         <span className="mx-2 opacity-40">·</span>

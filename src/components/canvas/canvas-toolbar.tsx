@@ -40,17 +40,20 @@ function computeFit(
     maxX = Math.max(maxX, n.x + CARD_W);
     maxY = Math.max(maxY, n.y + CARD_H);
   }
-  const pad = 80;
-  const w = maxX - minX + pad * 2;
-  const h = maxY - minY + pad * 2;
-  const zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.min(canvasW / w, canvasH / h)));
+  const pad = 60;
+  const contentW = maxX - minX;
+  const contentH = maxY - minY;
+  const availW = Math.max(100, canvasW - pad * 2);
+  const availH = Math.max(100, canvasH - pad * 2);
+  const zoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, Math.min(availW / contentW, availH / contentH)));
+  // Center the content bbox in the canvas viewport.
+  // The viewport transform maps world (x,y) → screen (x,y) via: screen = world * zoom + viewport.
+  // We want the center of the content bbox to map to the center of the canvas.
   const cx = (minX + maxX) / 2;
   const cy = (minY + maxY) / 2;
-  return {
-    x: Math.round(cx - canvasW / (2 * zoom)),
-    y: Math.round(cy - canvasH / (2 * zoom)),
-    zoom: Number(zoom.toFixed(2)),
-  };
+  const x = Math.round(canvasW / 2 - cx * zoom);
+  const y = Math.round(canvasH / 2 - cy * zoom);
+  return { x, y, zoom: Number(zoom.toFixed(2)) };
 }
 
 /** A button wrapped with a Tooltip. */
@@ -90,13 +93,18 @@ export function CanvasToolbar() {
 
   /** Best-effort canvas size — use the toolbar's parent if available. */
   const canvasSize = React.useCallback(() => {
-    const parent = ref.current?.parentElement;
-    const w = parent?.clientWidth && parent.clientWidth > 0
-      ? parent.clientWidth
-      : Math.max(400, window.innerWidth - 576);
-    const h = parent?.clientHeight && parent.clientHeight > 0
-      ? parent.clientHeight
-      : Math.max(300, window.innerHeight - 100);
+    // Prefer the actual canvas viewport element (data-canvas="viewport").
+    const canvasEl = document.querySelector('[data-canvas="viewport"]') as HTMLElement | null;
+    const w = canvasEl?.clientWidth && canvasEl.clientWidth > 0
+      ? canvasEl.clientWidth
+      : ref.current?.parentElement?.clientWidth && ref.current.parentElement.clientWidth > 0
+        ? ref.current.parentElement.clientWidth
+        : Math.max(400, window.innerWidth - 576);
+    const h = canvasEl?.clientHeight && canvasEl.clientHeight > 0
+      ? canvasEl.clientHeight
+      : ref.current?.parentElement?.clientHeight && ref.current.parentElement.clientHeight > 0
+        ? ref.current.parentElement.clientHeight
+        : Math.max(300, window.innerHeight - 100);
     return { w, h };
   }, []);
 

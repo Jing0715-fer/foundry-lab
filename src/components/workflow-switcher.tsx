@@ -80,7 +80,7 @@ export function WorkflowSwitcher() {
   const rename = useWorkflowListStore((s) => s.rename);
   const remove = useWorkflowListStore((s) => s.remove);
 
-  // ── Dialog + AlertDialog state ───────────────────────────────────────────
+  // -- Dialog + AlertDialog state -------------------------------------------
   const [createOpen, setCreateOpen] = React.useState(false);
   const [createName, setCreateName] = React.useState("");
   const [creating, setCreating] = React.useState(false);
@@ -94,17 +94,17 @@ export function WorkflowSwitcher() {
 
   const [switching, setSwitching] = React.useState<string | null>(null);
 
-  // ── Sync activeId from useAppStore.workflow ──────────────────────────────
+  // -- Sync activeId from useAppStore.workflow ------------------------------
   React.useEffect(() => {
     if (workflow?.id) setActive(workflow.id);
   }, [workflow?.id, setActive]);
 
-  // ── On mount, load the workflow list. ────────────────────────────────────
+  // -- On mount, load the workflow list. ------------------------------------
   React.useEffect(() => {
     load();
   }, [load]);
 
-  // ── Switching handler ───────────────────────────────────────────────────
+  // -- Switching handler ---------------------------------------------------
   async function handleSwitch(id: string) {
     if (id === workflow?.id) return;
     setSwitching(id);
@@ -132,7 +132,7 @@ export function WorkflowSwitcher() {
     }
   }
 
-  // ── Create handler ──────────────────────────────────────────────────────
+  // -- Create handler ------------------------------------------------------
   async function handleCreate() {
     setCreating(true);
     try {
@@ -159,7 +159,7 @@ export function WorkflowSwitcher() {
     }
   }
 
-  // ── Rename handlers ──────────────────────────────────────────────────────
+  // -- Rename handlers ------------------------------------------------------
   function startRename(id: string, currentName: string) {
     setRenameId(id);
     setRenameValue(currentName);
@@ -193,7 +193,7 @@ export function WorkflowSwitcher() {
     }
   }
 
-  // ── Delete handler ───────────────────────────────────────────────────────
+  // -- Delete handler -------------------------------------------------------
   async function handleDelete() {
     if (!deleteId) return;
     setDeleting(true);

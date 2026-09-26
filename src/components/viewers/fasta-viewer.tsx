@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
-// ─── Sample FASTA ─────────────────────────────────────────────────────────────
+// --- Sample FASTA -------------------------------------------------------------
 
 /**
  * Generate a synthetic 60-residue FASTA string cycling through the
@@ -19,7 +19,7 @@ export function generateSampleFasta(): string {
   return `>sample_design_1|designed_sequence\n${seq}`;
 }
 
-// ─── AA color map ──────────────────────────────────────────────────────────────
+// --- AA color map --------------------------------------------------------------
 
 const AA_COLORS: Record<string, string> = {
   // hydrophobic — amber
@@ -66,7 +66,7 @@ function aaColorClass(aa: string): string {
   return AA_COLORS[upper] ?? "bg-violet-500"; // special — violet
 }
 
-// ─── FASTA parser ──────────────────────────────────────────────────────────────
+// --- FASTA parser --------------------------------------------------------------
 
 interface FastaRecord {
   header: string;
@@ -94,7 +94,7 @@ function parseFasta(text: string): FastaRecord[] {
   return records;
 }
 
-// ─── Viewer ───────────────────────────────────────────────────────────────────
+// --- Viewer -------------------------------------------------------------------
 
 export interface FastaViewerProps {
   fastaText: string | null;

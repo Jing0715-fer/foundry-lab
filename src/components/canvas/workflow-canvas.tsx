@@ -85,7 +85,7 @@ export function WorkflowCanvas() {
     return [...m.entries()];
   }, []);
 
-  // ─── Initial workflow fetch (defensive; the page may also fetch). ────────
+  // --- Initial workflow fetch (defensive; the page may also fetch). --------
   React.useEffect(() => {
     if (fetchedRef.current) return;
     fetchedRef.current = true;
@@ -102,7 +102,7 @@ export function WorkflowCanvas() {
     })();
   }, [workflow, setWorkflow]);
 
-  // ─── Wheel: zoom-to-cursor (passive:false so we can preventDefault). ─────
+  // --- Wheel: zoom-to-cursor (passive:false so we can preventDefault). -----
   React.useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -127,7 +127,7 @@ export function WorkflowCanvas() {
     return () => el.removeEventListener("wheel", onWheel);
   }, [setViewport]);
 
-  // ─── Background detection (pan / band start only on empty area). ─────────
+  // --- Background detection (pan / band start only on empty area). ---------
   const isBackground = (target: EventTarget | null): boolean => {
     const el = target as HTMLElement | null;
     if (!el) return false;
@@ -138,7 +138,7 @@ export function WorkflowCanvas() {
     return true;
   };
 
-  // ─── Pointer handlers: pan + rubber-band. ───────────────────────────────
+  // --- Pointer handlers: pan + rubber-band. -------------------------------
   const onPointerDown = (e: React.PointerEvent<HTMLElement>) => {
     if (!isBackground(e.target)) return;
     if (e.button !== 0 && e.button !== 1) return;
@@ -216,7 +216,7 @@ export function WorkflowCanvas() {
     }
   };
 
-  // ─── Double-click empty area → create menu. ─────────────────────────────
+  // --- Double-click empty area → create menu. -----------------------------
   const onDoubleClick = (e: React.PointerEvent<HTMLElement>) => {
     if (!isBackground(e.target)) return;
     const rect = e.currentTarget.getBoundingClientRect();
@@ -228,7 +228,7 @@ export function WorkflowCanvas() {
     setCreateMenu({ screenX: sx, screenY: sy, worldX: wx, worldY: wy });
   };
 
-  // ─── Empty-state quick-start: drop a node at the visible viewport center. ──
+  // --- Empty-state quick-start: drop a node at the visible viewport center. --
   const createNodeAtViewportCenter = React.useCallback(
     async (type: NodeType) => {
       const spec = nodeSpec(type);
@@ -239,6 +239,15 @@ export function WorkflowCanvas() {
       const vp = useAppStore.getState().viewport;
       const worldCenterX = (vp.x + w / 2) / vp.zoom - 124;
       const worldCenterY = (vp.y + h / 2) / vp.zoom - 58;
+      // For agent nodes, pre-select the first available agent as refId.
+      const extra: Record<string, unknown> = {};
+      if (type === "agent") {
+        const agents = useAppStore.getState().agents;
+        if (agents.length > 0) {
+          extra.refId = agents[0].id;
+          extra.name = agents[0].title;
+        }
+      }
       const pos = clampDrop(worldCenterX, worldCenterY);
       try {
         const res = await fetch("/api/workflow/nodes", {
@@ -246,9 +255,10 @@ export function WorkflowCanvas() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             type: spec.type,
-            name: spec.label,
+            name: extra.name ?? spec.label,
             x: pos.x,
             y: pos.y,
+            ...extra,
           }),
         });
         if (!res.ok) throw new Error("create failed");
@@ -256,7 +266,7 @@ export function WorkflowCanvas() {
         upsertNode(created);
         useAppStore.getState().select(created.id);
         useAppStore.getState().inspect(created.id);
-        toast({ title: `${spec.label} added`, variant: "success" });
+        toast({ title: `${created.name} added`, variant: "success" });
       } catch {
         toast({ title: "Failed to add node", variant: "destructive" });
       }
@@ -264,7 +274,7 @@ export function WorkflowCanvas() {
     [upsertNode, toast],
   );
 
-  // ─── Create node from menu. ─────────────────────────────────────────────
+  // --- Create node from menu. ---------------------------------------------
   const createNode = React.useCallback(
     async (spec: NodeSpec) => {
       if (!createMenu) return;
@@ -293,7 +303,7 @@ export function WorkflowCanvas() {
     [createMenu, upsertNode, toast],
   );
 
-  // ─── HTML5 drop from palette. ───────────────────────────────────────────
+  // --- HTML5 drop from palette. -------------------------------------------
   const onDragOver = (e: React.DragEvent) => {
     if (e.dataTransfer.types.includes("application/node-type")) {
       e.preventDefault();
@@ -333,7 +343,7 @@ export function WorkflowCanvas() {
     }
   };
 
-  // ─── Loading state. ─────────────────────────────────────────────────────
+  // --- Loading state. -----------------------------------------------------
   if (!workflow) {
     return (
       <section className="canvas-grid relative flex-1 overflow-hidden bg-background">

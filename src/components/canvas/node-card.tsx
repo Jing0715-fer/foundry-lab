@@ -107,7 +107,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
   const inputs: PortSpec[] = spec?.inputs ?? [];
   const outputs: PortSpec[] = spec?.outputs ?? [];
 
-  // ─── Drag state (refs, no React state) ──────────────────────────────────
+  // --- Drag state (refs, no React state) ----------------------------------
   const dragState = React.useRef<{
     pointerId: number;
     startX: number;
@@ -198,7 +198,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
     dragState.current = null;
   };
 
-  // ─── Ports ──────────────────────────────────────────────────────────────
+  // --- Ports --------------------------------------------------------------
   const attemptConnect = React.useCallback(
     async (from: PendingFrom, toNodeId: string, toPort: string) => {
       const edges = useAppStore.getState().workflow?.edges ?? [];
@@ -290,7 +290,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
     return portsCompatible(port.kind, toPort?.accepts);
   };
 
-  // ─── Context menu actions ──────────────────────────────────────────────
+  // --- Context menu actions ----------------------------------------------
   const handleRun = React.useCallback(async () => {
     setNodeStatus(node.id, "running", 0);
     try {

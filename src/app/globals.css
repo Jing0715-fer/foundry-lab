@@ -43,7 +43,7 @@
   --radius-xl: calc(var(--radius) + 4px);
 }
 
-/* ─── Cryo Ice (light) ──────────────────────────────────────────────────── */
+/* --- Cryo Ice (light) ---------------------------------------------------- */
 :root {
   --radius: 0.625rem;
 
@@ -90,7 +90,7 @@
   --sidebar-ring: oklch(0.615 0.108 186);
 }
 
-/* ─── Deep Ice (dark) ───────────────────────────────────────────────────── */
+/* --- Deep Ice (dark) ----------------------------------------------------- */
 .dark {
   --background: oklch(0.18 0.02 230);
   --foreground: oklch(0.96 0.005 230);
@@ -148,7 +148,7 @@
   }
 }
 
-/* ─── Canvas utility classes ────────────────────────────────────────────── */
+/* --- Canvas utility classes ---------------------------------------------- */
 
 /* Dot-grid background for the workflow canvas. */
 .canvas-grid {
@@ -223,7 +223,7 @@
   }
 }
 
-/* ─── Canvas polish utilities (Task 9-a) ─────────────────────────────────── */
+/* --- Canvas polish utilities (Task 9-a) ----------------------------------- */
 
 /* Edge shadow filter for hover depth */
 .edge-glow { filter: drop-shadow(0 0 4px hsl(var(--primary) / 0.3)); }
@@ -239,7 +239,7 @@
 /* Inspector header accent */
 .inspector-accent { background: linear-gradient(180deg, hsl(var(--primary) / 0.05), transparent); }
 
-/* ─── Reduced motion ────────────────────────────────────────────────────── */
+/* --- Reduced motion ------------------------------------------------------ */
 @media (prefers-reduced-motion: reduce) {
   .edge-flow,
   .band-ants,
@@ -258,7 +258,7 @@
   }
 }
 
-/* ─── Thin custom scrollbar for .overflow-y-auto ────────────────────────── */
+/* --- Thin custom scrollbar for .overflow-y-auto -------------------------- */
 .overflow-y-auto {
   scrollbar-width: thin;
   scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent)

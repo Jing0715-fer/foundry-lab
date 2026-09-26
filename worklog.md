@@ -720,3 +720,43 @@ Unresolved / next-phase recommendations:
 - Wire real PDB/FASTA file fetching (new API route GET /api/tools/jobs/[id]/file?path=…).
 - Add agent compare dialog + project templates from V2.
 - Add undo/redo for canvas operations.
+
+---
+Task ID: 11-final
+Agent: main
+Task: Round 4 complete — critical edge rendering fix, Fit viewport fix, agent refId fix, LLM streaming.
+
+Work Log:
+- QA tested canvas + edges + node interactions via agent-browser + VLM (20 screenshots).
+- Found + fixed CRITICAL edge rendering bug: Tailwind v4 preflight sets `stroke: none` on all elements via `*` selector, which overrides SVG presentation attributes. Fixed by using inline `style={{ stroke: "var(--border)" }}` instead of `stroke="hsl(var(--border))"` attribute. Also replaced all `hsl(var(--x))` with `var(--x)` (the `hsl()` wrapper breaks resolution of oklch vars).
+- Fixed Fit viewport computation: old formula `cx - canvasW/(2*zoom)` was wrong; new formula `canvasW/2 - cx*zoom` correctly centers content.
+- Fixed canvasSize() to use `[data-canvas="viewport"]` element instead of toolbar's parentElement.
+- Fixed agent node refId persistence: PATCH route didn't handle `refId` field; inspector's onPatchParam put refId into params JSON instead of top-level. Fixed both: PATCH now accepts `refId`, inspector sends it as top-level field.
+- Fixed createNodeAtViewportCenter: agent nodes now pre-select the first available agent as refId.
+- Cleaned all box-drawing characters (─) from source files (Turbopack parser issue).
+- Verified LLM works: PI node ran successfully with Principal Investigator agent, generated a real response.
+
+Bugs fixed:
+1. [CRITICAL] Edges invisible — Tailwind v4 `*` reset overrides SVG stroke/fill attributes. Fixed with inline styles + var() instead of hsl(var()).
+2. [CRITICAL] Fit viewport off-screen — wrong centering formula. Fixed.
+3. [HIGH] Agent node refId not persisting — PATCH route missing refId handling + inspector putting it in params. Fixed both.
+4. [MEDIUM] Box-drawing chars causing Turbopack parse errors. Cleaned all.
+5. [MEDIUM] createNodeAtViewportCenter not pre-selecting agent. Fixed.
+
+Stage Summary:
+- ✅ Edges now render visibly with arrowheads + colored endpoint dots.
+- ✅ Fit to content correctly centers all nodes in viewport.
+- ✅ Agent nodes can be assigned an agent persona via inspector picker, persisted to DB.
+- ✅ Running an agent node executes the LLM and returns a real response.
+- ✅ Lint clean, tsc clean, no runtime errors.
+
+Current project status:
+- Stable. All critical canvas + edge + agent bugs fixed.
+- Edges visible with arrowheads. Fit works. Agent nodes runnable with LLM.
+
+Unresolved / next-phase recommendations:
+- Add real LLM streaming (chatStream) for live token display in agent chat.
+- Add SSE for node run progress streaming.
+- Add Help/Tour restart button in header.
+- Wire real PDB/FASTA file fetching.
+- Add undo/redo for canvas operations.

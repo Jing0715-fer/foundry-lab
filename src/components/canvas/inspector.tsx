@@ -448,6 +448,13 @@ function NodeInspectorImpl() {
   };
 
   const onPatchParam = (key: string, value: string | number | boolean) => {
+    // For agent nodes, refId is a top-level field (not in params JSON).
+    if (node.type === "agent" && key === "refId") {
+      const updated = { ...node, refId: String(value) || null };
+      upsertNode(updated);
+      patch(node.id, { refId: String(value) || null });
+      return;
+    }
     const params = { ...node.params, [key]: value };
     upsertNode({ ...node, params });
     patch(node.id, { params });

@@ -110,7 +110,7 @@ export interface ResearchReportDTO {
   updatedAt: string;
 }
 
-// ─── Workflow canvas ─────────────────────────────────────────────────────────
+// --- Workflow canvas ---------------------------------------------------------
 
 export type NodeType =
   | "agent" | "task" | "meeting" | "research"
@@ -204,7 +204,7 @@ export interface WorkflowDTO {
   updatedAt: string;
 }
 
-// ─── Tools ───────────────────────────────────────────────────────────────────
+// --- Tools -------------------------------------------------------------------
 
 export type CompToolKey = "rfdiffusion" | "rfantibody" | "proteinmpnn" | "rosetta";
 export type BioToolKey = "blast" | "pdb" | "pubmed" | "uniprot";
