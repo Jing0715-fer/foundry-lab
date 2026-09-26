@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTheme } from "next-themes";
-import { FlaskConical, Moon, Play, Sun, Github, Loader2, CircleHelp } from "lucide-react";
+import { FlaskConical, Moon, Play, Sun, Github, Loader2, CircleHelp, Keyboard } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -11,6 +11,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { WorkflowSwitcher } from "@/components/workflow-switcher";
+import { KeyboardShortcutsHelp } from "@/components/keyboard-shortcuts-help";
 import { useAppStore } from "@/lib/store";
 import { useTourStore } from "@/components/onboarding-tour";
 
@@ -27,8 +28,37 @@ export function Header() {
   const toast = useAppStore((s) => s.toast);
   const [running, setRunning] = React.useState(false);
   const [mounted, setMounted] = React.useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
 
   React.useEffect(() => setMounted(true), []);
+
+  // Global "?" (Shift+/) shortcut opens the keyboard-help dialog.
+  // Skip when typing in an input / textarea / contenteditable / dialog.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== "?") return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (t.isContentEditable) return;
+        const role = t.getAttribute("role");
+        if (role === "textbox" || role === "combobox" || role === "searchbox") return;
+      }
+      // Avoid opening while a dialog is already open (Esc-closed state etc.)
+      if (
+        document.querySelector(
+          '[role="dialog"][data-state="open"], [role="menu"][data-state="open"]',
+        )
+      ) {
+        return;
+      }
+      e.preventDefault();
+      setShortcutsOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Detect any node currently in "running" state — used to add a subtle pulse
   // to the Run Workflow button so users see activity is in flight.
@@ -126,6 +156,20 @@ export function Header() {
             <Button
               variant="ghost"
               size="icon"
+              onClick={() => setShortcutsOpen(true)}
+              aria-label="Keyboard shortcuts"
+            >
+              <Keyboard className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Keyboard shortcuts (?)</TooltipContent>
+        </Tooltip>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={() => useTourStore.getState().start()}
               aria-label="Restart onboarding tour"
             >
@@ -169,6 +213,11 @@ export function Header() {
           <TooltipContent>View source on GitHub</TooltipContent>
         </Tooltip>
       </div>
+
+      <KeyboardShortcutsHelp
+        open={shortcutsOpen}
+        onClose={() => setShortcutsOpen(false)}
+      />
     </header>
   );
 }

@@ -18,8 +18,11 @@ interface EdgesLayerProps {
  * Visual states:
  *  - Base: subtle border color stroke + small arrowhead at the target end.
  *  - Hovered / selected: primary stroke (3px) + drop-shadow filter for depth.
- *  - Running source: gradient stroke + animated particles (animateMotion).
+ *  - Running source: directional gradient (source→target) + animated particles
+ *    (3 traveling dots via animateMotion for a richer "data flowing" effect).
  *  - Completed → pending: subtle teal gradient.
+ *  - Selected endpoint: strokeWidth 3.5 + `.edge-selected` pulse animation.
+ *  - Hover label: small "fromPort → toPort" text chip at the path midpoint.
  */
 function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
@@ -42,6 +45,12 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
     return m;
   }, [nodes]);
 
+  // Set of selected node IDs for O(1) "is endpoint selected" lookups.
+  const selectedSet = React.useMemo(
+    () => new Set(selectedIds),
+    [selectedIds],
+  );
+
   const handleDelete = React.useCallback(
     async (edge: EdgeDTO) => {
       removeEdge(edge.id);
@@ -62,8 +71,9 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
   const uid = React.useId().replace(/:/g, "");
   const arrowId = `arrowhead-${uid}`;
   const arrowSelId = `arrowhead-sel-${uid}`;
-  const gradRunId = `grad-run-${uid}`;
   const gradDoneId = `grad-done-${uid}`;
+  // Per-edge running gradient ids — directional (source→target).
+  const gradRunIdFor = (edgeId: string) => `grad-run-${uid}-${edgeId}`;
 
   return (
     <svg
@@ -106,12 +116,6 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
         >
           <path d="M 0 0 L 10 5 L 0 10 z" style={{ fill: "var(--primary)" }} />
         </marker>
-        {/* Gradient for running source edges. */}
-        <linearGradient id={gradRunId} x1="0%" y1="0%" x2="100%" y2="0%">
-          <stop offset="0%" stopColor="color-mix(in oklab, var(--primary) 35%, transparent)" />
-          <stop offset="50%" stopColor="var(--primary)" />
-          <stop offset="100%" stopColor="color-mix(in oklab, var(--primary) 35%, transparent)" />
-        </linearGradient>
         {/* Subtle teal gradient for completed→pending edges. */}
         <linearGradient id={gradDoneId} x1="0%" y1="0%" x2="100%" y2="0%">
           <stop offset="0%" stopColor="oklch(0.7 0.14 145 / 0.5)" />
@@ -129,8 +133,15 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
           fromNode?.status === "completed" &&
           (toNode?.status === "pending" || toNode?.status === "idle");
         const isHovered = hoveredId === g.id;
-        const isSelected = selectedIds.includes(edge.id);
-        const highlighted = isHovered || isSelected;
+        // An edge is "selected" when one of its endpoint NODES is selected.
+        const isEndpointSelected =
+          selectedSet.has(edge.fromNodeId) || selectedSet.has(edge.toNodeId);
+        const highlighted = isHovered || isEndpointSelected;
+
+        // Per-edge directional gradient (source → target) for running edges.
+        // Lighter at the source, full primary at the target — visually
+        // represents data flowing from source to target.
+        const gradRunId = gradRunIdFor(g.id);
 
         // Stroke color logic.
         let stroke: string;
@@ -156,11 +167,43 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
           markerEnd = `url(#${arrowId})`;
         }
 
+        // Selected endpoint → bump stroke to 3.5 + add pulse class.
+        if (isEndpointSelected) {
+          strokeWidth = 3.5;
+        }
+
         // Drop-shadow on hovered edges for depth.
         const filterClass = highlighted ? "edge-glow" : undefined;
+        // Pulse on endpoint-selected edges (on top of running flow if both apply).
+        const selectedClass = isEndpointSelected ? "edge-selected" : undefined;
+
+        // Port label, e.g. "text → context" (fallback to "default → default").
+        const fromPortLabel = edge.fromPort ?? "default";
+        const toPortLabel = edge.toPort ?? "default";
+        const portLabel = `${fromPortLabel} → ${toPortLabel}`;
+        // Approximate label width for the bg rect (9px font, ~5.4px per char).
+        const labelW = Math.max(36, portLabel.length * 5.4 + 8);
+        const labelH = 16;
 
         return (
           <g key={g.id}>
+            {/* Per-edge directional running gradient (source → target). */}
+            {isRunning && (
+              <linearGradient
+                id={gradRunId}
+                gradientUnits="userSpaceOnUse"
+                x1={g.src.x}
+                y1={g.src.y}
+                x2={g.tgt.x}
+                y2={g.tgt.y}
+              >
+                <stop
+                  offset="0%"
+                  stopColor="color-mix(in oklab, var(--primary) 30%, transparent)"
+                />
+                <stop offset="100%" stopColor="var(--primary)" />
+              </linearGradient>
+            )}
             {/* Invisible hit area */}
             <path
               d={g.d}
@@ -176,23 +219,46 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
             <path
               d={g.d}
               fill="none"
-              stroke={stroke.startsWith("var(") || stroke.startsWith("url(") ? undefined : stroke}
+              stroke={
+                stroke.startsWith("var(") || stroke.startsWith("url(")
+                  ? undefined
+                  : stroke
+              }
               strokeWidth={strokeWidth}
               strokeLinecap="round"
               markerEnd={markerEnd}
-              className={cnEdges(className, filterClass)}
-              style={stroke.startsWith("var(") || stroke.startsWith("url(") ? { stroke } : undefined}
+              className={cnEdges(className, filterClass, selectedClass)}
+              style={
+                stroke.startsWith("var(") || stroke.startsWith("url(")
+                  ? { stroke }
+                  : undefined
+              }
             />
-            {/* Running dashes: travelling dots via animateMotion */}
+            {/* Running dashes: traveling dots via animateMotion.
+                3 particles with staggered delays for a richer flow effect. */}
             {isRunning && (
               <>
                 <circle r={2.6} style={{ fill: "var(--primary)" }}>
-                  <animateMotion dur="1.1s" repeatCount="indefinite" path={g.d} />
+                  <animateMotion dur="1.1s" begin="0s" repeatCount="indefinite" path={g.d} />
                 </circle>
-                <circle r={2.6} style={{ fill: "color-mix(in oklab, var(--primary) 55%, transparent)" }}>
+                <circle
+                  r={2.6}
+                  style={{ fill: "color-mix(in oklab, var(--primary) 70%, transparent)" }}
+                >
                   <animateMotion
                     dur="1.1s"
-                    begin="0.55s"
+                    begin="0.37s"
+                    repeatCount="indefinite"
+                    path={g.d}
+                  />
+                </circle>
+                <circle
+                  r={2.2}
+                  style={{ fill: "color-mix(in oklab, var(--primary) 45%, transparent)" }}
+                >
+                  <animateMotion
+                    dur="1.1s"
+                    begin="0.74s"
                     repeatCount="indefinite"
                     path={g.d}
                   />
@@ -206,14 +272,42 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
               cx={g.tgt.x}
               cy={g.tgt.y}
               r={4.2}
-              style={{ fill: "var(--background)", stroke: highlighted ? "var(--primary)" : "color-mix(in oklab, var(--primary) 70%, transparent)" }}
+              style={{
+                fill: "var(--background)",
+                stroke: highlighted
+                  ? "var(--primary)"
+                  : "color-mix(in oklab, var(--primary) 70%, transparent)",
+              }}
               strokeWidth={2}
             />
-            {/* Delete chip when hovered */}
+            {/* Hover label: fromPort → toPort at the midpoint, with a subtle bg rect. */}
+            {isHovered && (
+              <g
+                transform={`translate(${g.mid.x}, ${g.mid.y})`}
+                className="pointer-events-none"
+              >
+                <rect
+                  x={-labelW / 2}
+                  y={-labelH / 2}
+                  width={labelW}
+                  height={labelH}
+                  className="edge-label-bg"
+                />
+                <text
+                  x={0}
+                  y={0}
+                  className="edge-label-text"
+                >
+                  {portLabel}
+                </text>
+              </g>
+            )}
+            {/* Delete chip when hovered (offset below midpoint so it
+                doesn't overlap the port label that sits at the midpoint). */}
             {isHovered && (
               <g
                 className="pointer-events-auto cursor-pointer"
-                transform={`translate(${g.mid.x}, ${g.mid.y})`}
+                transform={`translate(${g.mid.x}, ${g.mid.y + 18})`}
                 onClick={(e) => {
                   e.stopPropagation();
                   void handleDelete(edge);

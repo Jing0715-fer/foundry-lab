@@ -406,9 +406,35 @@ kbd,
   .slide-in-right,
   .shimmer,
   .card-lift-hover:hover,
-  .btn-pulse-running {
+  .btn-pulse-running,
+  .edge-selected {
     animation: none !important;
     transition: none !important;
     transform: none !important;
   }
+}
+
+/* --- Task 15-b: edge animation polish ----------------------------------- */
+
+/* Edge selected pulse */
+@keyframes edge-selected-pulse {
+  0%, 100% { stroke-opacity: 1; }
+  50% { stroke-opacity: 0.6; }
+}
+.edge-selected { animation: edge-selected-pulse 1.5s ease-in-out infinite; }
+
+/* Edge label background */
+.edge-label-bg {
+  fill: var(--background);
+  stroke: var(--border);
+  stroke-width: 1;
+  rx: 4;
+}
+.edge-label-text {
+  fill: var(--muted-foreground);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
 }

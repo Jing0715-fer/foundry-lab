@@ -17,14 +17,21 @@ import {
 } from "@/lib/workflow-template-defs";
 import type { AgentDTO, EdgeDTO, NodeDTO } from "@/lib/types";
 import {
+  downloadWorkflowJSON,
+  importWorkflow,
+  parseWorkflowJSON,
+} from "@/lib/workflow-io";
+import {
   ArrowRight,
   Bot,
   BookOpen,
   Cpu,
   Database,
+  Download,
   Flag,
   Loader2,
   Sparkles,
+  Upload,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -74,6 +81,58 @@ export function WorkflowTemplates({
   const toast = useAppStore((s) => s.toast);
 
   const [loadingId, setLoadingId] = React.useState<string | null>(null);
+  const [importing, setImporting] = React.useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  const hasNodes = !!(workflow && workflow.nodes && workflow.nodes.length > 0);
+
+  function handleExport() {
+    if (!workflow) return;
+    try {
+      downloadWorkflowJSON(workflow);
+      toast({
+        title: "Workflow exported",
+        description: `${workflow.nodes.length} nodes · ${workflow.edges.length} edges`,
+        variant: "success",
+      });
+    } catch (e) {
+      toast({
+        title: "Export failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
+  }
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input so the same file can be re-selected later.
+    e.target.value = "";
+    if (!file) return;
+    if (importing) return;
+    setImporting(true);
+    try {
+      const text = await file.text();
+      const data = parseWorkflowJSON(text);
+      const result = await importWorkflow(data);
+      setWorkflow(result);
+      toast({
+        title: "Workflow imported",
+        description: `${result.nodes.length} nodes · ${result.edges.length} edges`,
+        variant: "success",
+      });
+      setActivePanel("canvas");
+      onLoaded?.();
+    } catch (err) {
+      toast({
+        title: "Import failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setImporting(false);
+    }
+  }
 
   async function loadTemplate(t: WorkflowTemplate) {
     if (loadingId) return;
@@ -187,7 +246,95 @@ export function WorkflowTemplates({
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
+      {/* Export / Import section — sits above the template gallery so the
+          user can either reuse a saved workflow or grab a starter template. */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2">
+          <h3 className="text-sm font-medium">Export / Import</h3>
+          <span className="text-[11px] text-muted-foreground">
+            Save or restore the current canvas as JSON.
+          </span>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-2">
+          {/* Export card */}
+          <div className="flex items-start gap-3 rounded-lg border bg-card p-3">
+            <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Download className="size-4" />
+            </div>
+            <div className="flex flex-1 flex-col gap-2">
+              <div className="space-y-0.5">
+                <div className="text-sm font-medium leading-tight">
+                  Export current workflow
+                </div>
+                <div className="text-[11px] text-muted-foreground leading-snug">
+                  Download a JSON file with all nodes, edges, and parameters.
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={handleExport}
+                disabled={!hasNodes}
+                className="w-fit"
+              >
+                <Download className="size-3.5" />
+                Export
+              </Button>
+            </div>
+          </div>
+          {/* Import card */}
+          <div className="flex items-start gap-3 rounded-lg border bg-card p-3">
+            <div className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
+              <Upload className="size-4" />
+            </div>
+            <div className="flex flex-1 flex-col gap-2">
+              <div className="space-y-0.5">
+                <div className="text-sm font-medium leading-tight">
+                  Import workflow
+                </div>
+                <div className="text-[11px] text-muted-foreground leading-snug">
+                  Replace the current canvas with a JSON file. Existing nodes
+                  will be removed.
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={importing}
+                className="w-fit"
+              >
+                {importing ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Upload className="size-3.5" />
+                )}
+                Import
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".json,application/json"
+                className="hidden"
+                onChange={handleImportFile}
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <div className="relative">
+        <div className="absolute inset-0 flex items-center" aria-hidden>
+          <div className="h-px w-full bg-border" />
+        </div>
+        <div className="relative flex justify-center">
+          <span className="bg-background px-3 text-[11px] uppercase tracking-wide text-muted-foreground">
+            Templates
+          </span>
+        </div>
+      </div>
+
       <div className="grid gap-4 sm:grid-cols-2">
         {WORKFLOW_TEMPLATES.map((t) => {
           const cat = CATEGORY_BADGE[t.category];

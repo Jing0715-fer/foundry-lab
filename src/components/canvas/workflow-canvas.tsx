@@ -13,6 +13,7 @@ import {
   Box,
   Loader2,
   Workflow,
+  Search,
   type LucideIcon,
 } from "lucide-react";
 import type { NodeDTO, NodeType, NodeSpec } from "@/lib/types";
@@ -30,6 +31,7 @@ import { EdgesLayer } from "./edges-layer";
 import { NodeCard } from "./node-card";
 import { LiveWire } from "./live-wire";
 import { CanvasMinimap, useMinimapStore } from "./canvas-minimap";
+import { NodeSearch } from "./node-search";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   bot: Bot,
@@ -84,6 +86,28 @@ export function WorkflowCanvas() {
   const isApplyingHistoryRef = React.useRef(false);
 
   const [createMenu, setCreateMenu] = React.useState<CreateMenuState | null>(null);
+  const [searchOpen, setSearchOpen] = React.useState(false);
+
+  // --- Keyboard shortcut: Ctrl+F opens the canvas node search. --------
+  // Skip when typing in an input / textarea / contenteditable / dialog
+  // so browser-native find never gets hijacked inside forms.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key.toLowerCase() !== "f") return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (t.isContentEditable) return;
+      }
+      e.preventDefault();
+      setSearchOpen((o) => !o);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   // Group specs for the create menu (constant; safe to memoize once).
   const grouped = React.useMemo(() => {
@@ -649,6 +673,27 @@ export function WorkflowCanvas() {
 
       {/* Bird's-eye minimap (toggled from the canvas toolbar). */}
       {minimapOpen && <CanvasMinimap onClose={closeMinimap} />}
+
+      {/* Floating Find button — opens the node search bar (also Ctrl+F). */}
+      {!searchOpen && (
+        <button
+          type="button"
+          onClick={() => setSearchOpen(true)}
+          aria-label="Find node on canvas"
+          title="Find node on canvas (Ctrl+F)"
+          className="absolute left-1/2 top-3 z-20 -translate-x-1/2 inline-flex items-center gap-1.5 rounded-lg border bg-card/90 px-3 py-1.5 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur-sm hover:bg-accent hover:text-foreground"
+        >
+          <Search className="size-3.5" />
+          Find
+          <span className="ml-1 hidden items-center gap-0.5 sm:inline-flex">
+            <kbd className="rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">Ctrl</kbd>
+            <kbd className="rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">F</kbd>
+          </span>
+        </button>
+      )}
+
+      {/* Node search bar (toggled by Ctrl+F or the Find button). */}
+      {searchOpen && <NodeSearch onClose={() => setSearchOpen(false)} />}
     </section>
   );
 }
