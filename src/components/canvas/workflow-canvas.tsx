@@ -29,6 +29,7 @@ import {
 import { EdgesLayer } from "./edges-layer";
 import { NodeCard } from "./node-card";
 import { LiveWire } from "./live-wire";
+import { CanvasMinimap, useMinimapStore } from "./canvas-minimap";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   bot: Bot,
@@ -69,6 +70,11 @@ export function WorkflowCanvas() {
   const upsertNode = useAppStore((s) => s.upsertNode);
   const cancelConnect = useAppStore((s) => s.cancelConnect);
   const toast = useAppStore((s) => s.toast);
+
+  // Minimap open/closed — shared with CanvasToolbar via the tiny zustand store
+  // in canvas-minimap.tsx. Default open.
+  const minimapOpen = useMinimapStore((s) => s.open);
+  const closeMinimap = useMinimapStore((s) => s.close);
 
   const rootRef = React.useRef<HTMLElement | null>(null);
   const panState = React.useRef<{ startX: number; startY: number; vx: number; vy: number } | null>(null);
@@ -640,6 +646,9 @@ export function WorkflowCanvas() {
           </div>
         </>
       )}
+
+      {/* Bird's-eye minimap (toggled from the canvas toolbar). */}
+      {minimapOpen && <CanvasMinimap onClose={closeMinimap} />}
     </section>
   );
 }

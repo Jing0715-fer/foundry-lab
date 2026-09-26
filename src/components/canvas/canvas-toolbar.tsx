@@ -11,6 +11,7 @@ import {
   Crosshair,
   Undo2,
   Redo2,
+  Map as MapIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -27,6 +28,7 @@ import {
   TooltipContent,
   TooltipProvider,
 } from "@/components/ui/tooltip";
+import { useMinimapStore } from "./canvas-minimap";
 
 /** Compute a fit viewport for the given nodes & available canvas size. */
 function computeFit(
@@ -87,6 +89,12 @@ export function CanvasToolbar() {
   const workflow = useAppStore((s) => s.workflow);
   const upsertNode = useAppStore((s) => s.upsertNode);
   const toast = useAppStore((s) => s.toast);
+
+  // Minimap open/closed — shared with WorkflowCanvas via the tiny zustand store
+  // (so this toolbar and the canvas, which are siblings in page.tsx, can both
+  // react to the same toggle without lifting state up).
+  const minimapOpen = useMinimapStore((s) => s.open);
+  const toggleMinimap = useMinimapStore((s) => s.toggle);
 
   // Reactive subscriptions for undo/redo availability.
   const pastCount = useHistoryStore((s) => s.past.length);
@@ -411,6 +419,20 @@ export function CanvasToolbar() {
           </TooltipTrigger>
           <TooltipContent side="top">Run whole workflow</TooltipContent>
         </Tooltip>
+
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
+
+        {/* Toggle minimap */}
+        <ToolButton
+          label="Toggle minimap"
+          variant={minimapOpen ? "default" : "ghost"}
+          size="icon"
+          className="size-8"
+          onClick={toggleMinimap}
+          aria-pressed={minimapOpen}
+        >
+          <MapIcon className="size-4" />
+        </ToolButton>
 
         <Separator orientation="vertical" className="mx-0.5 h-6" />
 

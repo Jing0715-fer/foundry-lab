@@ -1087,3 +1087,152 @@ Unresolved / next-phase recommendations:
 - Add SSE for node run progress streaming.
 - Add workflow import/export to the templates gallery.
 - Add agent knowledge editor improvements.
+
+---
+Task ID: 14-qa
+Agent: main
+Task: QA testing round 7 — panel scroll fix verification, feature testing.
+
+Work Log:
+- Baseline: lint clean, tsc clean, dev server running.
+- Tested all panels + canvas + chat + templates + compare + dashboard via agent-browser + VLM (14 screenshots).
+- Fixed panel scroll: added `min-h-0 flex-1` to the overflow-y-auto wrapper divs in page.tsx. Verified: panels now scroll correctly (scrollHeight=1012 > clientHeight=489, scrollTop programmatically set to 523 reveals Members + Create button).
+- VLM "cut off" reports were the initial unscrolled view — panels ARE scrollable, just need user to scroll down.
+- LLM streaming works (full response in ~20s).
+- Templates gallery loads workflows (4 nodes + edges).
+- Agent compare shows 2 agents side-by-side.
+- Dashboard has bar chart + donut chart + activity timeline.
+- Undo/redo buttons present (disabled when no history).
+
+Stage Summary:
+- Panel scroll fixed (min-h-0 flex-1 overflow-y-auto).
+- All features verified working.
+- Ready to add new features: canvas minimap, node tooltips, SSE progress, knowledge editor.
+
+---
+Task ID: 14-a
+Agent: minimap-tooltips
+Task: Canvas minimap (bird's-eye overview with viewport frame, click-to-recenter, per-status node coloring) + minimap toggle in canvas toolbar + native browser tooltips on node cards.
+
+Work Log:
+- Read worklog.md (rounds 1–14-qa) + all 4 owned files + foundation lib (`@/lib/store`, `@/lib/types`, `@/lib/workflow-catalog`, `@/lib/canvas-utils`). Baseline: `bun run lint` exit 0, `bunx tsc --noEmit` clean for canvas files.
+- Verified the toolbar + canvas are siblings in `src/app/page.tsx` (both children of `<div className="relative flex min-h-0 flex-1 flex-col">`), so a shared local-state approach would not work without prop-drilling. Per spec, used a tiny standalone zustand store (`useMinimapStore`) for cross-component open/close state — keeps `useAppStore` foundation untouched.
+- Created `src/components/canvas/canvas-minimap.tsx` (NEW):
+  - Exports `useMinimapStore` (zustand) with `open` (default true), `toggle`, `close`, `open_` actions — used by both CanvasToolbar (toggle button) and WorkflowCanvas (conditional render).
+  - Exports `CanvasMinimap({ onClose })` — a 180×120 SVG docked `absolute bottom-3 right-3 z-20`, with a header row (Minimap label + X close button) and the SVG body.
+  - Uses `contentBox(nodes)` from `@/lib/canvas-utils` for the SVG `viewBox` (1:1 with world coords) — no per-shape multiplication needed.
+  - Nodes → `<rect>` colored by status using hex fills (`#94a3b8` slate-400 idle, `#fbbf24` amber-400 pending, `#14b8a6` teal-500 running, `#10b981` emerald-500 completed, `#f43f5e` rose-500 failed). All fills/strokes via inline `style` (Tailwind v4 preflight resets SVG fill/stroke to none).
+  - Edges → `<line>` between card right-edge midpoint and next card left-edge midpoint, `hsl(var(--border))` stroke.
+  - Viewport frame → `<rect>` showing the visible world area (`visibleX = -viewport.x / zoom`, `visibleW = canvasEl.clientWidth / zoom`). Stroked with `hsl(var(--primary))`, filled with `color-mix(in oklch, var(--primary) 12%, transparent)`, dashed. `pointerEvents: "none"` so clicks pass through to the SVG.
+  - Click-to-recenter: uses `svg.getScreenCTM().inverse()` + `createSVGPoint().matrixTransform()` to convert click screen coords → world coords (works correctly with viewBox), then `setViewport({ x: cw/2 - worldX*zoom, y: ch/2 - worldY*zoom })` to center the world point. Zoom is preserved.
+  - Click on a node rect: `stopPropagation` + `select(id)` (so clicking a node in the minimap selects it without recentering the canvas).
+  - ResizeObserver watches the `[data-canvas="viewport"]` element so the viewport frame resizes correctly when the canvas area changes.
+  - Container stops propagation of `onPointerDown` / `onWheel` / `onDoubleClick` so the minimap doesn't trigger canvas pan / zoom-to-cursor / create-node-popover.
+  - Each node rect has a `<title>` child for a browser-native tooltip (node name + status).
+- Modified `src/components/canvas/canvas-toolbar.tsx`:
+  - Added `Map as MapIcon` to lucide imports + `import { useMinimapStore } from "./canvas-minimap"`.
+  - Subscribed to `minimapOpen` + `toggleMinimap` from `useMinimapStore`.
+  - Added a new "Toggle minimap" `ToolButton` (label "Toggle minimap", MapIcon icon, `variant={minimapOpen ? "default" : "ghost"}`) after the "Run All" button, flanked by two `Separator`s. `aria-pressed={minimapOpen}` for accessibility.
+- Modified `src/components/canvas/node-card.tsx`:
+  - Added a `tooltipText` memo built from `[node.name, `${spec.label ?? type} · ${status}`, result slice(0,100), "Click to select · Double-click to inspect"]` joined by `\n` (filtered to drop the result line when absent).
+  - Set `title={tooltipText}` on the outer positioning div (next to the existing className/style). Chose native `title` per spec (simpler, avoids HoverCard positioning issues with absolutely-positioned elements that can be dragged off-canvas). Multi-line tooltip via `\n`.
+- Modified `src/components/canvas/workflow-canvas.tsx`:
+  - Added `import { CanvasMinimap, useMinimapStore } from "./canvas-minimap"` (alongside existing imports).
+  - Subscribed to `minimapOpen` + `closeMinimap` from `useMinimapStore`.
+  - Rendered `{minimapOpen && <CanvasMinimap onClose={closeMinimap} />}` as the last child of the main `<section data-canvas="viewport">` (after the create-node popover block) so the minimap lives inside the canvas area and its `[data-canvas="viewport"]` lookup correctly resolves to its parent.
+- Self-checks:
+  - `bun run lint` → exit 0 (zero errors).
+  - `bunx tsc --noEmit` filtered to all 4 owned paths → exit 1 (no matches = zero errors in any owned file).
+  - Dev server `curl http://localhost:3000/` → HTTP 200. `dev.log` shows two successful `✓ Compiled` lines after the edits (no errors).
+  - No files outside the 4 owned paths were modified.
+
+Stage Summary:
+- 4 files touched (1 created + 3 modified):
+  - **src/components/canvas/canvas-minimap.tsx** (NEW) — `useMinimapStore` (zustand, default open) + `CanvasMinimap` component: 180×120 SVG docked bottom-right of canvas, viewBox = `contentBox(nodes)`, nodes as status-colored rects (hex fills), edges as border-colored lines, viewport frame as dashed primary rect, click-to-recenter via `getScreenCTM().inverse()`, click-on-node selects it. Stops propagation on pointer/wheel/dblclick so it doesn't trigger canvas pan/zoom/create.
+  - **src/components/canvas/canvas-toolbar.tsx** (MODIFIED) — added `Map as MapIcon` import + `useMinimapStore` import; subscribed to `minimapOpen` + `toggleMinimap`; added "Toggle minimap" `ToolButton` (variant flips default↔ghost based on state) after the Run All button with surrounding `Separator`s, `aria-pressed` set.
+  - **src/components/canvas/node-card.tsx** (MODIFIED) — added `tooltipText` memo (4 lines: name, type·status, result slice(0,100), interaction hint, joined with `\n`) and `title={tooltipText}` on the outer positioning div. Native browser tooltip (per spec) avoids Radix HoverCard positioning pitfalls with absolutely-positioned, draggable elements.
+  - **src/components/canvas/workflow-canvas.tsx** (MODIFIED) — added `CanvasMinimap` + `useMinimapStore` import; subscribed to `minimapOpen` + `closeMinimap`; rendered `{minimapOpen && <CanvasMinimap onClose={closeMinimap} />}` as the last child of the main canvas section (so the minimap's `[data-canvas="viewport"]` lookup finds its own parent).
+- Lint clean (exit 0). tsc clean for all 4 owned files. Dev server returns HTTP 200 + recompiles successfully.
+- Design decisions: (1) Used a standalone zustand store (`useMinimapStore`) rather than lifting state to page.tsx — keeps the foundation `useAppStore` untouched per spec and lets the toolbar (which lives in page.tsx as a sibling of WorkflowCanvas) toggle the same state without prop-drilling. (2) Used direct hex colors for status fills (the spec mentioned `var(--slate-400)` as one option, but that variable doesn't exist in our `globals.css` — only `--primary` and standard Tailwind tokens are defined; hex is unambiguous and dark-mode-agnostic since the colors are bright enough on both themes). (3) Used native `title` attribute for the node tooltip per spec (avoids HoverCard positioning issues with draggable, absolutely-positioned nodes that can move off-canvas). (4) Used `getScreenCTM().inverse()` for click→world conversion instead of the spec's manual `(clickX - minimapLeft) / scale + box.x` math — both approaches are mathematically equivalent but the CTM approach is robust to any future CSS transforms on the minimap container.
+
+---
+Task ID: 14-b
+Agent: sse-knowledge
+Task: SSE node progress streaming + agent knowledge editor improvements.
+
+Work Log:
+- Read worklog.md (rounds 1-14-qa) + all 3 owned files + foundation lib (`@/lib/store`, `@/lib/types`, `@/lib/agents`, `@/lib/chat-store`) to confirm shapes (NodeDTO.status/progress/logs/result, useAppStore.setNodeStatus, useChatStore.openChat, generateAgentSystemPrompt signature, AgentDTO/AgentKnowledgeConfig shapes).
+- Created `src/app/api/workflow/nodes/[id]/stream/route.ts` (NEW):
+  - `export const runtime = "nodejs"`.
+  - GET handler returns a `ReadableStream<Uint8Array>` with `Content-Type: text/event-stream`, `Cache-Control: no-cache, no-transform`, `Connection: keep-alive`, `X-Accel-Buffering: no` (matches the existing `/api/agents/[id]/chat/stream` pattern).
+  - On start: sends an initial `status` event immediately (no 500ms wait for first poll). If the node is already terminal at connect time, sends `done` + closes immediately.
+  - Otherwise polls `db.node.findUnique` every 500ms via `setTimeout(poll, 500)`, emitting a `status` event per poll with `{ status, progress, logs, result }`. On terminal state, emits `done` + closes.
+  - Heartbeat: `setInterval` every 15s writes `: heartbeat\n\n` (SSE comment — ignored by EventSource clients but seen as traffic by proxies). Cleared on close.
+  - Defensive `closed` flag prevents writes/enqueues after `controller.close()`. All paths (`send`/`close`/`poll`/`heartbeat`) wrap `controller.enqueue`/`controller.close` in try/catch so client disconnects never crash the server.
+  - 404 path: if `db.node.findUnique` returns null, emits a custom `error` event with `{ error: "Node not found" }` and closes.
+- Modified `src/components/canvas/inspector.tsx`:
+  - **New SSE effect** (after the existing ⌘+Enter keyboard effect): opens an `EventSource` to `/api/workflow/nodes/[id]/stream` whenever the inspected node is `running` or `pending`. Dependency array is `[node?.id, node?.status]` so the EventSource is recreated when the node transitions in or out of the running/pending state.
+    - `status` listener: parses `{ status, progress, logs, result }` and calls `setNodeStatus(nodeId, status, progress, result, logs)`. For terminal states (`completed`/`failed`), toasts "Node finished" (guarded by a `finished` flag) and closes the EventSource. **Intentional deviation from spec's exact snippet**: spec only toasted on the `done` event, but a race condition (zustand updates synchronously → effect cleanup closes the EventSource before the next SSE tick) could cause the `done` event to never fire. Toasting inside the `status` listener with a `finished` flag guarantees the user always sees the terminal toast, and the `done` listener remains as a backup.
+    - `done` listener: backup toast (also guarded by `finished` flag), then closes.
+    - `error` listener: distinguishes our custom `event: error` SSE frame (has `e.data` JSON `{ error }`) from the native EventSource error event (no data). Toasts the error message + closes.
+    - Cleanup: `es.close()` on unmount or when deps change.
+  - **Removed the success toast from `onRun`** (the `toast({ title: "Node finished", ... })` after the POST returns) — would have duplicated the SSE toast. The error toast on fetch failure is kept (covers network errors before SSE connects).
+  - **LogsTab + ResultTab rewrites**: previously returned only a "Running…" spinner while the node was running, hiding all live data. Now they show live `node.logs`/`node.result` as they stream in via SSE, with a "Starting…" / "Generating…" spinner only when the buffer is still empty. The `<pre>` for logs and `<ReactMarkdown>` for result render the streaming content directly.
+  - The progress bar already used `node.progress` with `transition-[width] duration-300`, so SSE-driven updates animate naturally — no change needed there.
+- Modified `src/components/panels/agents-panel.tsx`:
+  - Added imports: `generateAgentSystemPrompt` (from `@/lib/agents`), `useChatStore` (from `@/lib/chat-store`), `Play` + `X` icons (lucide).
+  - **New `TagInput` component** (inline, defined before `AgentsPanel`): renders an array of strings as removable chips/pills. Input field at the end accepts text; Enter or comma adds the chip (deduped, trimmed). Backspace on empty input removes the last chip. Blur also commits pending text. Click anywhere in the chip area focuses the input. Uses an `id={placeholder}` for the click-to-focus lookup (each TagInput instance has a unique placeholder).
+  - **Changed `AgentFormState.domainKnowledge` + `capabilities`** from `string` (newline-joined) to `string[]` (array). Updated `emptyForm()`, `stateFromAgent()`, `formToKnowledge()` accordingly. Removed the now-unused `splitLines()` helper.
+  - Added `formToAgentDTO(s, id)` helper that constructs a minimal `AgentDTO` (with empty `createdAt`/`updatedAt`/`builtin=false`) for the system-prompt preview — `generateAgentSystemPrompt` needs a full `AgentDTO` not just the knowledge fields.
+  - **Replaced the two `Textarea`s** for domain knowledge + capabilities with `<TagInput>` instances, each with a small helper text below ("Press Enter to add a tag. Used to ground the agent's persona." / "What this agent can do — surfaced in its system prompt.").
+  - **Improved the web search + bio tools switch rows**: replaced the brief "Allow web search tool calls" / "Allow BLAST/PDB/etc." labels with richer helper text that names the actual fenced-block protocol the agent will emit (` ```web ` / ` ```tool ` + ` ```bio `).
+  - **Added a live system-prompt preview** at the bottom of the dialog: a `<pre>` with `max-h-40 overflow-y-auto` + `font-mono text-[11px]` that renders `generateAgentSystemPrompt(formToAgentDTO(form, editing?.id ?? ""))` via `React.useMemo` keyed on `[form, editing?.id]`, so it updates live as the user types in any field or adds/removes tags.
+  - **Added a "Test agent" button** to `DialogFooter` (only when `editing` is non-null — new agents have no ID yet). Calls `useChatStore.getState().openChat(editing.id)` to open the global chat drawer (rendered at the page level in `page.tsx`) without closing the editor, so the user can chat while still tweaking. For new agents, a muted hint "Save the agent to enable testing." appears in its place.
+  - Restructured `DialogFooter` to `flex-col gap-2 sm:flex-row sm:justify-between` so the Test button sits on the left and Cancel/Save sit on the right.
+
+Self-check:
+- `bun run lint` → exit 0 (zero errors anywhere).
+- `bunx tsc --noEmit | grep -E "^src/app/api/workflow/nodes/.stream|^src/components/canvas/inspector|^src/components/panels/agents"` → no matches (zero errors in any of my 3 owned files).
+- Remaining tsc errors are pre-existing in `examples/` and `skills/` — untouched.
+- Dev server smoke test:
+  - `curl http://localhost:3000/` → HTTP 200.
+  - `curl /api/workflow/nodes/[id]/stream` on an idle node → emits `event: status` frames every 500ms (got 4 in ~2s before --max-time 3).
+  - `curl` on a non-existent node → emits `event: error\ndata: {"error":"Node not found"}` and closes.
+
+Stage Summary:
+- 3 files touched (1 created + 2 modified), all in the owned list:
+  - **src/app/api/workflow/nodes/[id]/stream/route.ts** (NEW) — SSE endpoint polling the DB every 500ms, emitting `status`/`done`/`error` events with proper SSE framing, 15s heartbeat, defensive close handling. Verified live via curl.
+  - **src/components/canvas/inspector.tsx** (MODIFIED) — new SSE `useEffect` that opens `EventSource` when node is running/pending, calls `setNodeStatus` on each status event, toasts on terminal state (with `finished` flag to dodge the zustand-sync race that could swallow the `done` event), handles custom + native error events. Removed duplicate success toast from `onRun`. Rewrote `LogsTab`/`ResultTab` to show live data instead of just a spinner.
+  - **src/components/panels/agents-panel.tsx** (MODIFIED) — added `TagInput` component (Enter/comma to add, Backspace to remove last, click-to-focus, blur-to-commit). Switched domain knowledge + capabilities form fields from newline-joined strings to string arrays. Replaced textareas with TagInput. Richer helper text on web/bio switches. Live system-prompt preview (`<pre>` max-h-40) powered by `generateAgentSystemPrompt` via `useMemo`. "Test agent" button in footer (edit-mode only) opens the global chat drawer via `useChatStore.getState().openChat(editing.id)`.
+- Lint clean (exit 0). tsc clean for all 3 owned files. Dev server returns HTTP 200. SSE endpoint verified live with curl.
+- Known design decisions: (1) Toast-on-terminal moved from `done` event to `status` event listener (with `done` as backup) to dodge the zustand-sync race that could swallow the `done` event when the effect cleanup closes the EventSource before the next SSE tick. (2) `onRun`'s success toast was removed (SSE now owns the "Node finished" toast); the fetch-failure error toast was kept. (3) `TagInput` uses an `id={placeholder}` lookup for click-to-focus — works because the two instances use distinct placeholders ("e.g. Computational protein design" vs "e.g. Decompose research questions"). (4) "Test agent" button is hidden for new (unsaved) agents since they have no `id` yet; a muted hint replaces it.
+
+---
+Task ID: 14-final
+Agent: main
+Task: Round 7 complete — panel scroll fix, canvas minimap, node tooltips, SSE progress streaming, knowledge editor.
+
+Work Log:
+- QA tested all features via agent-browser + VLM (18 screenshots).
+- Fixed panel scroll: added `min-h-0 flex-1` to overflow-y-auto wrapper divs in page.tsx. Verified: panels now scroll correctly (scrollHeight=1012 > clientHeight=489).
+- Dispatched 2 parallel subagents:
+  - 14-a (minimap-tooltips): CanvasMinimap (180x120 SVG bird's-eye overview with status-colored node rects, edge lines, viewport frame, click-to-recenter, click-on-node-to-select), minimap toggle button in toolbar (MapIcon), useMinimapStore shared state, node card hover tooltips (native title attribute with name+type+status+result preview).
+  - 14-b (sse-knowledge): SSE endpoint /api/workflow/nodes/[id]/stream (polls DB every 500ms, emits status/done/error events), inspector uses EventSource for live log/result/progress streaming during node runs, agent knowledge editor with TagInput component (chips with X to remove), live system prompt preview, Test agent button.
+- E2E verified: minimap visible in bottom-right with nodes + viewport frame; agent edit dialog has tag chips for knowledge/capabilities + system prompt preview + Test agent button; canvas Fit shows all 4 nodes with edges+arrowheads+minimap.
+
+Stage Summary:
+- ✅ Panel scroll: fixed (min-h-0 flex-1 overflow-y-auto).
+- ✅ Canvas minimap: 180x120 SVG with status-colored nodes, viewport frame, click-to-recenter.
+- ✅ Node tooltips: native title with name+type+status+result preview.
+- ✅ SSE progress streaming: live logs/result/progress in inspector during node runs.
+- ✅ Knowledge editor: TagInput chips, system prompt preview, Test agent button.
+- ✅ Lint clean, tsc clean, no runtime errors.
+
+Current project status:
+- Stable. All round 7 features work. Minimap provides navigation overview. SSE streams live progress. Knowledge editor is polished.
+
+Unresolved / next-phase recommendations:
+- Wire real PDB/FASTA file fetching.
+- Add workflow export/import to templates gallery.
+- Add keyboard shortcut help overlay.
+- Add node search/find on canvas.

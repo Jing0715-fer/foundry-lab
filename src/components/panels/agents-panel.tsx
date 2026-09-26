@@ -20,6 +20,8 @@ import {
   Loader2,
   Sparkles,
   GitCompare,
+  Play,
+  X,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,8 +61,10 @@ import {
   AGENT_COLOR_OPTIONS,
   AGENT_ICON_OPTIONS,
   DEFAULT_KNOWLEDGE,
+  generateAgentSystemPrompt,
 } from "@/lib/agents";
 import type { AgentDTO, AgentKnowledgeConfig } from "@/lib/types";
+import { useChatStore } from "@/lib/chat-store";
 import { AgentChatDrawer } from "./agent-chat-drawer";
 import { AgentCompareDialog } from "./agent-compare";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
@@ -94,6 +98,77 @@ function hexToRgba(hex: string, alpha: number): string {
   const g = parseInt(m[1].slice(2, 4), 16);
   const b = parseInt(m[1].slice(4, 6), 16);
   return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+/**
+ * Tag-input component — each line becomes a removable chip/pill. Typing text
+ * and pressing Enter (or comma) adds a chip; the × on each chip removes it.
+ * Used for domain knowledge + capabilities arrays in the agent editor.
+ */
+function TagInput({
+  tags,
+  onChange,
+  placeholder,
+}: {
+  tags: string[];
+  onChange: (t: string[]) => void;
+  placeholder: string;
+}) {
+  const [input, setInput] = React.useState("");
+
+  const add = () => {
+    const v = input.trim().replace(/,$/, "").trim();
+    if (v && !tags.includes(v)) onChange([...tags, v]);
+    setInput("");
+  };
+
+  return (
+    <div
+      className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border bg-background p-2 focus-within:ring-1 focus-within:ring-ring"
+      onClick={() => {
+        // Click anywhere in the chip area focuses the text input.
+        const i = document.getElementById(placeholder);
+        i?.focus();
+      }}
+    >
+      {tags.map((t) => (
+        <span
+          key={t}
+          className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-xs"
+        >
+          {t}
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange(tags.filter((x) => x !== t));
+            }}
+            className="text-muted-foreground transition-colors hover:text-foreground"
+            aria-label={`Remove ${t}`}
+          >
+            <X className="size-3" />
+          </button>
+        </span>
+      ))}
+      <input
+        id={placeholder}
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === ",") {
+            e.preventDefault();
+            add();
+          } else if (e.key === "Backspace" && !input && tags.length > 0) {
+            // Backspace on empty input removes the last chip.
+            onChange(tags.slice(0, -1));
+          }
+        }}
+        onBlur={add}
+        placeholder={tags.length === 0 ? placeholder : ""}
+        className="min-w-[120px] flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+      />
+    </div>
+  );
 }
 
 export function AgentsPanel() {
@@ -495,8 +570,8 @@ interface AgentFormState {
   model: string;
   color: string;
   icon: string;
-  domainKnowledge: string;
-  capabilities: string;
+  domainKnowledge: string[];
+  capabilities: string[];
   webSearchEnabled: boolean;
   bioToolsEnabled: boolean;
 }
@@ -510,8 +585,8 @@ function emptyForm(): AgentFormState {
     model: "default",
     color: AGENT_COLOR_OPTIONS[0],
     icon: AGENT_ICON_OPTIONS[0],
-    domainKnowledge: "",
-    capabilities: "",
+    domainKnowledge: [],
+    capabilities: [],
     webSearchEnabled: true,
     bioToolsEnabled: true,
   };
@@ -527,8 +602,8 @@ function stateFromAgent(a: AgentDTO): AgentFormState {
     model: a.model,
     color: a.color,
     icon: a.icon,
-    domainKnowledge: (k.domainKnowledge ?? []).join("\n"),
-    capabilities: (k.capabilities ?? []).join("\n"),
+    domainKnowledge: [...(k.domainKnowledge ?? [])],
+    capabilities: [...(k.capabilities ?? [])],
     webSearchEnabled: !!k.webSearchEnabled,
     bioToolsEnabled: !!k.bioToolsEnabled,
   };
@@ -536,18 +611,28 @@ function stateFromAgent(a: AgentDTO): AgentFormState {
 
 function formToKnowledge(s: AgentFormState): AgentKnowledgeConfig {
   return {
-    domainKnowledge: splitLines(s.domainKnowledge),
-    capabilities: splitLines(s.capabilities),
+    domainKnowledge: s.domainKnowledge,
+    capabilities: s.capabilities,
     webSearchEnabled: s.webSearchEnabled,
     bioToolsEnabled: s.bioToolsEnabled,
   };
 }
 
-function splitLines(s: string): string[] {
-  return s
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+function formToAgentDTO(s: AgentFormState, id: string): AgentDTO {
+  return {
+    id,
+    title: s.title,
+    expertise: s.expertise,
+    goal: s.goal,
+    role: s.role,
+    model: s.model,
+    color: s.color,
+    icon: s.icon,
+    knowledge: formToKnowledge(s),
+    builtin: false,
+    createdAt: "",
+    updatedAt: "",
+  };
 }
 
 function AgentEditorDialog({
@@ -573,6 +658,21 @@ function AgentEditorDialog({
 
   const set = <K extends keyof AgentFormState>(k: K, v: AgentFormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
+
+  // Live system prompt preview — regenerated whenever the form changes so
+  // the user sees exactly what will be sent to the LLM at run time.
+  const systemPrompt = React.useMemo(
+    () => generateAgentSystemPrompt(formToAgentDTO(form, editing?.id ?? "")),
+    [form, editing?.id],
+  );
+
+  const handleTest = () => {
+    if (!editing) return;
+    // Open the global chat drawer (rendered at the page level) with this
+    // agent. Stays out of the way of the modal so the user can chat while
+    // the editor remains open for further tweaks.
+    useChatStore.getState().openChat(editing.id);
+  };
 
   const handleSubmit = async () => {
     if (!form.title.trim() || !form.expertise.trim() || !form.goal.trim() || !form.role.trim()) {
@@ -737,35 +837,37 @@ function AgentEditorDialog({
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
-              <Label htmlFor="agent-domain">Domain knowledge (one per line)</Label>
-              <Textarea
-                id="agent-domain"
-                value={form.domainKnowledge}
-                onChange={(e) => set("domainKnowledge", e.target.value)}
-                placeholder="Computational protein design&#10;Wet-lab validation strategy"
-                rows={3}
-                className="font-mono text-xs"
+              <Label htmlFor="agent-domain">Domain knowledge</Label>
+              <TagInput
+                tags={form.domainKnowledge}
+                onChange={(t) => set("domainKnowledge", t)}
+                placeholder="e.g. Computational protein design"
               />
+              <p className="text-[11px] text-muted-foreground">
+                Press Enter to add a tag. Used to ground the agent's persona.
+              </p>
             </div>
 
             <div className="grid gap-1.5">
-              <Label htmlFor="agent-capabilities">Capabilities (one per line)</Label>
-              <Textarea
-                id="agent-capabilities"
-                value={form.capabilities}
-                onChange={(e) => set("capabilities", e.target.value)}
-                placeholder="Decompose research questions&#10;Critically evaluate arguments"
-                rows={3}
-                className="font-mono text-xs"
+              <Label htmlFor="agent-capabilities">Capabilities</Label>
+              <TagInput
+                tags={form.capabilities}
+                onChange={(t) => set("capabilities", t)}
+                placeholder="e.g. Decompose research questions"
               />
+              <p className="text-[11px] text-muted-foreground">
+                What this agent can do — surfaced in its system prompt.
+              </p>
             </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
+              <div className="min-w-0 pr-2">
                 <Label htmlFor="agent-web" className="text-sm">Web search</Label>
-                <p className="text-xs text-muted-foreground">Allow web search tool calls</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Allow the agent to emit <code className="font-mono">```web</code> tool calls to look up real-time information.
+                </p>
               </div>
               <Switch
                 id="agent-web"
@@ -774,9 +876,11 @@ function AgentEditorDialog({
               />
             </div>
             <div className="flex items-center justify-between rounded-md border p-3">
-              <div>
+              <div className="min-w-0 pr-2">
                 <Label htmlFor="agent-bio" className="text-sm">Bio tools</Label>
-                <p className="text-xs text-muted-foreground">Allow BLAST/PDB/etc.</p>
+                <p className="text-[11px] text-muted-foreground">
+                  Allow <code className="font-mono">```tool</code> + <code className="font-mono">```bio</code> fences (BLAST, PDB, PubMed, UniProt, etc.).
+                </p>
               </div>
               <Switch
                 id="agent-bio"
@@ -785,16 +889,47 @@ function AgentEditorDialog({
               />
             </div>
           </div>
+
+          {/* Live system-prompt preview */}
+          <div className="grid gap-1.5">
+            <Label className="flex items-center justify-between">
+              <span>System prompt preview</span>
+              <span className="text-[10px] font-normal text-muted-foreground">
+                auto-generated · read-only
+              </span>
+            </Label>
+            <pre className="max-h-40 overflow-y-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
+              {systemPrompt}
+            </pre>
+          </div>
         </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button onClick={handleSubmit} disabled={saving}>
-            {saving && <Loader2 className="size-4 animate-spin" />}
-            {editing ? "Save changes" : "Create agent"}
-          </Button>
+        <DialogFooter className="flex-col gap-2 sm:flex-row sm:justify-between">
+          {editing ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={handleTest}
+              disabled={saving}
+              className="gap-1.5"
+            >
+              <Play className="size-4" />
+              Test agent
+            </Button>
+          ) : (
+            <span className="text-[11px] text-muted-foreground sm:self-center">
+              Save the agent to enable testing.
+            </span>
+          )}
+          <div className="flex gap-2">
+            <Button variant="outline" onClick={() => onOpenChange(false)} disabled={saving}>
+              Cancel
+            </Button>
+            <Button onClick={handleSubmit} disabled={saving}>
+              {saving && <Loader2 className="size-4 animate-spin" />}
+              {editing ? "Save changes" : "Create agent"}
+            </Button>
+          </div>
         </DialogFooter>
       </DialogContent>
     </Dialog>

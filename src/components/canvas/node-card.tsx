@@ -362,12 +362,25 @@ function NodeCardImpl({ node }: NodeCardProps) {
   const Icon = spec ? ICON_MAP[spec.icon] ?? Box : Box;
   const status = node.status;
 
+  // Native browser tooltip — works correctly with absolutely-positioned elements
+  // (a Radix HoverCard would clip or mis-position when the node is dragged
+  // outside the visible canvas area). Multi-line via "\n".
+  const tooltipText = [
+    node.name || spec?.label || node.type,
+    `${spec?.label ?? node.type} · ${status}`,
+    node.result ? node.result.slice(0, 100) : "",
+    "Click to select · Double-click to inspect",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   return (
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <div
             ref={cardRef}
+            title={tooltipText}
             className={cn(
               "absolute select-none",
               status === "running" && "job-running",

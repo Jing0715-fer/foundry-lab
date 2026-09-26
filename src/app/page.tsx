@@ -262,12 +262,12 @@ export default function Home() {
               {selectedId && <NodeInspector />}
             </div>
           )}
-          {activePanel === "dashboard" && <div className="overflow-y-auto"><DashboardPanel /></div>}
-          {activePanel === "agents" && <div className="overflow-y-auto"><AgentsPanel /></div>}
-          {activePanel === "tasks" && <div className="overflow-y-auto"><TasksPanel /></div>}
-          {activePanel === "meetings" && <div className="overflow-y-auto"><MeetingsPanel /></div>}
-          {activePanel === "research" && <div className="overflow-y-auto"><ResearchPanel /></div>}
-          {activePanel === "tools" && <div className="overflow-y-auto"><ToolsPanel /></div>}
+          {activePanel === "dashboard" && <div className="min-h-0 flex-1 overflow-y-auto"><DashboardPanel /></div>}
+          {activePanel === "agents" && <div className="min-h-0 flex-1 overflow-y-auto"><AgentsPanel /></div>}
+          {activePanel === "tasks" && <div className="min-h-0 flex-1 overflow-y-auto"><TasksPanel /></div>}
+          {activePanel === "meetings" && <div className="min-h-0 flex-1 overflow-y-auto"><MeetingsPanel /></div>}
+          {activePanel === "research" && <div className="min-h-0 flex-1 overflow-y-auto"><ResearchPanel /></div>}
+          {activePanel === "tools" && <div className="min-h-0 flex-1 overflow-y-auto"><ToolsPanel /></div>}
         </main>
       </div>
       <Footer />

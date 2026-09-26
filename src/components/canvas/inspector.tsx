@@ -352,34 +352,46 @@ function ParamsTab({
   );
 }
 
-/** Logs tab content. */
+/** Logs tab content. Renders live-updating logs as they stream in via SSE
+ * (the running case used to show only a "Running…" spinner — now we surface
+ * whatever logs the backend has emitted so far, with a small live indicator
+ * when the buffer is still empty). */
 function LogsTab({ node }: { node: NodeDTO }) {
-  if (node.status === "running") {
+  const logs = node.logs?.trim();
+  if (!logs && node.status === "running") {
     return (
       <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
-        Running…
+        Starting…
+      </div>
+    );
+  }
+  if (!logs) {
+    return (
+      <div className="p-4 text-center text-xs text-muted-foreground">
+        No logs yet.
       </div>
     );
   }
   return (
     <pre className="m-3 max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-      {node.logs?.trim() || "No logs yet."}
+      {logs}
     </pre>
   );
 }
 
-/** Result tab content. */
+/** Result tab content. Renders the live-updating result as it streams in. */
 function ResultTab({ node }: { node: NodeDTO }) {
-  if (node.status === "running") {
+  const result = node.result?.trim();
+  if (!result && node.status === "running") {
     return (
       <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
-        Running…
+        Generating…
       </div>
     );
   }
-  if (!node.result || !node.result.trim()) {
+  if (!result) {
     return (
       <div className="p-4 text-center text-xs text-muted-foreground">
         Not run yet.
@@ -388,7 +400,7 @@ function ResultTab({ node }: { node: NodeDTO }) {
   }
   return (
     <div className="prose prose-sm dark:prose-invert max-w-none p-3">
-      <ReactMarkdown>{node.result}</ReactMarkdown>
+      <ReactMarkdown>{result}</ReactMarkdown>
     </div>
   );
 }
@@ -438,6 +450,99 @@ function NodeInspectorImpl() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // Live progress via SSE — open an EventSource whenever the inspected node
+  // is running or pending. The server polls the DB every 500ms and emits a
+  // "status" event per poll, plus a terminal "done" event when the node
+  // reaches a completed/failed state. We surface each update in the store so
+  // the Logs/Result tabs + progress bar all animate live. The "done" toast
+  // is fired here (the onRun POST's own success toast was removed to avoid
+  // duplicates) — we also toast inside the status handler for terminal
+  // states, guarded by a `finished` flag, because the effect's cleanup may
+  // close the EventSource before the "done" event arrives (zustand updates
+  // synchronously, which re-renders and re-runs the effect, calling es.close()
+  // before the next SSE event tick).
+  React.useEffect(() => {
+    if (!node) return;
+    if (node.status !== "running" && node.status !== "pending") return;
+
+    let finished = false;
+    const nodeId = node.id;
+    const es = new EventSource(`/api/workflow/nodes/${nodeId}/stream`);
+
+    es.addEventListener("status", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data) as {
+          status: NodeDTO["status"];
+          progress?: number;
+          logs?: string;
+          result?: string;
+        };
+        setNodeStatus(
+          nodeId,
+          data.status,
+          data.progress,
+          data.result,
+          data.logs,
+        );
+        if (data.status === "completed" || data.status === "failed") {
+          if (!finished) {
+            finished = true;
+            toast({
+              title: "Node finished",
+              description: data.status,
+              variant: data.status === "failed" ? "destructive" : "success",
+            });
+            es.close();
+          }
+        }
+      } catch {
+        // Malformed payload — ignore this tick.
+      }
+    });
+
+    es.addEventListener("done", (e) => {
+      try {
+        const data = JSON.parse((e as MessageEvent).data) as { status?: string };
+        if (!finished) {
+          finished = true;
+          toast({
+            title: "Node finished",
+            description: data.status ?? "completed",
+            variant: data.status === "failed" ? "destructive" : "success",
+          });
+        }
+      } catch {
+        // ignore
+      }
+      es.close();
+    });
+
+    es.addEventListener("error", (e) => {
+      // The native EventSource error event has no `data`; our backend's
+      // custom `event: error` frame does. Distinguish via `e.data`.
+      const ev = e as MessageEvent;
+      if (ev.data) {
+        try {
+          const data = JSON.parse(ev.data) as { error?: string };
+          if (data.error) {
+            toast({
+              title: "Stream error",
+              description: data.error,
+              variant: "destructive",
+            });
+          }
+        } catch {
+          // ignore
+        }
+      }
+      es.close();
+    });
+
+    return () => {
+      es.close();
+    };
+  }, [node?.id, node?.status]);
+
   if (!node || !spec) return null;
 
   const color = NODE_COLORS[spec.color as keyof typeof NODE_COLORS] ?? NODE_COLORS.slate;
@@ -480,12 +585,9 @@ function NodeInspectorImpl() {
         throw new Error(err.error || `HTTP ${res.status}`);
       }
       const updated: NodeDTO = await res.json();
+      // The SSE effect above will toast "Node finished" when it observes the
+      // terminal status — no need to toast here too (would duplicate).
       upsertNode(updated);
-      toast({
-        title: "Node finished",
-        description: `${node.name} → ${updated.status}`,
-        variant: updated.status === "failed" ? "destructive" : "success",
-      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setNodeStatus(node.id, "failed", 100, `Error: ${msg}`, node.logs);
