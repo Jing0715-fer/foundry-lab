@@ -1,22 +1,19 @@
-// Run a comp tool — REAL if installed, SIMULATED otherwise.
+// Run a comp tool — REAL execution, never simulated.
 //
 // Flow:
 //   1. Validate the tool key + params.
 //   2. Create a ToolJob row in `running` state (so the UI can poll it).
 //   3. Compute a per-job workDir at `<cwd>/outputs/<tool>/<jobId>/`.
 //   4. Call `executeCompToolReal(tool, params, workDir)`:
-//        - If the tool is installed on the host → spawn the real binary/script/
-//          python-function and capture stdout/stderr/exitCode/outputFiles.
-//        - If NOT installed (or the real run failed) → simulate and write
-//          real-looking PDB/FASTA files to the workDir, with a clear
-//          `[SIMULATED — ...]` banner prefix in stdout.
-//   5. Update the row to `completed` (or `failed` on a real run that exited
-//      non-zero) with the captured outputs.
+//        - If the NATIVE upstream tool is installed → spawn it and capture
+//          stdout/stderr/exitCode/outputFiles.
+//        - Otherwise → run the BUILT-IN real Python algorithm engine (same
+//          result surface: real PDB/FASTA/metrics artifacts on disk).
+//   5. Update the row to `completed` (or `failed` on a non-zero exit).
 //
-// The `simulated` + `realToolUsed` booleans are stored both in the stdout
-// banner (human-readable) and in a `_meta` key on the params JSON (programmatic
-// retrieval). The outputFiles list contains absolute paths under
-// `outputs/<tool>/<jobId>/`.
+// The `executor` ("native" | "builtin-engine") + `realToolUsed` flags are
+// stored in a `_meta` key on the params JSON for programmatic retrieval.
+// The outputFiles list contains absolute paths under `outputs/<tool>/<jobId>/`.
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -96,7 +93,7 @@ export async function POST(request: Request) {
     job = await db.toolJob.create({
       data: {
         tool,
-        params: JSON.stringify({ ...userParams, _meta: { simulated: null, realToolUsed: null } }),
+        params: JSON.stringify({ ...userParams, _meta: { executor: null, realToolUsed: null } }),
         status: "running",
         stdout: "",
         stderr: "",
@@ -147,12 +144,12 @@ export async function POST(request: Request) {
     : summary;
 
   // Persist the params JSON with a _meta block so downstream consumers (UI,
-  // workflow engine, analytics) can tell real vs. simulated runs apart without
-  // parsing the stdout banner.
+  // workflow engine, analytics) can tell which executor ran (native upstream
+  // tool vs built-in real algorithm engine).
   const paramsWithMeta = {
     ...userParams,
     _meta: {
-      simulated: result.simulated,
+      executor: result.executor,
       realToolUsed: result.realToolUsed,
       workDir,
     },

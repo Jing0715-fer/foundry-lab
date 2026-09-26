@@ -1,4 +1,6 @@
-// Computational tool definitions + command builder + simulation (enhanced from V2).
+// Computational tool definitions + command builder (no simulation —
+// execution is handled by real-executor: native tool → built-in real
+// algorithm engine).
 import type { CompToolKey } from "./types";
 
 export interface CompToolDef {
@@ -83,12 +85,12 @@ export const COMP_TOOLS: CompToolDef[] = [
     defaultParams: {},
     paramFields: [
       { key: "pdb_path", label: "Input PDB path", type: "path", default: "", flag: "--pdb_path", group: "Input", required: true },
-      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_targets", group: "Sampling" },
+      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_target", group: "Sampling" },
       { key: "sampling_temp", label: "Sampling temperature", type: "number", default: 0.1, min: 0.01, max: 1.0, step: 0.01, flag: "--sampling_temp", group: "Sampling", advanced: true },
-      { key: "soluble", label: "SolubleMPNN mode", type: "bool", default: false, flag: "--soluble", group: "Variant" },
+      { key: "soluble", label: "SolubleMPNN mode", type: "bool", default: false, flag: "--use_soluble_model", group: "Variant" },
       { key: "ligand", label: "LigandMPNN mode", type: "bool", default: false, flag: "--ligand_mpnn", group: "Variant" },
       { key: "path_to_fasta", label: "Output FASTA path", type: "path", default: "", flag: "--path_to_fasta", group: "Output", hint: "Where to write the designed sequences (FASTA)." },
-      { key: "batch_cost", label: "Batch cost", type: "number", default: 1, min: 1, max: 32, step: 1, flag: "--batch_cost", group: "Performance", advanced: true, hint: "Higher = more memory, faster." },
+      { key: "batch_size", label: "Batch size", type: "number", default: 1, min: 1, max: 32, step: 1, flag: "--batch_size", group: "Performance", advanced: true, hint: "Higher = more memory, faster." },
       { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "--seed", group: "Sampling", advanced: true },
     ],
     resultSummary: (p) =>
@@ -124,7 +126,7 @@ export const COMP_TOOLS: CompToolDef[] = [
     defaultParams: {},
     paramFields: [
       { key: "pdb_path", label: "Input PDB path", type: "path", default: "", flag: "--pdb_path", group: "Input", required: true },
-      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_targets", group: "Sampling" },
+      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_target", group: "Sampling" },
       { key: "sampling_temp", label: "Sampling temperature", type: "number", default: 0.1, min: 0.01, max: 1.0, step: 0.01, flag: "--sampling_temp", group: "Sampling", advanced: true },
       { key: "ligand_mpnn_use_side_chain_context", label: "Use side-chain context", type: "bool", default: true, flag: "--ligand_mpnn_use_side_chain_context", group: "Ligand" },
       { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "--seed", group: "Sampling", advanced: true },
@@ -143,7 +145,7 @@ export const COMP_TOOLS: CompToolDef[] = [
     defaultParams: {},
     paramFields: [
       { key: "pdb_path", label: "Input PDB path", type: "path", default: "", flag: "--pdb_path", group: "Input", required: true },
-      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_targets", group: "Sampling" },
+      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_target", group: "Sampling" },
       { key: "sampling_temp", label: "Sampling temperature", type: "number", default: 0.1, min: 0.01, max: 1.0, step: 0.01, flag: "--sampling_temp", group: "Sampling", advanced: true },
       { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "--seed", group: "Sampling", advanced: true },
     ],
@@ -280,50 +282,6 @@ export function extractToolCalls(text: string): {
     } catch { /* ignore */ }
   }
   return { comp, bio };
-}
-
-/** Deterministic simulation of a comp tool run. Returns {stdout, outputFiles}. */
-export function simulateCompRun(
-  tool: CompToolDef,
-  params: Record<string, unknown>,
-): { stdout: string; outputFiles: string[] } {
-  const seed = Number(params.seed ?? 42);
-  const designs = Number(params.num_designs ?? params.num_seq ?? params.num_predictions ?? 4);
-  const ts = new Date().toISOString().slice(11, 19);
-  const lines: string[] = [
-    `[${ts}] ${tool.label} starting (simulated)`,
-    `[${ts}] Loaded checkpoint for ${tool.key}`,
-    `[${ts}] Effective seed: ${seed}`,
-  ];
-  const files: string[] = [];
-  // Sequence-producing tools (MPNN family) → .fasta outputs.
-  const seqTools = new Set(["proteinmpnn", "ligandmpnn", "solublempnn"]);
-  // Structure-prediction tools → single .pdb + confidence metrics.
-  const predTools = new Set(["rf3", "esmfold", "colabfold"]);
-  if (predTools.has(tool.key)) {
-    const plddt = 75 + ((seed * 3) % 20);
-    const ptm = 0.7 + ((seed * 5) % 30) / 100;
-    lines.push(`[${ts}] Predicting structure...`);
-    lines.push(`[${ts}] Recycling iteration 1/${params.num_recycles ?? 3}`);
-    lines.push(`[${ts}] Recycling iteration ${params.num_recycles ?? 3}/${params.num_recycles ?? 3}`);
-    lines.push(`[${ts}] pLDDT=${plddt} pTM=${ptm.toFixed(2)}`);
-    files.push(`outputs/${tool.key}/predicted.pdb`);
-  } else {
-    for (let i = 0; i < designs; i++) {
-      const plddt = 70 + ((seed + i * 7) % 25);
-      lines.push(`[${ts}] Design ${i + 1}/${designs} — pLDDT=${plddt} rmsd=${(1.2 + (i % 5) * 0.3).toFixed(2)}Å`);
-      if (seqTools.has(tool.key)) {
-        const seq = Array.from({ length: 12 }, (_, k) => "ACDEFGHIKLMNPQRSTVWY"[(seed + i + k) % 20]).join("");
-        lines.push(`[${ts}]   seq: ${seq}...`);
-        files.push(`outputs/${tool.key}/seq_${i}.fasta`);
-      } else {
-        files.push(`outputs/${tool.key}/design_${i}.pdb`);
-      }
-    }
-  }
-  lines.push(`[${ts}] ${tool.label} completed. ${files.length} output file(s).`);
-  lines.push(tool.resultSummary(params, lines.join("\n")));
-  return { stdout: lines.join("\n"), outputFiles: files };
 }
 
 /** Brief capability summary injected into agent system prompts. */

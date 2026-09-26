@@ -39,8 +39,7 @@ import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 /**
  * Tools that produce PDB files (the Structure tab is shown for these).
  * Includes all design + structure-prediction + scoring tools — every comp
- * tool that emits .pdb output via the simulated generators in
- * src/app/api/tools/jobs/[id]/file/route.ts.
+ * tool whose real executors (native or built-in engine) emit .pdb output.
  */
 const STRUCTURE_TOOLS = new Set([
   "rfdiffusion",
@@ -63,6 +62,11 @@ function fileApiUrl(jobId: string, path: string): string {
   return `/api/tools/jobs/${jobId}/file?path=${encodeURIComponent(path)}`;
 }
 
+/** Build the API URL for workflow-node outputs (no ToolJob row exists). */
+function nodeFileApiUrl(path: string): string {
+  return `/api/tools/file?path=${encodeURIComponent(path)}`;
+}
+
 function statusPillClass(status: string): string {
   if (status === "completed") return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
   if (status === "failed") return "bg-rose-500/10 text-rose-700 dark:text-rose-400";
@@ -71,18 +75,20 @@ function statusPillClass(status: string): string {
 }
 
 /**
- * Detect whether the job's stdout indicates a simulated run. Mirrors the
- * detection in tools-panel.tsx so the badge in the dialog header matches
- * the badge in the Recent Jobs list.
+ * Detect which executor produced this job's output: the native upstream
+ * tool, or the built-in real algorithm engine. Legacy rows (pre-real-executor
+ * era) are detected via the old SIMULATED banners for correct display.
  */
-function isSimulatedJob(job: ToolJobDTO): boolean {
-  if (job.params && job.params.simulated === true) return true;
+function jobExecutor(job: ToolJobDTO): "native" | "builtin-engine" | "legacy-simulated" {
+  const meta = job.params?._meta as { executor?: string } | undefined;
+  if (meta?.executor === "native") return "native";
+  if (meta?.executor === "builtin-engine") return "builtin-engine";
   const out = job.stdout ?? "";
-  if (/^\[SIMULATED/i.test(out)) return true;
-  if (/\(simulated\)/i.test(out)) return true;
-  if (/FOUNDRY-LAB SIMULATION/i.test(out)) return true;
-  if (job.command && /^\[SIMULATED\]/i.test(job.command)) return true;
-  return false;
+  if (/^\[SIMULATED/i.test(out)) return "legacy-simulated";
+  if (/\(simulated\)/i.test(out)) return "legacy-simulated";
+  if (/FOUNDRY-LAB SIMULATION/i.test(out)) return "legacy-simulated";
+  if (job.command && /^\[SIMULATED\]/i.test(job.command)) return "legacy-simulated";
+  return "builtin-engine";
 }
 
 // --- Component ----------------------------------------------------------------
@@ -91,13 +97,22 @@ export interface OutputViewerDialogProps {
   job: ToolJobDTO | null;
   open: boolean;
   onClose: () => void;
+  /** When true, output files are fetched via the generic /api/tools/file
+   *  endpoint (workflow-node runs that have no ToolJob row). */
+  nodeMode?: boolean;
 }
 
 export function OutputViewerDialog({
   job,
   open,
   onClose,
+  nodeMode = false,
 }: OutputViewerDialogProps) {
+  const fileUrl = React.useCallback(
+    (path: string) =>
+      nodeMode ? nodeFileApiUrl(path) : fileApiUrl(job?.id ?? "", path),
+    [nodeMode, job?.id],
+  );
   const [copied, setCopied] = React.useState<string | null>(null);
   const [activeTab, setActiveTab] = React.useState<string>("summary");
 
@@ -124,7 +139,7 @@ export function OutputViewerDialog({
 
     if (pdbFile) {
       setLoadingContent(true);
-      fetch(fileApiUrl(job.id, pdbFile))
+      fetch(fileUrl(pdbFile))
         .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
         .then((text) => {
           if (!cancelled) setPdbContent(text);
@@ -140,7 +155,7 @@ export function OutputViewerDialog({
     }
 
     if (fastaFile) {
-      fetch(fileApiUrl(job.id, fastaFile))
+      fetch(fileUrl(fastaFile))
         .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
         .then((text) => {
           if (!cancelled) setFastaContent(text);
@@ -171,7 +186,8 @@ export function OutputViewerDialog({
   const hasSequence = !!job && (SEQUENCE_TOOLS.has(job.tool) || job.outputFiles.some((f) => f.endsWith(".fasta")));
   const hasFiles = !!job?.outputFiles && job.outputFiles.length > 0;
   const hasCommand = !!job?.command;
-  const simulated = !!job && isSimulatedJob(job);
+  const executor = job ? jobExecutor(job) : "builtin-engine" as const;
+  const legacySimulated = executor === "legacy-simulated";
 
   // First matching output file of each type — used for both the inline
   // preview fetch (above) and the Download buttons.
@@ -197,24 +213,24 @@ export function OutputViewerDialog({
             >
               {job.status}
             </span>
-            {/* REAL / SIMULATED badge — surfaces whether the run used a real
-                algorithm or the synthetic generator. Uses the same
-                detection logic as the Recent Jobs list (above) so the
-                badge is consistent across the UI. */}
+            {/* Executor badge — surfaces whether the native upstream tool or
+                the built-in real algorithm engine produced this output. */}
             <Badge
               variant="outline"
               className={
-                simulated
+                legacySimulated
                   ? "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
                   : "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
               }
               title={
-                simulated
-                  ? "This run used the synthetic generator (no real tool was installed)"
-                  : "This run used a real algorithm"
+                legacySimulated
+                  ? "Legacy run (from the pre-real-algorithm era of this app)"
+                  : executor === "native"
+                    ? "Ran the native upstream tool installed on this host"
+                    : "Ran the built-in real algorithm engine (knowledge-based science)"
               }
             >
-              {simulated ? "SIMULATED" : "REAL"}
+              {legacySimulated ? "LEGACY" : executor === "native" ? "REAL · NATIVE" : "REAL · ENGINE"}
             </Badge>
             {job.exitCode != null && (
               <Badge variant="outline" className="font-mono text-[10px]">
@@ -315,7 +331,7 @@ export function OutputViewerDialog({
                     type="button"
                     className="ml-auto h-7 gap-1 px-2 text-[11px]"
                     onClick={() =>
-                      window.open(fileApiUrl(job.id, pdbFile), "_blank")
+                      window.open(fileUrl(pdbFile), "_blank")
                     }
                   >
                     <Download className="size-3" />
@@ -360,7 +376,7 @@ export function OutputViewerDialog({
                     type="button"
                     className="ml-auto h-7 gap-1 px-2 text-[11px]"
                     onClick={() =>
-                      window.open(fileApiUrl(job.id, fastaFile), "_blank")
+                      window.open(fileUrl(fastaFile), "_blank")
                     }
                   >
                     <Download className="size-3" />
@@ -416,7 +432,7 @@ export function OutputViewerDialog({
                         aria-label="Download"
                         title="Download"
                         onClick={() =>
-                          window.open(fileApiUrl(job.id, f), "_blank")
+                          window.open(fileUrl(f), "_blank")
                         }
                       >
                         <Download className="size-3.5" />
@@ -429,7 +445,7 @@ export function OutputViewerDialog({
                         aria-label="Open in new tab"
                         title="Open in new tab"
                         onClick={() =>
-                          window.open(fileApiUrl(job.id, f), "_blank")
+                          window.open(fileUrl(f), "_blank")
                         }
                       >
                         <ExternalLink className="size-3.5" />
@@ -439,9 +455,8 @@ export function OutputViewerDialog({
                 ))}
               </ul>
               <p className="mt-3 text-[10px] text-muted-foreground">
-                {simulated
-                  ? "Files are generated on-the-fly from the simulated job params (no real tool was installed)."
-                  : "Files are served from the run's work directory."}
+                Files are served from the run&apos;s work directory
+                ({executor === "native" ? "native tool artifacts" : "built-in engine artifacts"}).
               </p>
             </TabsContent>
           )}

@@ -114,7 +114,7 @@ const STEPS: TourStep[] = [
     icon: Wrench,
     title: "Comp + Bio tools",
     description:
-      "Run RFdiffusion, ProteinMPNN, BLAST, PDB searches — all from the Tools panel. Outputs are simulated in this demo.",
+      "Run RFdiffusion, ProteinMPNN, BLAST, PDB searches — all from the Tools panel. Runs use real algorithms: the native tool if installed, else the built-in knowledge-based engine.",
     iconWrap: "bg-cyan-500/15",
     iconText: "text-cyan-600 dark:text-cyan-400",
     accent: "bg-cyan-500 hover:bg-cyan-600",

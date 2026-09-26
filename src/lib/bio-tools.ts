@@ -1,5 +1,11 @@
 // Bioinformatics API integrations (BLAST / PDB / PubMed / UniProt).
-// Real network calls with safe fallbacks so the UI works offline in the sandbox.
+// REAL network calls against the public APIs. On network failure the result
+// carries an honest error (never fabricated hits):
+//   - BLAST: NCBI BLAST URL API — PUT submit → RID → poll Status → JSON2_S
+//     results (the real documented flow, honoring RTOE).
+//   - PDB: RCSB search API v2.
+//   - PubMed: NCBI EUtils esearch.
+//   - UniProt: REST search.
 
 export interface BioBlastParams {
   sequence: string;
@@ -31,6 +37,8 @@ export interface BioResult {
   hits: BioHit[];
   raw?: unknown;
   simulated: boolean;
+  /** Populated when the live call failed — honest error reporting. */
+  error?: string;
 }
 export interface BioHit {
   id: string;
@@ -38,7 +46,7 @@ export interface BioHit {
   meta?: Record<string, string | number>;
 }
 
-async function safeFetchJson(url: string, timeoutMs = 8000): Promise<unknown | null> {
+async function safeFetchJson(url: string, timeoutMs = 10000): Promise<unknown | null> {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -56,28 +64,175 @@ async function safeFetchJson(url: string, timeoutMs = 8000): Promise<unknown | n
   }
 }
 
+async function safeFetchText(
+  url: string,
+  init: RequestInit = {},
+  timeoutMs = 15000,
+): Promise<string | null> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(url, {
+      ...init,
+      signal: ctrl.signal,
+      headers: { ...(init.headers ?? {}) },
+    });
+    clearTimeout(t);
+    if (!res.ok) return null;
+    return await res.text();
+  } catch {
+    return null;
+  }
+}
+
+// ── BLAST: the REAL NCBI URL-API flow ───────────────────────────────────────
+
+const BLAST_BASE = "https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi";
+
+/** Submit a BLAST job; returns the RID (and recommended wait in seconds). */
+async function blastPut(
+  p: BioBlastParams,
+  max: number,
+): Promise<{ rid: string; rtoe: number } | null> {
+  const body = new URLSearchParams({
+    CMD: "Put",
+    PROGRAM: p.program ?? "blastp",
+    DATABASE: p.database ?? "swissprot",
+    QUERY: p.sequence.slice(0, 4000),
+    HITLIST_SIZE: String(max),
+    FORMAT_TYPE: "JSON2_S",
+    ...(p.expect !== undefined ? { EXPECT: String(p.expect) } : {}),
+  });
+  const text = await safeFetchText(
+    BLAST_BASE,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "User-Agent": "FoundryLab/1.0 (research workflow studio)",
+      },
+      body: body.toString(),
+    },
+    20000,
+  );
+  if (!text) return null;
+  const rid = text.match(/RID\s*=\s*(\S+)/)?.[1];
+  const rtoe = Number(text.match(/RTOE\s*=\s*(\d+)/)?.[1] ?? 30);
+  return rid ? { rid, rtoe: Math.min(90, Math.max(10, rtoe)) } : null;
+}
+
+/** Poll the RID until the search finishes (Waiting → SUCCESS/FAILED/UNKNOWN). */
+async function blastPollRid(
+  rid: string,
+  rtoe: number,
+  totalTimeoutMs = 110000,
+): Promise<"SUCCESS" | "FAILED" | "UNKNOWN" | "TIMEOUT"> {
+  const deadline = Date.now() + totalTimeoutMs;
+  // Respect RTOE before the first poll.
+  await new Promise((r) => setTimeout(r, rtoe * 1000));
+  while (Date.now() < deadline) {
+    const text = await safeFetchText(
+      `${BLAST_BASE}?CMD=Get&FORMAT_OBJECT=SearchInfo&RID=${encodeURIComponent(rid)}`,
+      {},
+      15000,
+    );
+    if (text) {
+      const status = text.match(/Status\s*=\s*(\w+)/)?.[1];
+      if (status === "SUCCESS") return "SUCCESS";
+      if (status === "FAILED") return "FAILED";
+      if (status === "UNKNOWN") return "UNKNOWN";
+    }
+    await new Promise((r) => setTimeout(r, 5000));
+  }
+  return "TIMEOUT";
+}
+
+interface BlastJson2Hit {
+  accession?: string;
+  title?: string;
+  hsps?: { evalue?: number; identity?: number; query_cov?: number }[];
+  description?: { title?: string }[];
+}
+
+/** Fetch + parse the JSON2_S results for a finished RID. */
+async function blastGetHits(
+  rid: string,
+  max: number,
+): Promise<BioHit[] | null> {
+  const data = (await safeFetchJson(
+    `${BLAST_BASE}?CMD=Get&FORMAT_TYPE=JSON2_S&RID=${encodeURIComponent(rid)}`,
+    20000,
+  )) as
+    | { BlastJSON2Output?: { report?: { results?: { search?: { hits?: BlastJson2Hit[] }[] }[] } }[] }
+    | null;
+  if (!data) return null;
+  const hitsRaw =
+    data.BlastJSON2Output?.[0]?.report?.results?.[0]?.search?.hits ?? [];
+  const hits: BioHit[] = hitsRaw.slice(0, max).map((h) => {
+    const hsp = h.hsps?.[0];
+    return {
+      id: h.accession ?? "?",
+      title: h.title ?? h.description?.[0]?.title ?? "BLAST hit",
+      meta: {
+        ...(hsp?.evalue !== undefined ? { evalue: hsp.evalue } : {}),
+        ...(hsp?.identity !== undefined ? { identity: hsp.identity } : {}),
+        ...(hsp?.query_cov !== undefined ? { coverage: hsp.query_cov } : {}),
+      },
+    };
+  });
+  return hits;
+}
+
 export async function runBlast(p: BioBlastParams): Promise<BioResult> {
   const program = p.program ?? "blastp";
   const db = p.database ?? "swissprot";
   const max = Math.min(p.maxResults ?? 5, 10);
-  // Real NCBI BLAST URL (quick, no API key for short runs).
-  const url =
-    `https://blast.ncbi.nlm.nih.gov/blast/Blast.cgi?CMD=Put&PROGRAM=${program}` +
-    `&DATABASE=${db}&QUERY=${encodeURIComponent(p.sequence.slice(0, 4000))}`;
-  // The real BLAST flow needs a RID poll loop; for sandbox we simulate hits.
-  void url;
-  const hits: BioHit[] = Array.from({ length: max }, (_, i) => ({
-    id: `sp|BLAST_${1000 + i}|SIM${i}`,
-    title: `Simulated homolog ${i + 1} (e=${Math.pow(10, -(i + 1)).toExponential(1)})`,
-    meta: { evalue: Math.pow(10, -(i + 1)), identity: 90 - i * 7, coverage: 95 - i * 3 },
-  }));
-  return { tool: "blast", count: hits.length, hits, simulated: true };
+  const seq = (p.sequence ?? "").trim();
+  if (!seq) {
+    return {
+      tool: "blast", count: 0, hits: [], simulated: false,
+      error: "No query sequence supplied.",
+    };
+  }
+  // Real NCBI BLAST URL API flow: Put → RID → poll → JSON results.
+  const put = await blastPut(p, max);
+  if (!put) {
+    return {
+      tool: "blast", count: 0, hits: [], simulated: false,
+      error:
+        "Could not submit the BLAST job to NCBI (network blocked or " +
+        "rate-limited). The search ran against the live NCBI service — " +
+        "retry in a moment.",
+    };
+  }
+  const status = await blastPollRid(put.rid, put.rtoe);
+  if (status !== "SUCCESS") {
+    const reason =
+      status === "TIMEOUT"
+        ? "NCBI BLAST did not finish within the polling window."
+        : `NCBI BLAST search status: ${status}.`;
+    return {
+      tool: "blast", count: 0, hits: [], simulated: false,
+      error: reason,
+    };
+  }
+  const hits = await blastGetHits(put.rid, max);
+  if (!hits) {
+    return {
+      tool: "blast", count: 0, hits: [], simulated: false,
+      error: "BLAST finished but the result fetch failed.",
+    };
+  }
+  return {
+    tool: "blast", count: hits.length, hits, simulated: false,
+  };
 }
+
+// ── PDB (RCSB search API v2) ────────────────────────────────────────────────
 
 export async function runPdb(p: BioPdbParams): Promise<BioResult> {
   const max = Math.min(p.maxResults ?? 5, 10);
-  const q = p.id ? `pdb_id:${p.id.toUpperCase()}` : p.query ?? "antibody";
-  // Real RCSB search API.
+  const q = p.id ? `${p.id.toUpperCase()}` : p.query ?? "antibody";
   const url =
     "https://search.rcsb.org/rcsbsearch/v2/query?json=" +
     encodeURIComponent(
@@ -90,16 +245,19 @@ export async function runPdb(p: BioPdbParams): Promise<BioResult> {
   const data = await safeFetchJson(url);
   if (data && typeof data === "object" && "result_set" in data) {
     const rs = (data as { result_set?: { id: string }[] }).result_set ?? [];
-    const hits: BioHit[] = rs.map((r) => ({ id: r.id, title: `PDB entry ${r.id}` }));
+    const hits: BioHit[] = rs.map((r) => ({
+      id: r.id,
+      title: `PDB entry ${r.id}`,
+    }));
     return { tool: "pdb", count: hits.length, hits, raw: data, simulated: false };
   }
-  const hits: BioHit[] = Array.from({ length: max }, (_, i) => ({
-    id: `${String.fromCharCode(65 + i)}1${10 + i}X`,
-    title: `Simulated PDB entry ${String.fromCharCode(65 + i)}1${10 + i}X`,
-    meta: { resolution: (1.5 + i * 0.4).toFixed(2), method: i % 2 ? "X-RAY" : "CRYO-EM" },
-  }));
-  return { tool: "pdb", count: hits.length, hits, simulated: true };
+  return {
+    tool: "pdb", count: 0, hits: [], simulated: false,
+    error: "RCSB search API unreachable — no results returned.",
+  };
 }
+
+// ── PubMed (NCBI EUtils) ────────────────────────────────────────────────────
 
 export async function runPubmed(p: BioPubmedParams): Promise<BioResult> {
   const max = Math.min(p.maxResults ?? 5, 10);
@@ -117,13 +275,13 @@ export async function runPubmed(p: BioPubmedParams): Promise<BioResult> {
     }));
     return { tool: "pubmed", count: hits.length, hits, raw: data, simulated: false };
   }
-  const hits: BioHit[] = Array.from({ length: max }, (_, i) => ({
-    id: `${37000000 + i * 137}`,
-    title: `Simulated PubMed result ${i + 1} for "${p.query.slice(0, 40)}"`,
-    meta: { year: 2020 + i },
-  }));
-  return { tool: "pubmed", count: hits.length, hits, simulated: true };
+  return {
+    tool: "pubmed", count: 0, hits: [], simulated: false,
+    error: "NCBI EUtils unreachable — no results returned.",
+  };
 }
+
+// ── UniProt REST ────────────────────────────────────────────────────────────
 
 export async function runUniprot(p: BioUniprotParams): Promise<BioResult> {
   const max = Math.min(p.maxResults ?? 5, 10);
@@ -140,12 +298,10 @@ export async function runUniprot(p: BioUniprotParams): Promise<BioResult> {
     }));
     return { tool: "uniprot", count: hits.length, hits, raw: data, simulated: false };
   }
-  const hits: BioHit[] = Array.from({ length: max }, (_, i) => ({
-    id: `P${10000 + i}`,
-    title: `Simulated UniProt entry P${10000 + i}`,
-    meta: { organism: i % 2 ? "Homo sapiens" : "Mus musculus" },
-  }));
-  return { tool: "uniprot", count: hits.length, hits, simulated: true };
+  return {
+    tool: "uniprot", count: 0, hits: [], simulated: false,
+    error: "UniProt REST API unreachable — no results returned.",
+  };
 }
 
 export async function runBio(
@@ -162,9 +318,9 @@ export async function runBio(
 
 export function bioToolCapabilitySummary(): string {
   return [
-    "- blast: NCBI BLAST sequence homology search",
-    "- pdb: RCSB PDB structure search",
-    "- pubmed: PubMed literature search",
-    "- uniprot: UniProt protein annotation search",
+    "- blast: NCBI BLAST sequence homology search (live URL-API with RID polling)",
+    "- pdb: RCSB PDB structure search (live API)",
+    "- pubmed: PubMed literature search (live EUtils)",
+    "- uniprot: UniProt protein annotation search (live REST)",
   ].join("\n");
 }

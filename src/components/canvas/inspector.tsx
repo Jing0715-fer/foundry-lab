@@ -8,6 +8,7 @@ import {
   BookOpen,
   Cpu,
   Database,
+  FileBox,
   ArrowRightToLine,
   Flag,
   Box,
@@ -34,6 +35,9 @@ import { Badge } from "@/components/ui/badge";
 import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { OutputViewerDialog } from "@/components/viewers/output-viewer-dialog";
+import type { ToolJobDTO } from "@/lib/types";
+import { COMP_TOOLS } from "@/lib/tools";
 import {
   Select,
   SelectTrigger,
@@ -515,6 +519,7 @@ function NodeInspectorImpl() {
   const [running, setRunning] = React.useState(false);
   const [runningAll, setRunningAll] = React.useState(false);
   const [duplicating, setDuplicating] = React.useState(false);
+  const [viewerOpen, setViewerOpen] = React.useState(false);
 
   const id = inspectId ?? selectedId;
   const node = React.useMemo(
@@ -526,6 +531,50 @@ function NodeInspectorImpl() {
     () => (node ? nodeSpec(node.type) : undefined),
     [node],
   );
+
+  // Comp-tool nodes: parse the real output file list from the engine's
+  // ##OUTPUTS## trailer in the logs (paths under outputs/<tool>/<run>/).
+  const compToolKey =
+    node?.type && COMP_TOOLS.some((t) => t.key === node.type)
+      ? node.type
+      : node?.type === "comptool"
+        ? String(node.params.toolKey ?? "rfdiffusion")
+        : null;
+  const outputFiles = React.useMemo(() => {
+    if (!compToolKey || !node?.logs) return [];
+    const idx = node.logs.lastIndexOf("##OUTPUTS## ");
+    if (idx === -1) return [];
+    try {
+      const arr = JSON.parse(
+        node.logs.slice(idx + "##OUTPUTS## ".length).split("\n")[0],
+      ) as unknown;
+      return Array.isArray(arr) ? (arr as string[]) : [];
+    } catch {
+      return [];
+    }
+  }, [compToolKey, node?.logs]);
+  const viewerJob: ToolJobDTO | null = React.useMemo(() => {
+    if (!compToolKey || !node || outputFiles.length === 0) return null;
+    return {
+      id: `node-${node.id}`,
+      tool: compToolKey,
+      presetName: null,
+      params: {},
+      status: node.status === "failed" ? "failed" : "completed",
+      pid: null,
+      stdout: node.logs ?? "",
+      stderr: "",
+      outputFiles,
+      exitCode: node.status === "failed" ? 1 : 0,
+      command: node.logs?.split("\n")[0] ?? "",
+      triggeredBy: "workflow",
+      agentId: null,
+      environmentId: null,
+      startedAt: node.startedAt,
+      finishedAt: node.completedAt,
+      createdAt: node.createdAt,
+    };
+  }, [compToolKey, node, outputFiles]);
 
   // ⌘+Enter / Ctrl+Enter to run this node. Ref holds the latest run function
   // so the keyboard listener doesn't need to re-bind on every keystroke.
@@ -870,6 +919,24 @@ function NodeInspectorImpl() {
               </TooltipTrigger>
               <TooltipContent side="top">⌘+Enter to run</TooltipContent>
             </Tooltip>
+            {viewerJob && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={() => setViewerOpen(true)}
+                    variant="outline"
+                    size="sm"
+                    className="gap-1"
+                  >
+                    <FileBox className="size-4" />
+                    Outputs
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  View {outputFiles.length} real output file(s)
+                </TooltipContent>
+              </Tooltip>
+            )}
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
@@ -930,6 +997,14 @@ function NodeInspectorImpl() {
             </AlertDialogContent>
           </AlertDialog>
         </footer>
+        {viewerJob && (
+          <OutputViewerDialog
+            job={viewerJob}
+            open={viewerOpen}
+            onClose={() => setViewerOpen(false)}
+            nodeMode
+          />
+        )}
       </aside>
     </TooltipProvider>
   );

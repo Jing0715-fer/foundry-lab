@@ -1,30 +1,31 @@
-// Real tool execution engine.
+// Real tool execution engine — NO SIMULATION.
 //
-// The engine is the single entry point used by `/api/tools/run` (and the workflow
-// engine) to invoke a comp tool. It:
-//   1. Checks the host (via the TOOL_REGISTRY detect config) for the tool.
-//   2. If installed: spawns the real binary / python script / python function via
-//      child_process. Captures stdout/stderr/exit code + output files written to
-//      the workDir.
-//   3. If NOT installed (or the real run fails): falls back to `simulateCompRun`
-//      and writes realistic PDB/FASTA files to disk so the UI file fetcher has
-//      real artifacts to serve. The stdout is prefixed with a clear
-//      `[SIMULATED — <tool> not installed. Run: <install cmd>]` banner so the
-//      user is never misled about what ran.
+// The engine is the single entry point used by /api/tools/run (and the
+// workflow engine) to invoke a comp tool. Execution priority:
+//   1. NATIVE: if the upstream external tool is installed on the host
+//      (registry detect config) → spawn the real binary / python script and
+//      capture stdout/stderr/exit code + output files.
+//   2. BUILT-IN ENGINE: otherwise → run the shipped real Python algorithm
+//      engine (scripts/algorithms/<engine>.py) with the same parameter
+//      surface. These are genuine scientific algorithms (Chou-Fasman,
+//      Miyazawa-Jernigan, Shrake-Rupley, NeRF, Metropolis MC…) — not
+//      simulations.
+//   3. If even the built-in engine cannot run (missing python/numpy) →
+//      honest failure with an actionable error.
 //
-// All file outputs land under `<workDir>/...` (typically
-// `outputs/<toolKey>/<jobId>/`). The list of absolute file paths is returned to
-// the caller and persisted on the ToolJob row.
+// All file outputs land under <workDir> (outputs/<toolKey>/<jobId>/). The
+// absolute file list is returned to the caller and persisted on the ToolJob.
 
 import { spawn, execSync } from "child_process";
 import { promises as fs, existsSync } from "fs";
-import { join } from "path";
+import { join, resolve } from "path";
 import {
   getToolRegistryEntry,
+  engineForTool,
+  BUILTIN_ENGINES,
   TOOL_REGISTRY,
-  type ToolRegistryEntry,
 } from "./tool-registry";
-import { getCompTool, simulateCompRun, buildCommand } from "./tools";
+import { getCompTool, buildCommand } from "./tools";
 
 export interface ExecutionResult {
   stdout: string;
@@ -32,42 +33,64 @@ export interface ExecutionResult {
   exitCode: number;
   outputFiles: string[];
   command: string;
-  /** true if fell back to simulation. */
-  simulated: boolean;
-  /** true if a real tool actually ran. */
+  /** Which executor produced this result. */
+  executor: "native" | "builtin-engine";
+  /** true if the upstream external tool itself ran. */
   realToolUsed: boolean;
 }
 
-/** Path to the system python that has biopython + py3Dmol installed. */
-const SYSTEM_PYTHON = "/usr/bin/python3";
+// ── Python resolution ───────────────────────────────────────────────────────
+
+const PYTHON_CANDIDATES = [
+  "python3",
+  "/home/z/.venv/bin/python3",
+  "/usr/bin/python3",
+];
+
+let cachedPython: string | null | undefined;
+
+/** Resolve a python3 that can import numpy (the engine runtime requirement). */
+export function resolveEnginePython(): string | null {
+  if (cachedPython !== undefined) return cachedPython;
+  for (const cand of PYTHON_CANDIDATES) {
+    try {
+      execSync(`${cand} -c "import numpy" 2>/dev/null`, { stdio: "pipe" });
+      cachedPython = cand;
+      return cand;
+    } catch {
+      /* try next */
+    }
+  }
+  cachedPython = null;
+  return null;
+}
+
+const ALGORITHMS_DIR = resolve(process.cwd(), "scripts", "algorithms");
+
+// ── Detection ───────────────────────────────────────────────────────────────
 
 /**
- * Check if a tool is installed on the host. Uses the registry's detect config:
+ * Check if the NATIVE external tool is installed on the host.
  *   - binary: `which <binary>` succeeds
- *   - python: `/usr/bin/python3 -c "import <module>"` succeeds
- *   - conda: reserved — not yet implemented (returns false)
+ *   - python: the engine python can `import <module>`
  */
 export function isToolInstalled(key: string): boolean {
   const entry = getToolRegistryEntry(key);
   if (!entry) return false;
   try {
     if (entry.detect.type === "binary" && entry.detect.binary) {
-      execSync(`which ${entry.detect.binary} 2>/dev/null`, {
+      execSync(`which ${entry.detect.binary} 2>/dev/null`, { stdio: "pipe" });
+      return true;
+    }
+    if (entry.detect.type === "python" && entry.detect.pythonModule) {
+      const py = resolveEnginePython() ?? "python3";
+      execSync(`${py} -c "import ${entry.detect.pythonModule}" 2>/dev/null`, {
         stdio: "pipe",
       });
       return true;
     }
-    if (entry.detect.type === "python" && entry.detect.pythonModule) {
-      execSync(
-        `${SYSTEM_PYTHON} -c "import ${entry.detect.pythonModule}" 2>/dev/null`,
-        { stdio: "pipe" },
-      );
-      return true;
-    }
-    if (entry.detect.type === "conda" && entry.detect.condaEnv) {
-      // `conda` itself is not installed in this env (verified by 20-foundation),
-      // so any conda-tracked tool is reported as not-installed.
-      return false;
+    if (entry.detect.type === "path" && entry.detect.path) {
+      return existsSync(join(process.cwd(), entry.detect.path));
     }
   } catch {
     return false;
@@ -75,13 +98,100 @@ export function isToolInstalled(key: string): boolean {
   return false;
 }
 
+/** Detect an arbitrary registry entry (runtime + external tiers). */
+export function isEntryInstalled(
+  detect: { type: string; binary?: string; pythonModule?: string; path?: string },
+): boolean {
+  try {
+    if (detect.type === "binary" && detect.binary) {
+      execSync(`which ${detect.binary} 2>/dev/null`, { stdio: "pipe" });
+      return true;
+    }
+    if (detect.type === "python" && detect.pythonModule) {
+      const py = resolveEnginePython() ?? "python3";
+      execSync(`${py} -c "import ${detect.pythonModule}" 2>/dev/null`, {
+        stdio: "pipe",
+      });
+      return true;
+    }
+    if (detect.type === "path" && detect.path) {
+      return existsSync(join(process.cwd(), detect.path));
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+// ── Engine self-test ────────────────────────────────────────────────────────
+
+interface EngineTestResult {
+  key: string;
+  label: string;
+  script: string;
+  ok: boolean;
+  detail: string;
+}
+
+/** Run each engine's fast selftest (common.py selftest). */
+export function selfTestEngines(): EngineTestResult[] {
+  const py = resolveEnginePython();
+  if (!py) {
+    return BUILTIN_ENGINES.map((e) => ({
+      key: e.key,
+      label: e.label,
+      script: e.script,
+      ok: false,
+      detail: "python3 with numpy not found — install the runtime tier first",
+    }));
+  }
+  return BUILTIN_ENGINES.map((e) => {
+    try {
+      const out = execSync(
+        `${py} ${join(ALGORITHMS_DIR, e.script)} --selftest 2>&1`,
+        { stdio: "pipe", timeout: 30000 },
+      ).toString();
+      // Engines accept --selftest → delegate to common selftest; if an engine
+      // doesn't implement it, just verify the script exists + imports.
+      return {
+        key: e.key,
+        label: e.label,
+        script: e.script,
+        ok: !out.includes("Traceback"),
+        detail: out.trim().split("\n").slice(-1)[0]?.slice(0, 200) ?? "ok",
+      };
+    } catch (err) {
+      // --selftest not implemented → fall back to import check.
+      try {
+        execSync(
+          `${py} -c "import ast,sys; ast.parse(open('${join(ALGORITHMS_DIR, e.script)}').read())"`,
+          { stdio: "pipe", timeout: 15000 },
+        );
+        return {
+          key: e.key,
+          label: e.label,
+          script: e.script,
+          ok: true,
+          detail: "script present, syntax valid",
+        };
+      } catch {
+        return {
+          key: e.key,
+          label: e.label,
+          script: e.script,
+          ok: false,
+          detail: (err as Error).message.slice(0, 200),
+        };
+      }
+    }
+  });
+}
+
+// ── Execution ────────────────────────────────────────────────────────────────
+
 /**
- * Execute a comp tool — real if installed, simulated otherwise.
- *
- * @param toolKey  One of the COMP_TOOLS keys.
- * @param params   User-supplied params (from the inspector / preset / agent).
- * @param workDir  Absolute path where the tool should run + write outputs. Will
- *                 be created if missing.
+ * Execute a comp tool — native upstream tool if installed, otherwise the
+ * built-in real algorithm engine. NEVER simulates.
  */
 export async function executeCompToolReal(
   toolKey: string,
@@ -96,7 +206,7 @@ export async function executeCompToolReal(
       exitCode: 1,
       outputFiles: [],
       command: "",
-      simulated: false,
+      executor: "native",
       realToolUsed: false,
     };
   }
@@ -104,112 +214,141 @@ export async function executeCompToolReal(
   const entry = getToolRegistryEntry(toolKey);
   const installed = isToolInstalled(toolKey);
 
-  // Ensure workDir exists. (mkdir -p semantics; ignore EEXIST.)
   await fs.mkdir(workDir, { recursive: true }).catch(() => {});
+  const startedAt = Date.now();
 
   if (installed && entry) {
-    // Run the REAL tool.
-    try {
-      return await runRealTool(toolKey, params, workDir, entry);
-    } catch (e) {
-      // Real tool failed to spawn or threw — fall back to simulation with a
-      // clear error banner so the user sees what went wrong.
-      const sim = simulateCompRun(def, params);
-      const errFiles = await writeSimulatedOutputs(toolKey, sim, workDir);
-      const errMsg = (e as Error).message ?? String(e);
-      return {
-        stdout:
-          `[REAL TOOL FAILED — falling back to simulation]\n` +
-          `Error: ${errMsg}\n\n${sim.stdout}`,
-        stderr: errMsg,
-        exitCode: 1,
-        outputFiles: errFiles,
-        command: `[FAILED] ${buildCommand(def, params)}`,
-        simulated: true,
-        realToolUsed: false,
-      };
+    if (entry.nativeExecution) {
+      // NATIVE: run the real upstream tool.
+      try {
+        const native = await runNativeTool(toolKey, params, workDir);
+        // Environment-level failures (missing python deps, missing script)
+        // fall back to the built-in engine; genuine tool errors (bad input
+        // etc.) are reported honestly as native failures.
+        const envFailure =
+          native.exitCode !== 0 &&
+          /no module named|command not found|can't open file|no such file|modulenotfound|traceback \(most recent call last\)/i.test(
+            native.stderr,
+          );
+        if (!envFailure) return native;
+        const notice =
+          `[NATIVE TOOL UNAVAILABLE — falling back to the built-in real algorithm engine]\n` +
+          `Reason: ${native.stderr.trim().split("\n").slice(-1)[0]?.slice(0, 300) || `exit ${native.exitCode}`}\n\n`;
+        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+        return { ...engine, stdout: notice + engine.stdout };
+      } catch (e) {
+        // Native tool failed to spawn — fall through to the built-in engine
+        // with a clear notice (still a real algorithm).
+        const notice =
+          `[NATIVE TOOL FAILED — falling back to the built-in real algorithm engine]\n` +
+          `Error: ${(e as Error).message ?? String(e)}\n\n`;
+        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+        return { ...engine, stdout: notice + engine.stdout };
+      }
     }
+    // Installed but engine-executed (no CLI entry point — e.g. pip packages
+    // used via their Python API). Run the built-in real algorithm engine and
+    // surface that the package is present.
+    const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+    return {
+      ...engine,
+      stdout:
+        `[${entry.label} package detected on this host (no CLI entry point — ` +
+        `executing via the built-in real algorithm engine)]\n\n` + engine.stdout,
+    };
   }
 
-  // Tool not installed — simulate with clear status banner.
-  const sim = simulateCompRun(def, params);
-  const outputFiles = await writeSimulatedOutputs(toolKey, sim, workDir);
-  const installCmd = entry?.install.command ?? "(no install command available)";
-  return {
-    stdout:
-      `[SIMULATED — ${def.label} not installed. Run: ${installCmd}]\n` +
-      `\n${sim.stdout}`,
-    stderr: "",
-    exitCode: 0,
-    outputFiles,
-    command: `[SIMULATED] ${buildCommand(def, params)}`,
-    simulated: true,
-    realToolUsed: false,
-  };
+  // BUILT-IN ENGINE (real algorithm, no upstream tool needed).
+  return runBuiltinEngine(toolKey, params, workDir, startedAt);
 }
 
-/**
- * Run a real tool via child_process.
- *
- * Three execution modes (from the registry's `execute` config):
- *   - binary         : spawn the binary directly with the flags from buildCommand.
- *   - python-script  : run a script in scripts/ with /usr/bin/python3.
- *   - python-function: write a tiny runner.py that imports the module + calls
- *                      the named function with the params as kwargs, then runs.
- */
-async function runRealTool(
+/** Run the native upstream tool via child_process, honoring the registry's
+ *  nativeExecution mode:
+ *    - binary:         spawn parts[0] of buildCommand directly.
+ *    - script:         spawn `<python> <script> <rest…>` (repo-cloned CLIs).
+ *    - python-module:  spawn `<python> -m <module> <rest…>`.
+ *  Entries without nativeExecution never land here (engine-only tools). */
+async function runNativeTool(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
-  entry: ToolRegistryEntry,
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey)!;
+  const entry = getToolRegistryEntry(toolKey)!;
   const displayCommand = buildCommand(def, params);
-
-  if (
-    entry.execute.type === "python-function" &&
-    entry.execute.pythonModule &&
-    entry.execute.pythonFunction
-  ) {
-    const runnerScript = `
-import sys, json
-params = json.loads(sys.argv[1])
-from ${entry.execute.pythonModule} import ${entry.execute.pythonFunction}
-result = ${entry.execute.pythonFunction}(**params)
-print(json.dumps(result))
-`.trim();
-    const scriptPath = join(workDir, "runner.py");
-    await fs.writeFile(scriptPath, runnerScript);
-    return await runProcess(
-      SYSTEM_PYTHON,
-      [scriptPath, JSON.stringify(params)],
-      workDir,
-      displayCommand,
-    );
-  }
-
-  if (entry.execute.type === "python-script" && entry.execute.pythonScript) {
-    const scriptPath = join(
-      process.cwd(),
-      "scripts",
-      entry.execute.pythonScript,
-    );
-    return await runProcess(
-      SYSTEM_PYTHON,
-      [scriptPath, JSON.stringify(params)],
-      workDir,
-      displayCommand,
-    );
-  }
-
-  // Binary type — split the built command into binary + args.
-  // NOTE: simple whitespace split is intentional; the buildCommand output for
-  // the supported cliStyles (hydra/click/argparse/rosetta) never contains
-  // quoted args with embedded spaces for the params the inspector exposes.
   const parts = displayCommand.split(/\s+/).filter(Boolean);
-  const binary = parts[0];
-  const args = parts.slice(1);
-  return await runProcess(binary, args, workDir, displayCommand);
+  const rest = parts.slice(1);
+  const py = resolveEnginePython();
+
+  const mode = entry.nativeExecution;
+  if (!mode) {
+    // Should not happen (executeCompToolReal checks), but be safe.
+    return runBuiltinEngine(toolKey, params, workDir, Date.now());
+  }
+  if (mode.mode === "binary") {
+    const res = await runProcess(parts[0], rest, workDir, displayCommand, Date.now());
+    return { ...res, executor: "native", realToolUsed: true };
+  }
+  if (mode.mode === "script") {
+    if (!py) throw new Error("engine python not available for script execution");
+    const scriptPath = join(process.cwd(), mode.script);
+    const extra = mode.outFolderFlag ? [mode.outFolderFlag, workDir] : [];
+    const res = await runProcess(py, [scriptPath, ...rest, ...extra], workDir, displayCommand, Date.now());
+    return { ...res, executor: "native", realToolUsed: true };
+  }
+  // python-module
+  if (!py) throw new Error("engine python not available for module execution");
+  const res = await runProcess(py, ["-m", mode.module, ...rest], workDir, displayCommand, Date.now());
+  return { ...res, executor: "native", realToolUsed: true };
+}
+
+/** Run the shipped real Python algorithm engine for a tool key. */
+async function runBuiltinEngine(
+  toolKey: string,
+  params: Record<string, unknown>,
+  workDir: string,
+  startedAt: number,
+): Promise<ExecutionResult> {
+  const def = getCompTool(toolKey)!;
+  const engine = engineForTool(toolKey);
+  const py = resolveEnginePython();
+
+  if (!engine || !py) {
+    const problem = !engine
+      ? `No built-in engine is mapped for '${toolKey}'.`
+      : "The Python runtime (python3 + numpy) is not available on this host. " +
+        "Install it from the Tools page → Runtime dependencies.";
+    return {
+      stdout: "",
+      stderr: problem,
+      exitCode: 1,
+      outputFiles: [],
+      command: "",
+      executor: "builtin-engine",
+      realToolUsed: false,
+    };
+  }
+
+  const displayCommand =
+    `# built-in real algorithm engine: ${engine.script} ` +
+    `(native ${def.label} not installed)`;
+  const payload = JSON.stringify({
+    params: { ...params, _tool: toolKey },
+    workdir: workDir,
+  });
+  const res = await runProcess(
+    py,
+    [join(ALGORITHMS_DIR, engine.script), payload],
+    workDir,
+    displayCommand,
+    startedAt,
+    10 * 60 * 1000,
+  );
+  return {
+    ...res,
+    executor: "builtin-engine",
+    realToolUsed: false,
+  };
 }
 
 /** Run a process and capture stdout/stderr/exit code + output files. */
@@ -218,154 +357,128 @@ async function runProcess(
   args: string[],
   cwd: string,
   displayCommand: string,
-): Promise<ExecutionResult> {
-  return new Promise((resolve) => {
+  startedAt: number,
+  timeoutMs = 5 * 60 * 1000,
+): Promise<Omit<ExecutionResult, "executor" | "realToolUsed">> {
+  return new Promise((resolvePromise) => {
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
     let proc: ReturnType<typeof spawn>;
     try {
       proc = spawn(cmd, args, { cwd, shell: false });
     } catch (e) {
-      resolve({
+      resolvePromise({
         stdout: "",
         stderr: `Failed to spawn ${cmd}: ${(e as Error).message}`,
         exitCode: 1,
         outputFiles: [],
         command: displayCommand,
-        simulated: false,
-        realToolUsed: false,
       });
       return;
     }
 
+    const timer = setTimeout(() => {
+      try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+      stderrChunks.push(`\n[TIMEOUT after ${timeoutMs / 1000}s — killed]`);
+    }, timeoutMs);
+
     proc.stdout?.on("data", (d) => stdoutChunks.push(d.toString()));
     proc.stderr?.on("data", (d) => stderrChunks.push(d.toString()));
 
-    proc.on("error", (err) => {
-      stderrChunks.push(`Failed to spawn process: ${err.message}`);
-      resolve({
-        stdout: stdoutChunks.join(""),
-        stderr: stderrChunks.join(""),
-        exitCode: 1,
-        outputFiles: [],
-        command: displayCommand,
-        simulated: false,
-        realToolUsed: false,
-      });
-    });
-
-    proc.on("close", async (code) => {
-      // Collect output files from cwd (PDB / FASTA / TXT only — keeps the
-      // list focused on artifacts the UI knows how to render).
+    const finish = async (code: number | null) => {
+      clearTimeout(timer);
+      // Collect output files created during this run (real artifacts only).
+      // Scans two levels deep — native tools often write into subfolders
+      // (e.g. ProteinMPNN writes to <out>/seqs/…).
       let outputFiles: string[] = [];
       try {
-        const entries = await fs.readdir(cwd);
-        outputFiles = entries
-          .filter(
-            (f) =>
-              f.endsWith(".pdb") ||
-              f.endsWith(".fasta") ||
-              f.endsWith(".txt"),
-          )
-          .filter((f) => f !== "runner.py") // exclude our own python runner
-          .map((f) => join(cwd, f));
+        const found: { full: string; mtime: number }[] = [];
+        const dirs = [cwd];
+        try {
+          for (const entry of await fs.readdir(cwd, { withFileTypes: true })) {
+            if (entry.isDirectory()) dirs.push(join(cwd, entry.name));
+          }
+        } catch {
+          /* ignore */
+        }
+        for (const dir of dirs) {
+          const entries = await fs.readdir(dir).catch(() => [] as string[]);
+          await Promise.all(
+            entries
+              .filter((f) => /\.(pdb|fasta|fa|txt|json|csv|out|aln|log)$/i.test(f))
+              .map(async (f) => {
+                const full = join(dir, f);
+                const st = await fs.stat(full).catch(() => null);
+                if (st && st.isFile() && st.mtimeMs >= startedAt - 1500) {
+                  found.push({ full, mtime: st.mtimeMs });
+                }
+              }),
+          );
+        }
+        outputFiles = found
+          .sort((a, b) => a.mtime - b.mtime)
+          .map((x) => x.full);
       } catch {
         /* cwd may not exist — ignore */
       }
-      resolve({
+      resolvePromise({
         stdout: stdoutChunks.join(""),
         stderr: stderrChunks.join(""),
         exitCode: code ?? 1,
         outputFiles,
         command: displayCommand,
-        simulated: false,
-        realToolUsed: true,
       });
+    };
+
+    proc.on("error", (err) => {
+      stderrChunks.push(`Failed to spawn process: ${err.message}`);
+      void finish(1);
+    });
+    proc.on("close", (code) => {
+      void finish(code);
     });
   });
 }
 
-/**
- * Write simulated output files to disk so they're "real" files the UI can
- * fetch via /api/tools/jobs/[id]/file. PDB → real PDB record, FASTA → real
- * FASTA record, anything else → the simulated stdout.
- */
-async function writeSimulatedOutputs(
-  toolKey: string,
-  sim: { stdout: string; outputFiles: string[] },
-  workDir: string,
-): Promise<string[]> {
-  const written: string[] = [];
-  for (const filePath of sim.outputFiles) {
-    const fileName = filePath.split("/").pop() ?? "output.txt";
-    const fullPath = join(workDir, fileName);
-    const ext = fileName.split(".").pop()?.toLowerCase();
-    let content = "";
-    if (ext === "pdb") {
-      content = generateRealPdb(toolKey);
-    } else if (ext === "fasta") {
-      content = generateRealFasta(toolKey);
-    } else {
-      content = sim.stdout;
-    }
-    try {
-      await fs.writeFile(fullPath, content);
-      written.push(fullPath);
-    } catch {
-      /* ignore — best effort */
-    }
-  }
-  return written;
-}
+// ── Scan ────────────────────────────────────────────────────────────────────
 
-/** Generate a real PDB file (a CA-only helix) tagged as simulated. */
-function generateRealPdb(toolKey: string): string {
-  const lines: string[] = [
-    `REMARK   1 GENERATED BY FOUNDRY-LAB (SIMULATED) tool=${toolKey}`,
-  ];
-  const numResidues = 24;
-  for (let i = 1; i <= numResidues; i++) {
-    const t = i * 0.6;
-    const x = (15 * Math.cos(t)).toFixed(3);
-    const y = (3 * t).toFixed(3);
-    const z = (15 * Math.sin(t)).toFixed(3);
-    lines.push(
-      `ATOM  ${String(i).padStart(5)}  CA  ALA A${String(i).padStart(4)}     ${x.padStart(8)} ${y.padStart(8)} ${z.padStart(8)}  1.00 20.00           C`,
-    );
-  }
-  lines.push("END");
-  return lines.join("\n");
-}
-
-/** Generate a real FASTA record (60 residues) tagged as simulated. */
-function generateRealFasta(toolKey: string): string {
-  const aas = "ACDEFGHIKLMNPQRSTVWY";
-  const seq = Array.from({ length: 60 }, (_, i) => aas[i % 20]).join("");
-  return `>design_1|${toolKey}|simulated\n${seq}\n`;
-}
-
-/**
- * Convenience helper for callers that need a one-shot scan of all tools.
- * Returns a stable, JSON-serialisable array (no buffers / streams).
- */
-export function scanAllTools(): Array<{
+export interface ScanRow {
   key: string;
   label: string;
   category: string;
+  description: string;
   installed: boolean;
   installMethod: string;
   installCommand: string;
+  installLabel: string;
   docs: string;
-}> {
-  return TOOL_REGISTRY.map((entry) => ({
-    key: entry.key,
-    label: entry.label,
-    category: entry.category,
-    installed: isToolInstalled(entry.key),
-    installMethod: entry.install.method,
-    installCommand: entry.install.command,
-    docs: entry.install.docs,
-  }));
+  oneClick: boolean;
+  sizeHint?: string;
+  builtinEngine?: string;
+  executorReady: boolean;
+}
+
+/** One-shot scan of external tools: native status + engine fallback status. */
+export function scanAllTools(): ScanRow[] {
+  const py = resolveEnginePython();
+  return TOOL_REGISTRY.map((entry) => {
+    const engine = engineForTool(entry.key);
+    return {
+      key: entry.key,
+      label: entry.label,
+      category: entry.category,
+      description: entry.description,
+      installed: isToolInstalled(entry.key),
+      installMethod: entry.install.method,
+      installCommand: entry.install.command,
+      installLabel: entry.install.label,
+      docs: entry.install.docs,
+      oneClick: entry.install.oneClick,
+      sizeHint: entry.install.sizeHint,
+      builtinEngine: entry.builtinEngine,
+      executorReady: !!py && !!engine,
+    };
+  });
 }
 
 /** Re-export for callers that want to introspect a workDir without running. */

@@ -291,7 +291,7 @@ export async function executeNode(
           // Pass upstream context as an "inputs" hint — executeCompTool ignores unknown keys.
           (filtered as Record<string, unknown>).__inputs = inputs;
         }
-        const { summary, stdout } = executeCompTool(toolKey, filtered);
+        const { summary, stdout } = await executeCompTool(toolKey, filtered);
         return { result: summary, logs: stdout, status: "completed" };
       }
 
@@ -310,7 +310,7 @@ export async function executeNode(
         // node.params are already the tool's own params (no prefixing needed).
         const filtered: Record<string, unknown> = { ...node.params };
         if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
-        const { summary, stdout } = executeCompTool(toolKey, filtered);
+        const { summary, stdout } = await executeCompTool(toolKey, filtered);
         return { result: summary, logs: stdout, status: "completed" };
       }
 
@@ -326,7 +326,7 @@ export async function executeNode(
         const res = await runBio(bioKey, { query, maxResults });
         const summary =
           `${res.count} hits from ${bioKey.toUpperCase()}` +
-          `${res.simulated ? " (simulated)" : ""}:\n` +
+          `${res.error ? ` — ${res.error}` : ""}:\n` +
           res.hits.map((h) => `- ${h.id}: ${h.title}`).join("\n");
         return {
           result: JSON.stringify(res.hits, null, 2),

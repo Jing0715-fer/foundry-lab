@@ -1,803 +1,903 @@
 "use client";
 
+/**
+ * Tools → Environment & Toolchain page (complete redesign).
+ *
+ * This panel is now an installation-status page for everything the app needs:
+ *   ① Runtime dependencies  — python3 / numpy / scipy / biopython / git
+ *      (with live version detection + one-click pip install when missing)
+ *   ② Built-in real algorithm engines — the shipped Python science engines,
+ *      each with a live self-test status + algorithm citations
+ *   ③ External tools — the heavyweight upstream packages (RFdiffusion,
+ *      ProteinMPNN, Rosetta…): native install status, one-click install with
+ *      a live-streaming terminal, and which built-in engine serves as the
+ *      real-algorithm fallback while the native tool is missing
+ *   ④ Recent install jobs with their full logs.
+ */
+
 import * as React from "react";
 import {
   Wrench,
-  FlaskConical,
-  Play,
-  Search,
-  Loader2,
-  Clock,
-  Eye,
-  Atom,
-  Beaker,
-  Dna,
-  Box,
-  Database,
+  RefreshCw,
+  CheckCircle2,
+  XCircle,
   Download,
+  ExternalLink,
+  Terminal,
+  Loader2,
   ChevronDown,
   ChevronRight,
-  RefreshCw,
+  Cpu,
+  Boxes,
+  PackageCheck,
+  FlaskConical,
+  Info,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Switch } from "@/components/ui/switch";
+import { Progress } from "@/components/ui/progress";
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/lib/store";
-import { COMP_TOOLS, getCompTool, buildCommand } from "@/lib/tools";
-import type { CompToolDef, CompParamField } from "@/lib/tools";
-import type { ToolJobDTO } from "@/lib/types";
-import type { BioResult } from "@/lib/bio-tools";
-import { OutputViewerDialog } from "@/components/viewers/output-viewer-dialog";
-import { EmptyState, PanelSkeleton } from "@/components/empty-state";
+import { PanelSkeleton } from "@/components/empty-state";
+
+// ── API types (mirror /api/tools/scan + /api/tools/install) ─────────────────
+
+interface RuntimeRow {
+  key: string;
+  label: string;
+  description: string;
+  installed: boolean;
+  version: string | null;
+  installMethod: string;
+  installCommand: string;
+  installLabel: string;
+  docs: string;
+  oneClick: boolean;
+  sizeHint: string | null;
+  category: string;
+}
+
+interface EngineRow {
+  key: string;
+  label: string;
+  script: string;
+  description: string;
+  algorithms: string[];
+  serves: string[];
+  ok: boolean;
+  detail: string;
+}
+
+interface ToolRow {
+  key: string;
+  label: string;
+  category: string;
+  description: string;
+  installed: boolean;
+  installMethod: string;
+  installCommand: string;
+  installLabel: string;
+  docs: string;
+  oneClick: boolean;
+  sizeHint?: string;
+  builtinEngine?: string;
+  executorReady: boolean;
+}
+
+interface ScanResponse {
+  scannedAt: string;
+  runtime: RuntimeRow[];
+  engines: EngineRow[];
+  tools: ToolRow[];
+  summary: {
+    runtime: { installed: number; total: number; coreReady: boolean; allReady: boolean };
+    engines: { ok: number; total: number };
+    tools: { nativeInstalled: number; total: number; withEngineFallback: number };
+  };
+  activeInstall: InstallJobDTO | null;
+  recentInstalls: InstallJobDTO[];
+}
+
+interface InstallJobDTO {
+  id: string;
+  key: string;
+  label: string;
+  command: string;
+  status: "running" | "completed" | "failed";
+  startedAt: string;
+  finishedAt: string | null;
+  exitCode: number | null;
+  logs: string[];
+}
+
+// ── Constants ────────────────────────────────────────────────────────────────
+
+const TOOL_CATEGORY_LABELS: Record<string, string> = {
+  design: "De-novo Design",
+  "inverse-folding": "Inverse Folding",
+  "structure-prediction": "Structure Prediction",
+  scoring: "Scoring & Analysis",
+};
+const TOOL_CATEGORY_ORDER = [
+  "design",
+  "inverse-folding",
+  "structure-prediction",
+  "scoring",
+];
+
+const ENGINE_LABELS: Record<string, string> = {
+  "engine-diffusion": "Backbone Diffusion",
+  "engine-fold": "Structure Prediction",
+  "engine-mpnn": "Inverse Folding",
+  "engine-score": "Knowledge-Based Scoring",
+  "engine-antibody": "Antibody Design",
+};
 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
-  const now = Date.now();
-  const s = Math.max(1, Math.round((now - then) / 1000));
+  const s = Math.max(1, Math.round((Date.now() - then) / 1000));
   if (s < 60) return `${s}s ago`;
   const m = Math.round(s / 60);
   if (m < 60) return `${m}m ago`;
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.round(h / 24);
-  return `${d}d ago`;
+  return `${h}h ago`;
 }
 
-/**
- * Detect whether a ToolJob's stdout indicates a simulated run. The
- * real-executor (src/lib/real-executor.ts) prefixes simulated output with
- * `[SIMULATED — ...]`; the legacy executor (executeCompTool →
- * simulateCompRun) emits `(simulated)` in its first line and
- * `FOUNDRY-LAB SIMULATION` in the PDB REMARK. We treat any of those as
- * evidence the run was a simulation rather than a real algorithm.
- */
-function isSimulatedJob(job: ToolJobDTO): boolean {
-  if (job.params && job.params.simulated === true) return true;
-  const out = job.stdout ?? "";
-  if (/^\[SIMULATED/i.test(out)) return true;
-  if (/\(simulated\)/i.test(out)) return true;
-  if (/FOUNDRY-LAB SIMULATION/i.test(out)) return true;
-  if (job.command && /^\[SIMULATED\]/i.test(job.command)) return true;
-  return false;
-}
-
-/** Build the per-file download URL (matches the [id]/file route). */
-function fileDownloadUrl(jobId: string, path: string): string {
-  return `/api/tools/jobs/${jobId}/file?path=${encodeURIComponent(path)}`;
-}
-
-const COMP_TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
-  atom: Atom,
-  beaker: Beaker,
-  dna: Dna,
-  "flask-conical": FlaskConical,
-};
-
-/** Output-type meta for the small chip on each Recent Jobs row. */
-const OUTPUT_TYPE_META: Record<
-  string,
-  { Icon: React.ComponentType<{ className?: string }>; label: string; chip: string }
-> = {
-  // structure-producing tools → Box icon (teal)
-  rfdiffusion: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
-  rfantibody: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
-  rosetta: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
-  pyrosetta: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
-  // structure-prediction tools → Box icon (cyan)
-  rf3: { Icon: Box, label: "structure", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
-  esmfold: { Icon: Box, label: "structure", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
-  colabfold: { Icon: Box, label: "structure", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
-  // sequence-producing tools → Dna icon (violet)
-  proteinmpnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
-  ligandmpnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
-  solublempnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
-};
-
-/** Fallback for bio tools (BLAST / PDB / PubMed / UniProt) → Database icon (cyan). */
-const OUTPUT_TYPE_FALLBACK = {
-  Icon: Database,
-  label: "bio",
-  chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
-};
+// ── Component ────────────────────────────────────────────────────────────────
 
 export function ToolsPanel() {
   const toast = useAppStore((s) => s.toast);
+  const [scan, setScan] = React.useState<ScanResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [scanning, setScanning] = React.useState(false);
+  const [scanError, setScanError] = React.useState<string | null>(null);
 
-  // Comp tool state.
-  const [toolKey, setToolKey] = React.useState<string>(COMP_TOOLS[0]?.key ?? "rfdiffusion");
-  const [compParams, setCompParams] = React.useState<Record<string, unknown>>({});
-  const [compRunning, setCompRunning] = React.useState(false);
+  // Install dialog state.
+  const [installJob, setInstallJob] = React.useState<InstallJobDTO | null>(null);
+  const [installOpen, setInstallOpen] = React.useState(false);
+  const [startingInstall, setStartingInstall] = React.useState<string | null>(null);
+  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+  const logBoxRef = React.useRef<HTMLDivElement>(null);
 
-  // Bio tool state.
-  const [bioKey, setBioKey] = React.useState<"blast" | "pdb" | "pubmed" | "uniprot">("blast");
-  const [bioQuery, setBioQuery] = React.useState("");
-  const [bioMax, setBioMax] = React.useState(5);
-  const [blastProgram, setBlastProgram] = React.useState("blastp");
-  const [blastDatabase, setBlastDatabase] = React.useState("swissprot");
-  const [blastExpect, setBlastExpect] = React.useState(10);
-  const [bioRunning, setBioRunning] = React.useState(false);
-  const [bioResult, setBioResult] = React.useState<BioResult | null>(null);
+  const runScan = React.useCallback(
+    async (silent = false) => {
+      if (!silent) setScanning(true);
+      try {
+        const res = await fetch("/api/tools/scan", { cache: "no-store" });
+        if (!res.ok) throw new Error(`Scan failed (${res.status})`);
+        const data = (await res.json()) as ScanResponse;
+        setScan(data);
+        setScanError(null);
+      } catch (e) {
+        setScanError((e as Error).message);
+      } finally {
+        setScanning(false);
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
-  // Jobs state.
-  const [jobs, setJobs] = React.useState<ToolJobDTO[]>([]);
-  const [loadingJobs, setLoadingJobs] = React.useState(true);
-  const [viewJob, setViewJob] = React.useState<ToolJobDTO | null>(null);
-  const [expandedJobId, setExpandedJobId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    void runScan();
+  }, [runScan]);
 
-  const refreshJobs = React.useCallback(async () => {
-    try {
-      const res = await fetch("/api/tools/jobs");
-      if (res.ok) {
+  // If a scan arrives with an active install job, surface it in the dialog.
+  React.useEffect(() => {
+    if (scan?.activeInstall && !installOpen) {
+      setInstallJob(scan.activeInstall);
+      setInstallOpen(true);
+    }
+  }, [scan?.activeInstall, installOpen]);
+
+  // Poll the open install job until it finishes.
+  React.useEffect(() => {
+    if (!installOpen || !installJob) {
+      if (pollRef.current) clearInterval(pollRef.current);
+      return;
+    }
+    if (installJob.status !== "running") {
+      if (pollRef.current) clearInterval(pollRef.current);
+      // One final scan to refresh statuses when an install finishes.
+      if (pollRef.current || installJob.status === "completed") void runScan(true);
+      return;
+    }
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/tools/install/${installJob.id}`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const job = (await res.json()) as InstallJobDTO;
+        setInstallJob(job);
+        if (job.status !== "running") {
+          if (job.status === "completed") {
+            toast({
+              title: `${job.label} installed`,
+              description: "Re-scanning environment…",
+            });
+          }
+          void runScan(true);
+        }
+      } catch {
+        /* transient poll failure — keep trying */
+      }
+    }, 1000);
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current);
+    };
+  }, [installOpen, installJob, runScan, toast]);
+
+  // Auto-scroll the install log.
+  React.useEffect(() => {
+    if (logBoxRef.current) {
+      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+    }
+  }, [installJob?.logs.length]);
+
+  const startInstall = React.useCallback(
+    async (key: string, label: string) => {
+      setStartingInstall(key);
+      try {
+        const res = await fetch("/api/tools/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key }),
+        });
         const data = await res.json();
-        setJobs(Array.isArray(data) ? data : []);
+        if (!res.ok) {
+          toast({
+            title: "Cannot start install",
+            description: data.error ?? "Unknown error",
+            variant: "destructive",
+          });
+          return;
+        }
+        setInstallJob(data as InstallJobDTO);
+        setInstallOpen(true);
+      } catch (e) {
+        toast({
+          title: "Install request failed",
+          description: (e as Error).message,
+          variant: "destructive",
+        });
+      } finally {
+        setStartingInstall(null);
       }
-    } catch {
-      // ignore
-    } finally {
-      setLoadingJobs(false);
-    }
-  }, []);
+    },
+    [toast],
+  );
 
-  React.useEffect(() => {
-    refreshJobs();
-  }, [refreshJobs]);
-
-  // Poll while any job is in a non-terminal state — surfaces live progress
-  // for real (long-running) tool executions and re-syncs the Recent Jobs
-  // list without manual refresh.
-  React.useEffect(() => {
-    const hasActive = jobs.some(
-      (j) => j.status === "running" || j.status === "pending" || j.status === "queued",
+  if (loading) {
+    return (
+      <div className="p-6">
+        <PanelSkeleton count={4} />
+      </div>
     );
-    if (!hasActive) return;
-    const id = setInterval(refreshJobs, 2000);
-    return () => clearInterval(id);
-  }, [jobs, refreshJobs]);
+  }
 
-  // When tool changes, reset params to defaults.
-  React.useEffect(() => {
-    const def = getCompTool(toolKey);
-    if (!def) return;
-    const next: Record<string, unknown> = {};
-    for (const f of def.paramFields) next[f.key] = f.default;
-    setCompParams(next);
-  }, [toolKey]);
-
-  const activeTool: CompToolDef | undefined = getCompTool(toolKey);
-  const commandPreview = activeTool
-    ? buildCommand(activeTool, compParams)
-    : "";
-
-  const setParam = (key: string, v: unknown) =>
-    setCompParams((prev) => ({ ...prev, [key]: v }));
-
-  const handleRunComp = async () => {
-    if (!activeTool) return;
-    setCompRunning(true);
-    try {
-      const res = await fetch("/api/tools/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          tool: toolKey,
-          params: compParams,
-          triggeredBy: "user",
-        }),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error ?? `HTTP ${res.status}`);
-      }
-      const job: ToolJobDTO = await res.json();
-      toast({
-        title: `${activeTool.label} completed`,
-        description: "Simulated job added to recent jobs.",
-        variant: "success",
-      });
-      setJobs((prev) => [job, ...prev]);
-    } catch (e) {
-      toast({
-        title: "Tool run failed",
-        description: e instanceof Error ? e.message : String(e),
-        variant: "destructive",
-      });
-    } finally {
-      setCompRunning(false);
-    }
-  };
-
-  const handleRunBio = async () => {
-    setBioRunning(true);
-    setBioResult(null);
-    try {
-      const params: Record<string, unknown> = { maxResults: bioMax };
-      if (bioKey === "blast") {
-        if (!bioQuery.trim()) throw new Error("Sequence is required for BLAST");
-        params.sequence = bioQuery;
-        params.program = blastProgram;
-        params.database = blastDatabase;
-        params.expect = blastExpect;
-      } else if (bioKey === "pdb") {
-        params.query = bioQuery || undefined;
-      } else {
-        if (!bioQuery.trim()) throw new Error("Query is required");
-        params.query = bioQuery;
-      }
-      const res = await fetch(`/api/bio-tools/${bioKey}`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(params),
-      });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error ?? `HTTP ${res.status}`);
-      }
-      const result: BioResult = await res.json();
-      setBioResult(result);
-      toast({
-        title: `${bioKey.toUpperCase()} returned ${result.count} hit${result.count === 1 ? "" : "s"}`,
-        description: result.simulated ? "Simulated (offline fallback)" : undefined,
-        variant: "success",
-      });
-    } catch (e) {
-      toast({
-        title: "Bio query failed",
-        description: e instanceof Error ? e.message : String(e),
-        variant: "destructive",
-      });
-    } finally {
-      setBioRunning(false);
-    }
-  };
+  const summary = scan?.summary;
 
   return (
-    <div className="space-y-6 p-4 md:p-6">
-      <div>
-        <h2 className="text-2xl font-semibold tracking-tight">Tools</h2>
-        <p className="text-sm text-muted-foreground">
-          Run computational protein-design tools and bioinformatics queries directly.
-        </p>
+    <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
+      {/* ── Header ───────────────────────────────────────────────────────── */}
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Wrench className="size-5 text-primary" />
+            <h2 className="text-lg font-semibold tracking-tight">
+              Environment &amp; Toolchain
+            </h2>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            Installation status for every dependency the studio uses — runtime,
+            built-in real algorithm engines, and external research tools.
+            Uninstalled items with a{" "}
+            <span className="font-medium text-foreground">Install</span> button
+            support one-click installation.
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void runScan()}
+          disabled={scanning}
+        >
+          {scanning ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="size-3.5" />
+          )}
+          Re-scan
+        </Button>
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        {/* Comp tools card */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Wrench className="size-4" />
-              Computational Tools
-            </CardTitle>
-            <CardDescription className="text-xs">
-              Simulated runs — backend invokes executeCompTool and stores a completed ToolJob.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-1.5">
-              <Label>Tool</Label>
-              <Select value={toolKey} onValueChange={setToolKey}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {COMP_TOOLS.map((t) => {
-                    const Icon = COMP_TOOL_ICONS[t.icon] ?? Wrench;
-                    return (
-                      <SelectItem key={t.key} value={t.key}>
-                        <span className="flex items-center gap-2">
-                          <Icon className="size-3.5" />
-                          {t.label}
-                        </span>
-                      </SelectItem>
-                    );
-                  })}
-                </SelectContent>
-              </Select>
+      {scanError && (
+        <Card className="border-destructive/40">
+          <CardContent className="flex items-center gap-3 p-4 text-sm">
+            <XCircle className="size-4 shrink-0 text-destructive" />
+            <div className="flex-1">
+              <p className="font-medium">Environment scan failed</p>
+              <p className="text-muted-foreground">{scanError}</p>
             </div>
-
-            {activeTool && (
-              <p className="text-xs text-muted-foreground">{activeTool.description}</p>
-            )}
-
-            {activeTool && (
-              <div className="space-y-3">
-                {activeTool.paramFields.map((f) => (
-                  <ParamField
-                    key={f.key}
-                    field={f}
-                    value={compParams[f.key] ?? f.default}
-                    onChange={(v) => setParam(f.key, v)}
-                  />
-                ))}
-              </div>
-            )}
-
-            {commandPreview && (
-              <div className="grid gap-1">
-                <Label className="text-xs text-muted-foreground">Command preview</Label>
-                <code className="block overflow-x-auto rounded-md bg-muted p-2 font-mono text-xs">
-                  {commandPreview}
-                </code>
-              </div>
-            )}
-
-            <div className="flex justify-end">
-              <Button onClick={handleRunComp} disabled={compRunning || !activeTool}>
-                {compRunning ? <Loader2 className="size-4 animate-spin" /> : <Play className="size-4" />}
-                Run (simulated)
-              </Button>
-            </div>
+            <Button size="sm" variant="outline" onClick={() => void runScan()}>
+              Retry
+            </Button>
           </CardContent>
         </Card>
+      )}
 
-        {/* Bio tools card */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FlaskConical className="size-4" />
-              Bioinformatics Tools
-            </CardTitle>
-            <CardDescription className="text-xs">
-              BLAST / PDB / PubMed / UniProt — live queries with simulated fallback.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="grid gap-1.5">
-              <Label>Tool</Label>
-              <Select
-                value={bioKey}
-                onValueChange={(v: "blast" | "pdb" | "pubmed" | "uniprot") => {
-                  setBioKey(v);
-                  setBioResult(null);
-                  setBioQuery("");
-                }}
-              >
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="blast">BLAST — sequence homology</SelectItem>
-                  <SelectItem value="pdb">PDB — structure search</SelectItem>
-                  <SelectItem value="pubmed">PubMed — literature</SelectItem>
-                  <SelectItem value="uniprot">UniProt — annotation</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+      {/* ── Summary cards ────────────────────────────────────────────────── */}
+      {scan && summary && (
+        <div className="grid gap-3 sm:grid-cols-3">
+          <SummaryCard
+            icon={<Cpu className="size-4" />}
+            title="Runtime"
+            value={`${summary.runtime.installed}/${summary.runtime.total}`}
+            caption={summary.runtime.coreReady ? "core ready" : "python3 + numpy required"}
+            ok={summary.runtime.coreReady}
+          />
+          <SummaryCard
+            icon={<Boxes className="size-4" />}
+            title="Real algorithm engines"
+            value={`${summary.engines.ok}/${summary.engines.total}`}
+            caption={summary.engines.ok === summary.engines.total ? "all self-tests pass" : "self-test failures"}
+            ok={summary.engines.ok === summary.engines.total}
+          />
+          <SummaryCard
+            icon={<PackageCheck className="size-4" />}
+            title="External tools (native)"
+            value={`${summary.tools.nativeInstalled}/${summary.tools.total}`}
+            caption={`${summary.tools.withEngineFallback} covered by built-in engines`}
+            ok={summary.tools.withEngineFallback === summary.tools.total}
+          />
+        </div>
+      )}
 
-            <div className="grid gap-1.5">
-              <Label htmlFor="bio-query">
-                {bioKey === "blast" ? "Sequence (FASTA / raw)" : "Query"}
-              </Label>
-              {bioKey === "blast" ? (
-                <Textarea
-                  id="bio-query"
-                  value={bioQuery}
-                  onChange={(e) => setBioQuery(e.target.value)}
-                  placeholder="MTAIIKE…IYFV"
-                  rows={4}
-                  className="font-mono text-xs"
-                />
-              ) : (
-                <Input
-                  id="bio-query"
-                  value={bioQuery}
-                  onChange={(e) => setBioQuery(e.target.value)}
-                  placeholder={
-                    bioKey === "pdb"
-                      ? "e.g. antibody (or PDB id)"
-                      : bioKey === "pubmed"
-                        ? "e.g. nanobody neutralization"
-                        : "e.g. kinase (or accession P12345)"
+      {/* ── ① Runtime dependencies ───────────────────────────────────────── */}
+      {scan && (
+        <section className="space-y-3" aria-labelledby="runtime-heading">
+          <SectionHeader
+            id="runtime-heading"
+            icon={<Cpu className="size-4" />}
+            title="Runtime Dependencies"
+            count={scan.runtime.length}
+            hint="Required by the built-in engines. Missing items can be installed with one click."
+          />
+          <div className="grid gap-3 md:grid-cols-2">
+            {scan.runtime.map((r) => (
+              <RuntimeCard
+                key={r.key}
+                row={r}
+                onInstall={() => void startInstall(r.key, r.label)}
+                installing={startingInstall === r.key}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── ② Built-in engines ──────────────────────────────────────────── */}
+      {scan && (
+        <section className="space-y-3" aria-labelledby="engines-heading">
+          <SectionHeader
+            id="engines-heading"
+            icon={<FlaskConical className="size-4" />}
+            title="Built-in Real Algorithm Engines"
+            count={scan.engines.length}
+            hint="Shipped Python science engines — every run is a real algorithm (Chou-Fasman, Miyazawa-Jernigan, Shrake-Rupley, NeRF, Metropolis MC). No neural-network weights needed."
+          />
+          <div className="space-y-3">
+            {scan.engines.map((e) => (
+              <EngineCard key={e.key} engine={e} />
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ── ③ External tools ────────────────────────────────────────────── */}
+      {scan && (
+        <section className="space-y-3" aria-labelledby="external-heading">
+          <SectionHeader
+            id="external-heading"
+            icon={<Wrench className="size-4" />}
+            title="External Tools"
+            count={scan.tools.length}
+            hint="Heavyweight upstream packages. When the native tool is missing, the mapped built-in engine executes the same job with real algorithms — installs upgrade you to the native implementation."
+          />
+          {TOOL_CATEGORY_ORDER.map((cat) => {
+            const rows = scan.tools.filter((t) => t.category === cat);
+            if (!rows.length) return null;
+            return (
+              <div key={cat} className="space-y-2">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                  {TOOL_CATEGORY_LABELS[cat] ?? cat}
+                </h4>
+                <div className="grid gap-3 md:grid-cols-2">
+                  {rows.map((t) => (
+                    <ToolCard
+                      key={t.key}
+                      row={t}
+                      engines={scan.engines}
+                      onInstall={() => void startInstall(t.key, t.label)}
+                      installing={startingInstall === t.key}
+                    />
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </section>
+      )}
+
+      {/* ── ④ Recent installs ───────────────────────────────────────────── */}
+      {scan && scan.recentInstalls.length > 0 && (
+        <RecentInstalls
+          jobs={scan.recentInstalls}
+          onOpen={(job) => {
+            setInstallJob(job);
+            setInstallOpen(true);
+          }}
+        />
+      )}
+
+      {/* ── Install dialog (live terminal) ──────────────────────────────── */}
+      <Dialog open={installOpen} onOpenChange={setInstallOpen}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
+              <Terminal className="size-4" />
+              Installing {installJob?.label ?? ""}
+              {installJob && (
+                <Badge
+                  variant="outline"
+                  className={
+                    installJob.status === "running"
+                      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                      : installJob.status === "completed"
+                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                        : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400"
                   }
-                />
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="bio-max">Max results</Label>
-                <Input
-                  id="bio-max"
-                  type="number"
-                  min={1}
-                  max={10}
-                  value={bioMax}
-                  onChange={(e) => setBioMax(Math.max(1, Math.min(10, Number(e.target.value) || 5)))}
-                />
-              </div>
-              {bioKey === "blast" ? (
-                <div className="grid gap-1.5">
-                  <Label htmlFor="blast-program">Program</Label>
-                  <Select value={blastProgram} onValueChange={setBlastProgram}>
-                    <SelectTrigger className="w-full" id="blast-program">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="blastp">blastp</SelectItem>
-                      <SelectItem value="blastn">blastn</SelectItem>
-                      <SelectItem value="psi-blast">psi-blast</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              ) : (
-                <div />
-              )}
-            </div>
-
-            {bioKey === "blast" && (
-              <div className="grid gap-3 sm:grid-cols-2">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="blast-db">Database</Label>
-                  <Input
-                    id="blast-db"
-                    value={blastDatabase}
-                    onChange={(e) => setBlastDatabase(e.target.value)}
-                    placeholder="swissprot"
-                  />
-                </div>
-                <div className="grid gap-1.5">
-                  <Label htmlFor="blast-evalue">Expect (e-value)</Label>
-                  <Input
-                    id="blast-evalue"
-                    type="number"
-                    min={0}
-                    step={0.1}
-                    value={blastExpect}
-                    onChange={(e) => setBlastExpect(Number(e.target.value) || 10)}
-                  />
-                </div>
-              </div>
-            )}
-
-            <div className="flex items-center justify-end gap-2">
-              {bioResult && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setBioResult(null)}
-                  disabled={bioRunning}
                 >
-                  Clear results
-                </Button>
-              )}
-              <Button onClick={handleRunBio} disabled={bioRunning}>
-                {bioRunning ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
-                Search
-              </Button>
-            </div>
-
-            {bioResult && (
-              <div className="space-y-2 rounded-md border p-3">
-                <div className="flex items-center justify-between text-xs">
-                  <span className="font-medium uppercase tracking-wide">{bioResult.tool} · {bioResult.count} hits</span>
-                  {bioResult.simulated && (
-                    <Badge variant="outline" className="text-[10px]">simulated</Badge>
-                  )}
-                </div>
-                {bioResult.hits.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No hits.</p>
-                ) : (
-                  <ul className="space-y-1.5">
-                    {bioResult.hits.map((h, i) => (
-                      <li key={`${h.id}-${i}`} className="rounded-md bg-muted/50 px-2.5 py-1.5 text-xs">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-[11px] text-foreground">{h.id}</span>
-                          {h.meta && Object.keys(h.meta).length > 0 && (
-                            <span className="text-[10px] text-muted-foreground">
-                              {Object.entries(h.meta)
-                                .slice(0, 3)
-                                .map(([k, v]) => `${k}=${v}`)
-                                .join(" · ")}
-                            </span>
-                          )}
-                        </div>
-                        <p className="mt-0.5 truncate text-muted-foreground">{h.title}</p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </div>
-
-      {/* Recent jobs */}
-      <Card>
-        <CardHeader>
-          <div className="flex items-center justify-between gap-2">
-            <CardTitle className="flex items-center gap-2 text-base">
-              <Wrench className="size-4" />
-              Recent Tool Jobs
-              {jobs.length > 0 && (
-                <Badge variant="secondary" className="text-[10px]">
-                  {jobs.length}
+                  {installJob.status}
                 </Badge>
               )}
-            </CardTitle>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={refreshJobs}
-              disabled={loadingJobs}
-              className="h-7 gap-1 text-xs"
-            >
-              <RefreshCw className={`size-3.5 ${loadingJobs ? "animate-spin" : ""}`} />
-              Refresh
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {loadingJobs ? (
-            <PanelSkeleton count={3} />
-          ) : jobs.length === 0 ? (
-            <EmptyState
-              icon={Wrench}
-              title="No tool runs yet"
-              description="Run a comp or bio tool above."
-            />
-          ) : (
-            <ul className="space-y-2">
-              {jobs.map((job) => {
-                const def = COMP_TOOLS.find((t) => t.key === job.tool);
-                const JobIcon = (def && COMP_TOOL_ICONS[def.icon]) || Wrench;
-                const outputMeta =
-                  OUTPUT_TYPE_META[job.tool] ?? OUTPUT_TYPE_FALLBACK;
-                const OutputIcon = outputMeta.Icon;
-                const simulated = isSimulatedJob(job);
-                const isActive =
-                  job.status === "running" ||
-                  job.status === "pending" ||
-                  job.status === "queued";
-                const statusPill =
-                  job.status === "completed"
-                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                    : job.status === "failed"
-                      ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
-                      : isActive
-                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-                        : "bg-muted text-muted-foreground";
-                const isExpanded = expandedJobId === job.id;
-                return (
-                  <li
-                    key={job.id}
-                    className={`rounded-md border transition-colors ${
-                      isExpanded ? "border-primary/40" : ""
-                    }`}
+            </DialogTitle>
+            <DialogDescription className="font-mono text-[11px] break-all">
+              {installJob?.command}
+            </DialogDescription>
+          </DialogHeader>
+          {installJob && (
+            <div className="space-y-3">
+              {installJob.status === "running" && (
+                <Progress value={100} className="h-1 animate-pulse" />
+              )}
+              <div
+                ref={logBoxRef}
+                className="max-h-[50vh] overflow-y-auto rounded-md border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
+                aria-live="polite"
+              >
+                {installJob.logs.map((line, i) => (
+                  <div
+                    key={i}
+                    className={
+                      line.includes("✔")
+                        ? "text-emerald-400"
+                        : line.includes("✘") || line.toLowerCase().includes("error")
+                          ? "text-rose-400"
+                          : undefined
+                    }
                   >
-                    <div className="flex flex-wrap items-center gap-2 p-2.5 text-sm">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setExpandedJobId((id) => (id === job.id ? null : job.id))
-                        }
-                        className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground hover:bg-accent"
-                        title={isExpanded ? "Hide preview" : "Show preview"}
-                        aria-label={isExpanded ? "Hide preview" : "Show preview"}
-                      >
-                        {isExpanded ? (
-                          <ChevronDown className="size-3.5" />
-                        ) : (
-                          <ChevronRight className="size-3.5" />
-                        )}
-                      </button>
-                      <span className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                        <JobIcon className="size-3.5" />
-                      </span>
-                      <span
-                        className={`flex size-5 items-center justify-center rounded-[4px] ${outputMeta.chip}`}
-                        title={`Output type: ${outputMeta.label}`}
-                      >
-                        <OutputIcon className="size-3" />
-                      </span>
-                      <Badge variant="secondary" className="font-mono text-[10px]">
-                        {job.tool}
-                      </Badge>
-                      <span
-                        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium ${statusPill}`}
-                      >
-                        {isActive && <Loader2 className="size-2.5 animate-spin" />}
-                        {job.status}
-                      </span>
-                      {/* REAL / SIMULATED badge — surfaces whether the run
-                          used a real algorithm or fell back to the
-                          synthetic generator. */}
-                      <Badge
-                        variant="outline"
-                        className={
-                          simulated
-                            ? "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
-                            : "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
-                        }
-                        title={
-                          simulated
-                            ? "This run used the synthetic generator (no real tool was installed)"
-                            : "This run used a real algorithm"
-                        }
-                      >
-                        {simulated ? "SIMULATED" : "REAL"}
-                      </Badge>
-                      <span className="text-xs text-muted-foreground">
-                        by {job.triggeredBy || "user"}
-                      </span>
-                      <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-                        <Clock className="size-3" />
-                        {timeAgo(job.createdAt)}
-                      </span>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => setViewJob(job)}
-                      >
-                        <Eye className="size-3.5" />
-                        View output
-                      </Button>
-                    </div>
-                    {/* Inline preview — collapsible stdout + per-file
-                        download buttons. Shown when the row is expanded so
-                        users can scan results without opening the dialog. */}
-                    {isExpanded && (
-                      <div className="space-y-3 border-t bg-muted/20 px-3 py-3">
-                        {job.stdout ? (
-                          <div>
-                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              stdout
-                            </p>
-                            <pre className="max-h-64 overflow-auto rounded-md bg-background p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-                              {job.stdout}
-                            </pre>
-                          </div>
-                        ) : (
-                          <p className="text-xs text-muted-foreground">
-                            No stdout captured for this job.
-                          </p>
-                        )}
-                        {job.stderr && (
-                          <div>
-                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-destructive">
-                              stderr
-                            </p>
-                            <pre className="max-h-32 overflow-auto rounded-md bg-destructive/10 p-3 font-mono text-xs text-destructive whitespace-pre-wrap break-words">
-                              {job.stderr}
-                            </pre>
-                          </div>
-                        )}
-                        {job.outputFiles.length > 0 && (
-                          <div>
-                            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                              output files ({job.outputFiles.length})
-                            </p>
-                            <ul className="flex flex-wrap gap-1.5">
-                              {job.outputFiles.map((f, i) => (
-                                <li key={`${f}-${i}`}>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    asChild
-                                    className="h-7 gap-1 px-2 text-[11px]"
-                                  >
-                                    <a
-                                      href={fileDownloadUrl(job.id, f)}
-                                      target="_blank"
-                                      rel="noopener noreferrer"
-                                    >
-                                      <Download className="size-3" />
-                                      <code className="font-mono">
-                                        {f.split("/").pop() ?? f}
-                                      </code>
-                                    </a>
-                                  </Button>
-                                </li>
-                              ))}
-                            </ul>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </li>
-                );
-              })}
-            </ul>
+                    {line}
+                  </div>
+                ))}
+                {installJob.status === "running" && (
+                  <div className="text-zinc-500">
+                    <Loader2 className="mr-1 inline size-3 animate-spin" />
+                    running…
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-between text-[11px] text-muted-foreground">
+                <span>
+                  started {timeAgo(installJob.startedAt)}
+                  {installJob.finishedAt && installJob.exitCode != null
+                    ? ` · exit ${installJob.exitCode}`
+                    : ""}
+                </span>
+                {installJob.status === "completed" && (
+                  <span className="text-emerald-600 dark:text-emerald-400">
+                    statuses refresh automatically after install
+                  </span>
+                )}
+              </div>
+            </div>
           )}
-        </CardContent>
-      </Card>
-
-      {/* Job output dialog (tabbed: Summary / Structure / Sequence / Files / Command) */}
-      <OutputViewerDialog
-        job={viewJob}
-        open={!!viewJob}
-        onClose={() => setViewJob(null)}
-      />
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
 
-function ParamField({
-  field,
+// ── Sub-components ──────────────────────────────────────────────────────────
+
+function SummaryCard({
+  icon,
+  title,
   value,
-  onChange,
+  caption,
+  ok,
 }: {
-  field: CompParamField;
-  value: unknown;
-  onChange: (v: unknown) => void;
+  icon: React.ReactNode;
+  title: string;
+  value: string;
+  caption: string;
+  ok: boolean;
 }) {
-  const labelEl = (
-    <Label className="text-xs">
-      {field.label}
-      {field.unit && <span className="ml-1 text-muted-foreground">({field.unit})</span>}
-    </Label>
-  );
-
-  if (field.type === "bool") {
-    return (
-      <div className="flex items-center justify-between rounded-md border p-2.5">
-        <div>
-          {labelEl}
-          {field.hint && <p className="text-[10px] text-muted-foreground">{field.hint}</p>}
-        </div>
-        <Switch checked={!!value} onCheckedChange={(v) => onChange(v)} />
-      </div>
-    );
-  }
-
-  if (field.type === "select") {
-    return (
-      <div className="grid gap-1.5">
-        {labelEl}
-        <Select value={String(value)} onValueChange={(v) => onChange(v)}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {(field.options ?? []).map((opt) => (
-              <SelectItem key={opt} value={opt}>
-                {opt}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-    );
-  }
-
-  if (field.type === "number") {
-    return (
-      <div className="grid gap-1.5">
-        {labelEl}
-        <Input
-          type="number"
-          min={field.min}
-          max={field.max}
-          step={field.step ?? 1}
-          value={value as number}
-          onChange={(e) => onChange(Number(e.target.value))}
-        />
-        {field.hint && <p className="text-[10px] text-muted-foreground">{field.hint}</p>}
-      </div>
-    );
-  }
-
-  // text | path
   return (
-    <div className="grid gap-1.5">
-      {labelEl}
-      <Input
-        type="text"
-        value={String(value ?? "")}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={field.hint ?? ""}
-      />
-      {field.hint && <p className="text-[10px] text-muted-foreground">{field.hint}</p>}
+    <Card>
+      <CardContent className="flex items-center gap-3 p-4">
+        <div
+          className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${
+            ok
+              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+              : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+          }`}
+        >
+          {icon}
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{title}</p>
+          <p className="text-lg font-semibold leading-tight">{value}</p>
+          <p className="truncate text-[11px] text-muted-foreground">{caption}</p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function SectionHeader({
+  id,
+  icon,
+  title,
+  count,
+  hint,
+}: {
+  id: string;
+  icon: React.ReactNode;
+  title: string;
+  count: number;
+  hint: string;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      <span className="flex size-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
+        {icon}
+      </span>
+      <h3 id={id} className="text-sm font-semibold tracking-tight">
+        {title}
+        <span className="ml-2 text-xs font-normal text-muted-foreground">
+          ({count})
+        </span>
+      </h3>
+      <p className="hidden flex-1 truncate text-xs text-muted-foreground lg:block">
+        — {hint}
+      </p>
     </div>
+  );
+}
+
+function RuntimeCard({
+  row,
+  onInstall,
+  installing,
+}: {
+  row: RuntimeRow;
+  onInstall: () => void;
+  installing: boolean;
+}) {
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="flex items-start gap-3 p-4">
+        <div className="min-w-0 flex-1 space-y-1">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-medium">{row.label}</p>
+            <StatusBadge installed={row.installed} />
+            {row.installed && row.version && (
+              <Badge variant="secondary" className="font-mono text-[10px]">
+                {row.version}
+              </Badge>
+            )}
+          </div>
+          <p className="line-clamp-2 text-xs text-muted-foreground">
+            {row.description}
+          </p>
+        </div>
+        <div className="shrink-0">
+          {!row.installed && row.oneClick ? (
+            <Button size="sm" onClick={onInstall} disabled={installing}>
+              {installing ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Download className="size-3.5" />
+              )}
+              Install
+            </Button>
+          ) : !row.installed ? (
+            <Button size="sm" variant="ghost" asChild>
+              <a href={row.docs} target="_blank" rel="noreferrer">
+                <ExternalLink className="size-3.5" />
+                Docs
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatusBadge({ installed }: { installed: boolean }) {
+  return installed ? (
+    <Badge
+      variant="outline"
+      className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+    >
+      <CheckCircle2 className="size-3" />
+      installed
+    </Badge>
+  ) : (
+    <Badge
+      variant="outline"
+      className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+    >
+      <XCircle className="size-3" />
+      missing
+    </Badge>
+  );
+}
+
+function EngineCard({ engine }: { engine: EngineRow }) {
+  const [open, setOpen] = React.useState(false);
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader
+        className="cursor-pointer select-none py-3"
+        onClick={() => setOpen((v) => !v)}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setOpen((v) => !v);
+          }
+        }}
+        aria-expanded={open}
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          {open ? (
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="size-3.5 text-muted-foreground" />
+          )}
+          <CardTitle className="text-sm">{engine.label}</CardTitle>
+          <Badge
+            variant="outline"
+            className={
+              engine.ok
+                ? "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+                : "border-rose-500/40 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-400"
+            }
+          >
+            {engine.ok ? "self-test PASS" : "self-test FAIL"}
+          </Badge>
+          <Badge variant="secondary" className="font-mono text-[10px]">
+            {engine.script}
+          </Badge>
+          <div className="ml-auto flex flex-wrap gap-1">
+            {engine.serves.map((s) => (
+              <Badge key={s} variant="outline" className="text-[10px]">
+                {s}
+              </Badge>
+            ))}
+          </div>
+        </div>
+        {!open && (
+          <CardDescription className="mt-1 line-clamp-1 text-xs">
+            {engine.description}
+          </CardDescription>
+        )}
+      </CardHeader>
+      {open && (
+        <CardContent className="space-y-3 border-t pt-3">
+          <p className="text-xs text-muted-foreground">{engine.description}</p>
+          <div>
+            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+              Real algorithms &amp; published data
+            </p>
+            <ul className="space-y-1">
+              {engine.algorithms.map((a) => (
+                <li key={a} className="flex items-start gap-2 text-xs">
+                  <span className="mt-1 size-1 shrink-0 rounded-full bg-primary" />
+                  {a}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <p className="break-all rounded bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
+            {engine.detail.slice(0, 160)}
+            {engine.detail.length > 160 ? "…" : ""}
+          </p>
+        </CardContent>
+      )}
+    </Card>
+  );
+}
+
+function ToolCard({
+  row,
+  engines,
+  onInstall,
+  installing,
+}: {
+  row: ToolRow;
+  engines: EngineRow[];
+  onInstall: () => void;
+  installing: boolean;
+}) {
+  const engine = engines.find((e) => e.key === row.builtinEngine);
+  return (
+    <Card className="overflow-hidden">
+      <CardContent className="space-y-2 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <p className="text-sm font-medium">{row.label}</p>
+          {row.installed ? (
+            <Badge
+              variant="outline"
+              className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+            >
+              <CheckCircle2 className="size-3" />
+              native
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+            >
+              <XCircle className="size-3" />
+              not installed
+            </Badge>
+          )}
+        </div>
+        <p className="line-clamp-2 text-xs text-muted-foreground">
+          {row.description}
+        </p>
+
+        {/* Fallback engine row */}
+        {engine && (
+          <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-dashed px-2 py-1.5">
+            <Info className="size-3 text-muted-foreground" />
+            <span className="text-[11px] text-muted-foreground">
+              Fallback:
+            </span>
+            <Badge
+              variant="outline"
+              className={
+                engine.ok
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+                  : "border-rose-500/40 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-400"
+              }
+            >
+              {ENGINE_LABELS[engine.key] ?? engine.key} · real algorithms
+            </Badge>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2 pt-1">
+          {row.oneClick && !row.installed && (
+            <Button size="sm" onClick={onInstall} disabled={installing}>
+              {installing ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <Download className="size-3.5" />
+              )}
+              Install
+              {row.sizeHint && (
+                <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">
+                  {row.sizeHint}
+                </span>
+              )}
+            </Button>
+          )}
+          {row.installed && (
+            <Badge variant="secondary" className="text-[10px]">
+              native execution active
+            </Badge>
+          )}
+          <Button size="sm" variant="ghost" asChild>
+            <a href={row.docs} target="_blank" rel="noreferrer">
+              <ExternalLink className="size-3.5" />
+              Docs
+            </a>
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function RecentInstalls({
+  jobs,
+  onOpen,
+}: {
+  jobs: InstallJobDTO[];
+  onOpen: (job: InstallJobDTO) => void;
+}) {
+  const [open, setOpen] = React.useState(true);
+  return (
+    <section className="space-y-2" aria-labelledby="installs-heading">
+      <div className="flex items-center gap-2">
+        <button
+          className="flex items-center gap-1 text-sm font-semibold tracking-tight"
+          onClick={() => setOpen((v) => !v)}
+        >
+          {open ? (
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          ) : (
+            <ChevronRight className="size-3.5 text-muted-foreground" />
+          )}
+          <span id="installs-heading">Recent Installs</span>
+          <span className="text-xs font-normal text-muted-foreground">
+            ({jobs.length})
+          </span>
+        </button>
+      </div>
+      {open && (
+        <div className="max-h-72 overflow-y-auto">
+          <div className="space-y-2">
+            {jobs.map((job) => (
+              <button
+                key={job.id}
+                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50"
+                onClick={() => onOpen(job)}
+              >
+                <Terminal className="size-4 shrink-0 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-medium">{job.label}</p>
+                  <p className="truncate font-mono text-[11px] text-muted-foreground">
+                    {job.command}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <span className="text-[11px] text-muted-foreground">
+                    {timeAgo(job.startedAt)}
+                  </span>
+                  <Badge
+                    variant="outline"
+                    className={
+                      job.status === "running"
+                        ? "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+                        : job.status === "completed"
+                          ? "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+                          : "border-rose-500/40 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-400"
+                    }
+                  >
+                    {job.status}
+                  </Badge>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+    </section>
   );
 }

@@ -2,7 +2,9 @@
 // Server-only. Depends on llm.ts, agents.ts, tools.ts, bio-tools.ts.
 
 import { chat, type ChatMessage } from "./llm";
-import { getCompTool, simulateCompRun, extractToolCalls } from "./tools";
+import { getCompTool, extractToolCalls } from "./tools";
+import { executeCompToolReal } from "./real-executor";
+import { resolve } from "path";
 import { runBio } from "./bio-tools";
 import type { AgentDTO, ToolCall, DiscussionMessage } from "./types";
 
@@ -294,22 +296,23 @@ export async function orchestrate(
 // --- Direct tool invocation helpers (used by the executor indirectly via runAgentTurn,
 //     but exposed for orchestrator consumers that want to call tools directly). ---
 
-/** Run a single comp tool directly. Returns the simulated stdout. */
-export function runCompToolDirect(
+/** Run a single comp tool directly via the REAL execution engine. */
+export async function runCompToolDirect(
   toolKey: string,
   params: Record<string, unknown>,
-): { stdout: string; toolCalls: ToolCall[] } | null {
+): Promise<{ stdout: string; toolCalls: ToolCall[] } | null> {
   const def = getCompTool(toolKey);
   if (!def) return null;
-  const sim = simulateCompRun(def, params);
+  const workDir = resolve(process.cwd(), "outputs", toolKey, `direct-${Date.now()}`);
+  const res = await executeCompToolReal(toolKey, params, workDir);
   const tc: ToolCall = {
     kind: "comp",
     tool: toolKey,
     params,
-    result: sim.stdout,
-    status: "completed",
+    result: res.stdout || res.stderr,
+    status: res.exitCode === 0 ? "completed" : "failed",
   };
-  return { stdout: sim.stdout, toolCalls: [tc] };
+  return { stdout: res.stdout || res.stderr, toolCalls: [tc] };
 }
 
 /** Run a single bio tool directly. Returns the hit summary + tool call record. */

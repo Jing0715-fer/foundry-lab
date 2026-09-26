@@ -52,15 +52,7 @@ prompt
 server.log
 # Skills directory
 /skills/
-# Foundry Lab specifics
+# Foundry Lab — run artifacts + external tool installs (regenerated at runtime)
+/outputs/
+/external-tools/
 dev.log
-server.log
-db/*.db
-db/*.db-journal
-prisma/dev.db
-download/
-upload/
-agent-ctx/
-.zscripts/
-tool-results/
-outputs/

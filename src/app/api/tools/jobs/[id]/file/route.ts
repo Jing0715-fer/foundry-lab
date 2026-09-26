@@ -1,17 +1,15 @@
 // GET /api/tools/jobs/[id]/file
-//   - If `?path=<file>` is NOT provided → return the simulated `outputFiles`
+//   - If `?path=<file>` is NOT provided → return the job's real `outputFiles`
 //     list as JSON so clients can discover what's available.
-//   - If `?path=<file>` IS provided → generate + return the file's content.
-//     PDB → chemical/x-pdb, FASTA → text/fasta, anything else falls back to
-//     the job's stdout as text/plain.
-//
-// The content is generated on-the-fly from `simulateCompRun` + per-extension
-// generators so the sandbox always has something realistic to hand back
-// without storing real file artifacts.
+//   - If `?path=<file>` IS provided → stream the REAL file from disk (the
+//     path must be one of the job's recorded output files, or live inside
+//     the job's workDir). PDB → chemical/x-pdb, FASTA → text/fasta,
+//     everything else text/plain.
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { getCompTool, simulateCompRun } from "@/lib/tools";
+import { promises as fs } from "fs";
+import { isAbsolute, join, normalize, resolve, sep } from "path";
 
 export async function GET(
   _request: NextRequest,
@@ -23,55 +21,60 @@ export async function GET(
     return NextResponse.json({ error: "Job not found" }, { status: 404 });
   }
 
-  const tool = getCompTool(job.tool);
-  if (!tool) {
-    return NextResponse.json({ error: "Unknown tool" }, { status: 400 });
-  }
-
-  // Parse the stored params (note: renamed to `parsedParams` to avoid
-  // shadowing the route-handler `params` arg).
-  let parsedParams: Record<string, unknown> = {};
+  let outputFiles: string[] = [];
   try {
-    const raw = JSON.parse(job.params);
-    if (raw && typeof raw === "object" && !Array.isArray(raw)) {
-      parsedParams = raw as Record<string, unknown>;
-    }
+    outputFiles = job.outputFiles ? JSON.parse(job.outputFiles) : [];
   } catch {
-    /* ignore — fall back to empty params */
+    /* ignore */
   }
 
-  // Generate the simulated output (deterministic given seed + tool + params).
-  const sim = simulateCompRun(tool, parsedParams);
-
-  // Resolve the requested file path from the query string.
   const url = new URL(_request.url);
   const filePath = url.searchParams.get("path");
 
   if (!filePath) {
-    // Return a list of files
-    return NextResponse.json({ files: sim.outputFiles });
+    return NextResponse.json({ files: outputFiles });
   }
 
-  // Generate file content based on the file extension
-  const fileName = filePath.split("/").pop() || "output";
+  // Security: the requested path must be an exact recorded output file, or
+  // resolve inside this job's workDir (outputs/<tool>/<jobId>/…).
+  const outputsRoot = resolve(process.cwd(), "outputs");
+  const workDir = join(outputsRoot, job.tool, job.id);
+  const normalized = normalize(filePath);
+  const isRecorded = outputFiles.includes(normalized) || outputFiles.includes(resolve(normalized));
+  const resolvedAbs = isAbsolute(normalized) ? resolve(normalized) : resolve(join(workDir, normalized));
+  const inWorkDir = resolvedAbs === workDir || resolvedAbs.startsWith(workDir + sep);
+  if (!isRecorded && !inWorkDir) {
+    return NextResponse.json(
+      { error: "Path is outside this job's outputs." },
+      { status: 403 },
+    );
+  }
+
+  let content: string;
+  try {
+    content = await fs.readFile(resolvedAbs, "utf-8");
+  } catch {
+    return NextResponse.json(
+      {
+        error: "File not found on disk.",
+        hint:
+          "This job has no persisted artifact for that path. Real engines " +
+          "write files at run time — re-run the job to regenerate outputs.",
+      },
+      { status: 404 },
+    );
+  }
+
+  const fileName = normalized.split("/").pop() ?? "output";
   const ext = fileName.split(".").pop()?.toLowerCase();
-
-  // The design index is the position of this path in the simulated list.
-  // Fall back to 0 if not found so we always produce something.
-  const designIndex = Math.max(0, sim.outputFiles.indexOf(filePath));
-
-  let content = "";
-  let contentType = "text/plain";
-
-  if (ext === "pdb") {
-    content = generatePdbContent(tool.key, parsedParams, designIndex);
-    contentType = "chemical/x-pdb";
-  } else if (ext === "fasta") {
-    content = generateFastaContent(tool.key, parsedParams, designIndex);
-    contentType = "text/fasta";
-  } else {
-    content = sim.stdout;
-  }
+  const contentType =
+    ext === "pdb"
+      ? "chemical/x-pdb"
+      : ext === "fasta"
+        ? "text/fasta"
+        : ext === "json"
+          ? "application/json"
+          : "text/plain";
 
   return new Response(content, {
     headers: {
@@ -79,50 +82,4 @@ export async function GET(
       "Content-Disposition": `inline; filename="${fileName}"`,
     },
   });
-}
-
-/**
- * Generate a deterministic PDB structure (a helix of CA atoms) for the given
- * tool / params / design index. The seed shifts per design so each design in
- * a multi-design run produces a slightly different backbone.
- */
-function generatePdbContent(
-  toolKey: string,
-  params: Record<string, unknown>,
-  designIndex: number,
-): string {
-  const lines: string[] = [];
-  const numResidues = 24;
-  const seed = Number(params.seed ?? 42) + designIndex * 7;
-  for (let i = 1; i <= numResidues; i++) {
-    const t = i * 0.6 + seed * 0.01;
-    const x = (15 * Math.cos(t)).toFixed(3);
-    const y = (3 * t).toFixed(3);
-    const z = (15 * Math.sin(t)).toFixed(3);
-    lines.push(
-      `ATOM  ${String(i).padStart(5)}  CA  ALA A${String(i).padStart(4)}     ${x.padStart(8)} ${y.padStart(8)} ${z.padStart(8)}  1.00 20.00           C`,
-    );
-  }
-  lines.push("END");
-  // Include the tool key as a REMARK for traceability (PDB-aware viewers
-  // ignore unknown record types, so this is harmless).
-  return `REMARK   1 GENERATED BY FOUNDRY-LAB SIMULATION — tool=${toolKey} design=${designIndex + 1} seed=${seed}\n${lines.join("\n")}`;
-}
-
-/**
- * Generate a deterministic FASTA record (60 residues cycling through the 20
- * standard amino acids, offset by seed + seqIndex so each design differs).
- */
-function generateFastaContent(
-  toolKey: string,
-  params: Record<string, unknown>,
-  seqIndex: number,
-): string {
-  const seed = Number(params.seed ?? 42) + seqIndex * 13;
-  const aas = "ACDEFGHIKLMNPQRSTVWY";
-  const seq = Array.from(
-    { length: 60 },
-    (_, i) => aas[(seed + i) % 20],
-  ).join("");
-  return `>design_${seqIndex + 1}|${toolKey}|seed=${seed}\n${seq}\n`;
 }

@@ -8,7 +8,9 @@ import {
   roundPrompt,
   summaryPrompt,
 } from "./agents";
-import { getCompTool, buildCommand, simulateCompRun, extractToolCalls } from "./tools";
+import { getCompTool, buildCommand, extractToolCalls } from "./tools";
+import { executeCompToolReal } from "./real-executor";
+import { resolve } from "path";
 import { runBio } from "./bio-tools";
 import type {
   AgentDTO,
@@ -117,23 +119,33 @@ export async function runAgentTurn(
     const { comp, bio } = extractToolCalls(reply);
     if (comp.length === 0 && bio.length === 0) break;
 
-    // Execute comp tool calls.
+    // Execute comp tool calls (real algorithms via the execution engine).
     for (const c of comp) {
       const def = getCompTool(c.tool);
       if (!def) continue;
-      const sim = simulateCompRun(def, c.params);
+      const workDir = resolve(process.cwd(), "outputs", c.tool, `agent-${Date.now()}`);
+      let resultText = "";
+      let status: ToolCall["status"] = "completed";
+      try {
+        const res = await executeCompToolReal(c.tool, c.params, workDir);
+        resultText = res.stdout || res.stderr;
+        status = res.exitCode === 0 ? "completed" : "failed";
+      } catch (e) {
+        resultText = `Error: ${(e as Error).message}`;
+        status = "failed";
+      }
       const tc: ToolCall = {
         kind: "comp",
         tool: c.tool,
         params: c.params,
-        result: sim.stdout,
-        status: "completed",
+        result: resultText,
+        status,
       };
       toolCalls.push(tc);
       convo.push({ role: "assistant", content: reply });
       convo.push({
         role: "user",
-        content: `[Tool result for ${c.tool}]\n${sim.stdout}\n\nRevise your answer using these results.`,
+        content: `[Tool result for ${c.tool}]\n${resultText}\n\nRevise your answer using these results.`,
       });
     }
     // Execute bio tool calls.
@@ -373,21 +385,23 @@ export async function runResearch(
   return { messages, report };
 }
 
-/** Run a comp tool and return {summary, stdout, files}. */
-export function executeCompTool(
+/** Run a comp tool via the REAL execution engine (native → built-in real
+ *  algorithm). Returns {summary, stdout, files, command}. */
+export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
-): { summary: string; stdout: string; files: string[]; command: string } {
+): Promise<{ summary: string; stdout: string; files: string[]; command: string }> {
   const def = getCompTool(toolKey);
   if (!def) {
     return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "" };
   }
-  const command = buildCommand(def, params);
-  const sim = simulateCompRun(def, params);
+  const workDir = resolve(process.cwd(), "outputs", toolKey, `wf-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+  const res = await executeCompToolReal(toolKey, params, workDir);
+  const summary = def.resultSummary(params, res.stdout);
   return {
-    summary: def.resultSummary(params, sim.stdout),
-    stdout: `$ ${command}\n\n${sim.stdout}`,
-    files: sim.outputFiles,
-    command,
+    summary,
+    stdout: `$ ${res.command}\n${res.executor === "builtin-engine" ? "\n[built-in real algorithm engine]\n" : ""}${res.stdout}`,
+    files: res.outputFiles.map((f) => f),
+    command: res.command,
   };
 }
