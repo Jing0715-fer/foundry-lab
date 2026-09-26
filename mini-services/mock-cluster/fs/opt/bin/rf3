@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# [mock-cluster shim] rf3 CLI → the REAL built-in fold engine.
+# The app dispatches `rf3 fold input.fasta=<path> num_recycles=3 use_msa=true
+# seed=42` (hydra style) — routed to
+# /home/z/my-project/scripts/algorithms/fold_engine.py.
+set -u
+ENGINE="/home/z/my-project/scripts/algorithms/fold_engine.py"
+HELPER="/home/z/my-project/mini-services/mock-cluster/shims/generic_payload.py"
+
+fasta=""; recycles=""; use_msa="true"; seed=""
+for arg in "$@"; do
+  [ "$arg" = "fold" ] && continue   # skip the leading `fold` subcommand token
+  key="${arg%%=*}"; val="${arg#*=}"
+  [ "$key" = "$arg" ] && val=""
+  case "$key" in
+    input.fasta|fasta_path|fasta) fasta="$val" ;;
+    num_recycles|recycles)        recycles="$val" ;;
+    use_msa)                      use_msa="$val" ;;
+    seed)                         seed="$val" ;;
+    *) ;;
+  esac
+done
+
+payload="$(python3 "$HELPER" rf3 "$(pwd)" \
+  fasta_path="$fasta" num_recycles="$recycles" use_msa="$use_msa" seed="$seed")" || exit 1
+
+echo "[mock-cluster shim] rf3 CLI received — routing to the REAL built-in fold"
+echo "[mock-cluster shim] engine (Chou-Fasman + recycle consensus, numpy):"
+echo "[mock-cluster shim] engine: $ENGINE"
+echo "[mock-cluster shim] payload: $payload"
+
+exec python3 "$ENGINE" "$payload"

@@ -1,0 +1,6 @@
+{
+  "name": "foundry-lab-mock-cluster",
+  "private": true,
+  "scripts": { "dev": "bun --hot index.ts", "start": "bun index.ts" },
+  "dependencies": { "ssh2": "^1.17.0" }
+}
