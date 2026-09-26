@@ -32,6 +32,7 @@ import { NodeCard } from "./node-card";
 import { LiveWire } from "./live-wire";
 import { CanvasMinimap, useMinimapStore } from "./canvas-minimap";
 import { NodeSearch } from "./node-search";
+import { NodeGroupLayer, createGroupFromSelection } from "./node-group";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   bot: Bot,
@@ -87,6 +88,8 @@ export function WorkflowCanvas() {
 
   const [createMenu, setCreateMenu] = React.useState<CreateMenuState | null>(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
+  const [groupPromptOpen, setGroupPromptOpen] = React.useState(false);
+  const [groupLabel, setGroupLabel] = React.useState("");
 
   // --- Keyboard shortcut: Ctrl+F opens the canvas node search. --------
   // Skip when typing in an input / textarea / contenteditable / dialog
@@ -107,6 +110,42 @@ export function WorkflowCanvas() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // --- Keyboard shortcut: Ctrl+G opens the "group selection" prompt. ---
+  // Skip when typing in an input / textarea / contenteditable so the
+  // browser's text-editing shortcuts (and our own group prompt input)
+  // don't conflict with this global listener.
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key.toLowerCase() !== "g") return;
+      const t = e.target as HTMLElement | null;
+      if (t) {
+        const tag = t.tagName;
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        if (t.isContentEditable) return;
+      }
+      e.preventDefault();
+      setGroupLabel("");
+      setGroupPromptOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // --- Submit / cancel the group prompt. ------------------------------
+  const submitGroupPrompt = React.useCallback(() => {
+    const label = groupLabel.trim() || "Group";
+    createGroupFromSelection(label, "teal");
+    setGroupLabel("");
+    setGroupPromptOpen(false);
+  }, [groupLabel]);
+
+  const cancelGroupPrompt = React.useCallback(() => {
+    setGroupLabel("");
+    setGroupPromptOpen(false);
   }, []);
 
   // Group specs for the create menu (constant; safe to memoize once).
@@ -555,6 +594,8 @@ export function WorkflowCanvas() {
           height: 0,
         }}
       >
+        {/* Node-group overlays (behind nodes, above grid). */}
+        <NodeGroupLayer />
         <EdgesLayer edges={edges} nodes={nodes} />
         {nodes.map((n) => (
           <div key={n.id} data-node-card>
@@ -694,6 +735,65 @@ export function WorkflowCanvas() {
 
       {/* Node search bar (toggled by Ctrl+F or the Find button). */}
       {searchOpen && <NodeSearch onClose={() => setSearchOpen(false)} />}
+
+      {/* Group prompt (Ctrl+G) — floating label input at the viewport center. */}
+      {groupPromptOpen && (
+        <>
+          {/* Click-away catcher. */}
+          <div
+            className="fixed inset-0 z-30"
+            onPointerDown={(e) => {
+              e.stopPropagation();
+              cancelGroupPrompt();
+            }}
+          />
+          <div className="absolute left-1/2 top-1/2 z-40 w-[19rem] -translate-x-1/2 -translate-y-1/2">
+            <div className="flex flex-col gap-3 rounded-xl border border-border bg-card p-4 shadow-xl">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <Box className="size-4 text-muted-foreground" />
+                  <span className="text-sm font-medium">Create group</span>
+                </div>
+                <span className="text-[11px] text-muted-foreground">
+                  <kbd className="rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">Ctrl</kbd>
+                  <kbd className="ml-0.5 rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">G</kbd>
+                </span>
+              </div>
+              <input
+                autoFocus
+                value={groupLabel}
+                onChange={(e) => setGroupLabel(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitGroupPrompt();
+                  } else if (e.key === "Escape") {
+                    e.preventDefault();
+                    cancelGroupPrompt();
+                  }
+                }}
+                placeholder="Group label…"
+                className="w-full rounded-md border border-input bg-background px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-primary/40"
+              />
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] text-muted-foreground">
+                  <kbd className="rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">Enter</kbd>{" "}
+                  create · {" "}
+                  <kbd className="rounded border bg-muted px-1 py-0.5 text-[10px] font-mono">Esc</kbd>{" "}
+                  cancel
+                </span>
+                <button
+                  type="button"
+                  onClick={submitGroupPrompt}
+                  className="inline-flex items-center rounded-md bg-primary px-3 py-1 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90"
+                >
+                  Create
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </section>
   );
 }

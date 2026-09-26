@@ -10,6 +10,8 @@ import {
   Download,
   Check,
   Wrench,
+  Loader2,
+  ExternalLink,
 } from "lucide-react";
 import {
   Dialog,
@@ -36,8 +38,14 @@ import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 const STRUCTURE_TOOLS = new Set(["rfdiffusion", "rfantibody", "rosetta"]);
 const SEQUENCE_TOOLS = new Set(["proteinmpnn"]);
 
+// Used as the fallback when the file fetch fails (e.g. server unreachable).
 const SAMPLE_PDB = generateSamplePdb();
 const SAMPLE_FASTA = generateSampleFasta();
+
+/** Build the API URL for fetching a single output file's content. */
+function fileApiUrl(jobId: string, path: string): string {
+  return `/api/tools/jobs/${jobId}/file?path=${encodeURIComponent(path)}`;
+}
 
 function statusPillClass(status: string): string {
   if (status === "completed") return "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
@@ -62,10 +70,61 @@ export function OutputViewerDialog({
   const [copied, setCopied] = React.useState<string | null>(null);
   const [activeTab, setActiveTab] = React.useState<string>("summary");
 
+  // Real fetched PDB / FASTA content (null = not yet loaded / no file).
+  const [pdbContent, setPdbContent] = React.useState<string | null>(null);
+  const [fastaContent, setFastaContent] = React.useState<string | null>(null);
+  const [loadingContent, setLoadingContent] = React.useState(false);
+
   // Reset to the "summary" tab whenever a new job is opened.
   React.useEffect(() => {
     if (open) setActiveTab("summary");
   }, [open, job?.id]);
+
+  // Fetch real PDB / FASTA content for the first matching output file
+  // whenever the dialog opens (or the job changes). Falls back to the
+  // synthetic SAMPLE_* content if the fetch fails so the viewer is never
+  // empty.
+  React.useEffect(() => {
+    if (!open || !job) return;
+    const pdbFile = job.outputFiles.find((f) => f.endsWith(".pdb"));
+    const fastaFile = job.outputFiles.find((f) => f.endsWith(".fasta"));
+
+    let cancelled = false;
+
+    if (pdbFile) {
+      setLoadingContent(true);
+      fetch(fileApiUrl(job.id, pdbFile))
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+        .then((text) => {
+          if (!cancelled) setPdbContent(text);
+        })
+        .catch(() => {
+          if (!cancelled) setPdbContent(SAMPLE_PDB);
+        })
+        .finally(() => {
+          if (!cancelled) setLoadingContent(false);
+        });
+    } else {
+      setPdbContent(null);
+    }
+
+    if (fastaFile) {
+      fetch(fileApiUrl(job.id, fastaFile))
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+        .then((text) => {
+          if (!cancelled) setFastaContent(text);
+        })
+        .catch(() => {
+          if (!cancelled) setFastaContent(SAMPLE_FASTA);
+        });
+    } else {
+      setFastaContent(null);
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [open, job?.id, job?.outputFiles]);
 
   const handleCopyFile = async (path: string) => {
     try {
@@ -81,6 +140,11 @@ export function OutputViewerDialog({
   const hasSequence = !!job && SEQUENCE_TOOLS.has(job.tool);
   const hasFiles = !!job?.outputFiles && job.outputFiles.length > 0;
   const hasCommand = !!job?.command;
+
+  // First matching output file of each type — used for both the inline
+  // preview fetch (above) and the Download buttons.
+  const pdbFile = job?.outputFiles.find((f) => f.endsWith(".pdb")) ?? null;
+  const fastaFile = job?.outputFiles.find((f) => f.endsWith(".fasta")) ?? null;
 
   if (!job) {
     return null;
@@ -175,7 +239,7 @@ export function OutputViewerDialog({
             </div>
           </TabsContent>
 
-          {/* Structure tab — PDB viewer (always show sample; real PDB text not yet wired) */}
+          {/* Structure tab — PDB viewer (real fetched PDB, falls back to sample) */}
           {hasStructure && (
             <TabsContent
               value="structure"
@@ -183,14 +247,41 @@ export function OutputViewerDialog({
             >
               <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="size-3.5" />
-                Showing a representative scaffold for this tool — download the
-                actual PDB files from the Files tab.
+                {pdbFile ? (
+                  <code className="truncate font-mono">{pdbFile}</code>
+                ) : (
+                  <span>
+                    Showing a representative scaffold — no PDB file in this
+                    job's outputs.
+                  </span>
+                )}
+                {pdbFile && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="ml-auto h-7 gap-1 px-2 text-[11px]"
+                    onClick={() =>
+                      window.open(fileApiUrl(job.id, pdbFile), "_blank")
+                    }
+                  >
+                    <Download className="size-3" />
+                    Download
+                  </Button>
+                )}
               </div>
-              <PdbViewer pdbText={SAMPLE_PDB} />
+              {loadingContent && !pdbContent ? (
+                <div className="flex h-72 items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground">
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Loading structure…
+                </div>
+              ) : (
+                <PdbViewer pdbText={pdbContent ?? SAMPLE_PDB} />
+              )}
             </TabsContent>
           )}
 
-          {/* Sequence tab — FASTA viewer (sample) */}
+          {/* Sequence tab — FASTA viewer (real fetched FASTA, falls back to sample) */}
           {hasSequence && (
             <TabsContent
               value="sequence"
@@ -198,10 +289,37 @@ export function OutputViewerDialog({
             >
               <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
                 <Dna className="size-3.5" />
-                Showing a representative designed sequence for this tool —
-                download the actual FASTA files from the Files tab.
+                {fastaFile ? (
+                  <code className="truncate font-mono">{fastaFile}</code>
+                ) : (
+                  <span>
+                    Showing a representative designed sequence — no FASTA file
+                    in this job's outputs.
+                  </span>
+                )}
+                {fastaFile && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    type="button"
+                    className="ml-auto h-7 gap-1 px-2 text-[11px]"
+                    onClick={() =>
+                      window.open(fileApiUrl(job.id, fastaFile), "_blank")
+                    }
+                  >
+                    <Download className="size-3" />
+                    Download
+                  </Button>
+                )}
               </div>
-              <FastaViewer fastaText={SAMPLE_FASTA} />
+              {loadingContent && !fastaContent ? (
+                <div className="flex h-60 items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground">
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Loading sequence…
+                </div>
+              ) : (
+                <FastaViewer fastaText={fastaContent ?? SAMPLE_FASTA} />
+              )}
             </TabsContent>
           )}
 
@@ -240,17 +358,32 @@ export function OutputViewerDialog({
                         className="size-7"
                         type="button"
                         aria-label="Download"
-                        title="Download (sandbox)"
-                        disabled
+                        title="Download"
+                        onClick={() =>
+                          window.open(fileApiUrl(job.id, f), "_blank")
+                        }
                       >
                         <Download className="size-3.5" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-7"
+                        type="button"
+                        aria-label="Open in new tab"
+                        title="Open in new tab"
+                        onClick={() =>
+                          window.open(fileApiUrl(job.id, f), "_blank")
+                        }
+                      >
+                        <ExternalLink className="size-3.5" />
                       </Button>
                     </div>
                   </li>
                 ))}
               </ul>
               <p className="mt-3 text-[10px] text-muted-foreground">
-                Download buttons are non-functional in the sandbox environment.
+                Files are generated on-the-fly from the simulated job params.
               </p>
             </TabsContent>
           )}

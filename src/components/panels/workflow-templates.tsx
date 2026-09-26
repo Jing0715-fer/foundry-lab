@@ -29,12 +29,23 @@ import {
   Database,
   Download,
   Flag,
+  History,
   Loader2,
+  RotateCcw,
+  Save,
   Sparkles,
   Upload,
   Users,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+// Local shape — mirrors WorkflowVersionDTO from the API route.
+interface VersionItem {
+  id: string;
+  label: string;
+  createdAt: string;
+  current?: boolean;
+}
 
 // Map node.type → lucide icon for the card preview.
 const TYPE_ICON: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -83,6 +94,12 @@ export function WorkflowTemplates({
   const [loadingId, setLoadingId] = React.useState<string | null>(null);
   const [importing, setImporting] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+
+  // Version history state — fetched on mount (the dialog mounts this
+  // component, so this fires whenever the user opens the templates gallery).
+  const [versions, setVersions] = React.useState<VersionItem[]>([]);
+  const [versionsLoading, setVersionsLoading] = React.useState(false);
+  const [savingVersion, setSavingVersion] = React.useState(false);
 
   const hasNodes = !!(workflow && workflow.nodes && workflow.nodes.length > 0);
 
@@ -245,6 +262,79 @@ export function WorkflowTemplates({
     }
   }
 
+  // --- Version history -------------------------------------------------------
+
+  // Fetch versions whenever the workflow id changes (covers initial dialog
+  // open + switching workflows while the dialog is open).
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!workflow?.id) {
+      setVersions([]);
+      return;
+    }
+    setVersionsLoading(true);
+    fetch(`/api/workflows/${workflow.id}/versions`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then((data: { versions?: VersionItem[] }) => {
+        if (!cancelled) setVersions(data.versions ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setVersions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setVersionsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflow?.id]);
+
+  async function handleSaveVersion() {
+    if (!workflow?.id || savingVersion) return;
+    const label = window.prompt(
+      "Label this version (optional):",
+      `Version ${new Date().toLocaleString()}`,
+    );
+    // prompt returns null when the user hits Cancel.
+    if (label === null) return;
+    setSavingVersion(true);
+    try {
+      const res = await fetch(`/api/workflows/${workflow.id}/versions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ label: label.trim() }),
+      });
+      if (!res.ok) throw new Error(`${res.status}`);
+      const created: VersionItem = await res.json();
+      // Optimistic prepend (newest-first). Mark all others as non-current.
+      setVersions((prev) =>
+        [{ ...created, current: true }, ...prev.map((v) => ({ ...v, current: false }))],
+      );
+      toast({
+        title: "Version saved",
+        description: created.label,
+        variant: "success",
+      });
+    } catch (e) {
+      toast({
+        title: "Failed to save version",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setSavingVersion(false);
+    }
+  }
+
+  function handleRestoreVersion(v: VersionItem) {
+    // Non-functional in this demo — restore isn't wired through the API yet.
+    toast({
+      title: "Restore coming soon",
+      description: `Restoring "${v.label}" is not yet implemented.`,
+      variant: "default",
+    });
+  }
+
   return (
     <div className="space-y-5">
       {/* Export / Import section — sits above the template gallery so the
@@ -402,6 +492,97 @@ export function WorkflowTemplates({
           );
         })}
       </div>
+
+      {/* Version History — sits below the templates grid. Lets the user
+          snapshot the current canvas and (eventually) restore prior
+          versions. Restore is intentionally non-functional in this demo. */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2">
+          <History className="size-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">Version History</h3>
+          <span className="text-[11px] text-muted-foreground">
+            Snapshot the current canvas (mock storage — Restore coming soon).
+          </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="ml-auto h-7 gap-1 px-2 text-[11px]"
+            onClick={handleSaveVersion}
+            disabled={!workflow?.id || savingVersion}
+          >
+            {savingVersion ? (
+              <Loader2 className="size-3 animate-spin" />
+            ) : (
+              <Save className="size-3" />
+            )}
+            Save version
+          </Button>
+        </div>
+
+        {!workflow?.id ? (
+          <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
+            Open a workflow to view its version history.
+          </div>
+        ) : versionsLoading ? (
+          <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
+            Loading versions…
+          </div>
+        ) : versions.length === 0 ? (
+          <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
+            No versions yet. Click "Save version" to snapshot the current
+            canvas.
+          </div>
+        ) : (
+          <ul className="space-y-1.5">
+            {versions.map((v) => (
+              <li
+                key={v.id}
+                className="flex items-center gap-2 rounded-md border bg-card px-3 py-2"
+              >
+                <div
+                  className={cn(
+                    "flex size-7 shrink-0 items-center justify-center rounded-md",
+                    v.current
+                      ? "bg-primary/10 text-primary"
+                      : "bg-muted text-muted-foreground",
+                  )}
+                >
+                  <History className="size-3.5" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-xs font-medium">
+                      {v.label}
+                    </span>
+                    {v.current && (
+                      <Badge
+                        variant="outline"
+                        className="border-primary/30 bg-primary/10 px-1.5 py-0 text-[9px] text-primary"
+                      >
+                        current
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground">
+                    {new Date(v.createdAt).toLocaleString()}
+                  </div>
+                </div>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1 px-2 text-[11px]"
+                  onClick={() => handleRestoreVersion(v)}
+                  type="button"
+                >
+                  <RotateCcw className="size-3" />
+                  Restore
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
     </div>
   );
 }

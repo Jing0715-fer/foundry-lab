@@ -438,3 +438,63 @@ kbd,
   dominant-baseline: middle;
   pointer-events: none;
 }
+
+/* --- Task 16-a: node grouping + canvas polish --------------------------- */
+
+/* Subtle grid lines (in addition to the dot grid). Apply on top of
+   .canvas-grid by also adding .canvas-grid-lines to the same element. */
+.canvas-grid-lines {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--foreground) 4%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--foreground) 4%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 100px 100px;
+}
+
+/* Node card depth shadow — a layered, soft elevation that gives cards
+   a more professional, elevated appearance. The :hover variant adds a
+   subtle primary-tinted ring + a deeper shadow for affordance. */
+.node-shadow {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 4px 12px -2px rgba(0, 0, 0, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.02);
+}
+
+.node-shadow:hover {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.06),
+    0 8px 24px -4px rgba(0, 0, 0, 0.12),
+    0 0 0 1px color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+/* Group label pulse when active (applied to the small label chip on a
+   selected group overlay). */
+@keyframes group-active-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+.group-active {
+  animation: group-active-pulse 2s ease-in-out infinite;
+}
+
+/* Disable the new animation under reduced-motion. The generic
+   reduced-motion block above already covers it defensively, but we
+   list it explicitly here for self-documentation. */
+@media (prefers-reduced-motion: reduce) {
+  .group-active {
+    animation: none !important;
+  }
+}
