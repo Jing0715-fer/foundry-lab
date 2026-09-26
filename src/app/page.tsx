@@ -19,6 +19,7 @@ import { MeetingsPanel } from "@/components/panels/meetings-panel";
 import { ResearchPanel } from "@/components/panels/research-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
+import { EnvironmentPanel } from "@/components/panels/environment-panel";
 import { PiCopilot } from "@/components/panels/pi-copilot";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
 import { CommandPalette } from "@/components/command-palette";
@@ -108,6 +109,11 @@ export default function Home() {
   // float over the canvas while the user keeps working. Toggled from the
   // Sidebar's "PI Copilot" button.
   const [piCopilotOpen, setPiCopilotOpen] = React.useState(false);
+
+  // Environment Sheet — same pattern as PI Copilot. The store's activePanel
+  // union doesn't include "environment", so the panel floats over the canvas
+  // as a Sheet. Toggled from the Sidebar's "Environment" button.
+  const [environmentOpen, setEnvironmentOpen] = React.useState(false);
 
   // Boot sequence — runs once.
   React.useEffect(() => {
@@ -265,6 +271,8 @@ export default function Home() {
         <Sidebar
           piCopilotOpen={piCopilotOpen}
           onTogglePiCopilot={() => setPiCopilotOpen((o) => !o)}
+          environmentOpen={environmentOpen}
+          onToggleEnvironment={() => setEnvironmentOpen((o) => !o)}
         />
         <main className="flex min-h-0 flex-1 flex-col">
           {activePanel === "canvas" && (
@@ -307,6 +315,24 @@ export default function Home() {
             Chat with the Principal Investigator orchestrator.
           </SheetDescription>
           <PiCopilot />
+        </SheetContent>
+      </Sheet>
+      {/* Environment Sheet — left side, w-full sm:max-w-lg. Renders the
+          Environment Management panel (tool scan + install UI). The sheet
+          opens from the left so it doesn't overlap the right-side PI Copilot
+          sheet (both can be open at once). SheetTitle/Description are
+          sr-only because EnvironmentPanel renders its own visible header. */}
+      <Sheet open={environmentOpen} onOpenChange={setEnvironmentOpen}>
+        <SheetContent
+          side="left"
+          className="w-full gap-0 p-0 sm:max-w-lg"
+        >
+          <SheetTitle className="sr-only">Environment</SheetTitle>
+          <SheetDescription className="sr-only">
+            Scan the host for installed tools and copy install commands for
+            missing ones.
+          </SheetDescription>
+          <EnvironmentPanel />
         </SheetContent>
       </Sheet>
       <CommandPalette />

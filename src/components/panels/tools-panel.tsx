@@ -14,6 +14,10 @@ import {
   Dna,
   Box,
   Database,
+  Download,
+  ChevronDown,
+  ChevronRight,
+  RefreshCw,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,6 +54,29 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
+/**
+ * Detect whether a ToolJob's stdout indicates a simulated run. The
+ * real-executor (src/lib/real-executor.ts) prefixes simulated output with
+ * `[SIMULATED — ...]`; the legacy executor (executeCompTool →
+ * simulateCompRun) emits `(simulated)` in its first line and
+ * `FOUNDRY-LAB SIMULATION` in the PDB REMARK. We treat any of those as
+ * evidence the run was a simulation rather than a real algorithm.
+ */
+function isSimulatedJob(job: ToolJobDTO): boolean {
+  if (job.params && job.params.simulated === true) return true;
+  const out = job.stdout ?? "";
+  if (/^\[SIMULATED/i.test(out)) return true;
+  if (/\(simulated\)/i.test(out)) return true;
+  if (/FOUNDRY-LAB SIMULATION/i.test(out)) return true;
+  if (job.command && /^\[SIMULATED\]/i.test(job.command)) return true;
+  return false;
+}
+
+/** Build the per-file download URL (matches the [id]/file route). */
+function fileDownloadUrl(jobId: string, path: string): string {
+  return `/api/tools/jobs/${jobId}/file?path=${encodeURIComponent(path)}`;
+}
+
 const COMP_TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   atom: Atom,
   beaker: Beaker,
@@ -66,8 +93,15 @@ const OUTPUT_TYPE_META: Record<
   rfdiffusion: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
   rfantibody: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
   rosetta: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
+  pyrosetta: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
+  // structure-prediction tools → Box icon (cyan)
+  rf3: { Icon: Box, label: "structure", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
+  esmfold: { Icon: Box, label: "structure", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
+  colabfold: { Icon: Box, label: "structure", chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400" },
   // sequence-producing tools → Dna icon (violet)
   proteinmpnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
+  ligandmpnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
+  solublempnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
 };
 
 /** Fallback for bio tools (BLAST / PDB / PubMed / UniProt) → Database icon (cyan). */
@@ -99,6 +133,7 @@ export function ToolsPanel() {
   const [jobs, setJobs] = React.useState<ToolJobDTO[]>([]);
   const [loadingJobs, setLoadingJobs] = React.useState(true);
   const [viewJob, setViewJob] = React.useState<ToolJobDTO | null>(null);
+  const [expandedJobId, setExpandedJobId] = React.useState<string | null>(null);
 
   const refreshJobs = React.useCallback(async () => {
     try {
@@ -117,6 +152,18 @@ export function ToolsPanel() {
   React.useEffect(() => {
     refreshJobs();
   }, [refreshJobs]);
+
+  // Poll while any job is in a non-terminal state — surfaces live progress
+  // for real (long-running) tool executions and re-syncs the Recent Jobs
+  // list without manual refresh.
+  React.useEffect(() => {
+    const hasActive = jobs.some(
+      (j) => j.status === "running" || j.status === "pending" || j.status === "queued",
+    );
+    if (!hasActive) return;
+    const id = setInterval(refreshJobs, 2000);
+    return () => clearInterval(id);
+  }, [jobs, refreshJobs]);
 
   // When tool changes, reset params to defaults.
   React.useEffect(() => {
@@ -468,10 +515,27 @@ export function ToolsPanel() {
       {/* Recent jobs */}
       <Card>
         <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Wrench className="size-4" />
-            Recent Tool Jobs
-          </CardTitle>
+          <div className="flex items-center justify-between gap-2">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Wrench className="size-4" />
+              Recent Tool Jobs
+              {jobs.length > 0 && (
+                <Badge variant="secondary" className="text-[10px]">
+                  {jobs.length}
+                </Badge>
+              )}
+            </CardTitle>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={refreshJobs}
+              disabled={loadingJobs}
+              className="h-7 gap-1 text-xs"
+            >
+              <RefreshCw className={`size-3.5 ${loadingJobs ? "animate-spin" : ""}`} />
+              Refresh
+            </Button>
+          </div>
         </CardHeader>
         <CardContent>
           {loadingJobs ? (
@@ -490,50 +554,156 @@ export function ToolsPanel() {
                 const outputMeta =
                   OUTPUT_TYPE_META[job.tool] ?? OUTPUT_TYPE_FALLBACK;
                 const OutputIcon = outputMeta.Icon;
+                const simulated = isSimulatedJob(job);
+                const isActive =
+                  job.status === "running" ||
+                  job.status === "pending" ||
+                  job.status === "queued";
                 const statusPill =
                   job.status === "completed"
                     ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
                     : job.status === "failed"
                       ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
-                      : job.status === "running"
+                      : isActive
                         ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
                         : "bg-muted text-muted-foreground";
+                const isExpanded = expandedJobId === job.id;
                 return (
                   <li
                     key={job.id}
-                    className="flex flex-wrap items-center gap-2 rounded-md border p-2.5 text-sm"
+                    className={`rounded-md border transition-colors ${
+                      isExpanded ? "border-primary/40" : ""
+                    }`}
                   >
-                    <span className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground">
-                      <JobIcon className="size-3.5" />
-                    </span>
-                    <span
-                      className={`flex size-5 items-center justify-center rounded-[4px] ${outputMeta.chip}`}
-                      title={`Output type: ${outputMeta.label}`}
-                    >
-                      <OutputIcon className="size-3" />
-                    </span>
-                    <Badge variant="secondary" className="font-mono text-[10px]">{job.tool}</Badge>
-                    <span
-                      className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium ${statusPill}`}
-                    >
-                      {job.status}
-                    </span>
-                    <span className="text-xs text-muted-foreground">
-                      by {job.triggeredBy || "user"}
-                    </span>
-                    {job.command && (
-                      <code className="hidden max-w-[40%] truncate text-[10px] text-muted-foreground md:inline">
-                        {job.command}
-                      </code>
+                    <div className="flex flex-wrap items-center gap-2 p-2.5 text-sm">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedJobId((id) => (id === job.id ? null : job.id))
+                        }
+                        className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground hover:bg-accent"
+                        title={isExpanded ? "Hide preview" : "Show preview"}
+                        aria-label={isExpanded ? "Hide preview" : "Show preview"}
+                      >
+                        {isExpanded ? (
+                          <ChevronDown className="size-3.5" />
+                        ) : (
+                          <ChevronRight className="size-3.5" />
+                        )}
+                      </button>
+                      <span className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                        <JobIcon className="size-3.5" />
+                      </span>
+                      <span
+                        className={`flex size-5 items-center justify-center rounded-[4px] ${outputMeta.chip}`}
+                        title={`Output type: ${outputMeta.label}`}
+                      >
+                        <OutputIcon className="size-3" />
+                      </span>
+                      <Badge variant="secondary" className="font-mono text-[10px]">
+                        {job.tool}
+                      </Badge>
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[10px] font-medium ${statusPill}`}
+                      >
+                        {isActive && <Loader2 className="size-2.5 animate-spin" />}
+                        {job.status}
+                      </span>
+                      {/* REAL / SIMULATED badge — surfaces whether the run
+                          used a real algorithm or fell back to the
+                          synthetic generator. */}
+                      <Badge
+                        variant="outline"
+                        className={
+                          simulated
+                            ? "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+                            : "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+                        }
+                        title={
+                          simulated
+                            ? "This run used the synthetic generator (no real tool was installed)"
+                            : "This run used a real algorithm"
+                        }
+                      >
+                        {simulated ? "SIMULATED" : "REAL"}
+                      </Badge>
+                      <span className="text-xs text-muted-foreground">
+                        by {job.triggeredBy || "user"}
+                      </span>
+                      <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+                        <Clock className="size-3" />
+                        {timeAgo(job.createdAt)}
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setViewJob(job)}
+                      >
+                        <Eye className="size-3.5" />
+                        View output
+                      </Button>
+                    </div>
+                    {/* Inline preview — collapsible stdout + per-file
+                        download buttons. Shown when the row is expanded so
+                        users can scan results without opening the dialog. */}
+                    {isExpanded && (
+                      <div className="space-y-3 border-t bg-muted/20 px-3 py-3">
+                        {job.stdout ? (
+                          <div>
+                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              stdout
+                            </p>
+                            <pre className="max-h-64 overflow-auto rounded-md bg-background p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
+                              {job.stdout}
+                            </pre>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-muted-foreground">
+                            No stdout captured for this job.
+                          </p>
+                        )}
+                        {job.stderr && (
+                          <div>
+                            <p className="mb-1 text-[10px] font-medium uppercase tracking-wide text-destructive">
+                              stderr
+                            </p>
+                            <pre className="max-h-32 overflow-auto rounded-md bg-destructive/10 p-3 font-mono text-xs text-destructive whitespace-pre-wrap break-words">
+                              {job.stderr}
+                            </pre>
+                          </div>
+                        )}
+                        {job.outputFiles.length > 0 && (
+                          <div>
+                            <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                              output files ({job.outputFiles.length})
+                            </p>
+                            <ul className="flex flex-wrap gap-1.5">
+                              {job.outputFiles.map((f, i) => (
+                                <li key={`${f}-${i}`}>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    asChild
+                                    className="h-7 gap-1 px-2 text-[11px]"
+                                  >
+                                    <a
+                                      href={fileDownloadUrl(job.id, f)}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                    >
+                                      <Download className="size-3" />
+                                      <code className="font-mono">
+                                        {f.split("/").pop() ?? f}
+                                      </code>
+                                    </a>
+                                  </Button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </div>
                     )}
-                    <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-                      <Clock className="size-3" />
-                      {timeAgo(job.createdAt)}
-                    </span>
-                    <Button size="sm" variant="outline" onClick={() => setViewJob(job)}>
-                      <Eye className="size-3.5" />
-                      View output
-                    </Button>
                   </li>
                 );
               })}

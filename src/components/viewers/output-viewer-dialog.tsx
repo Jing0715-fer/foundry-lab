@@ -35,8 +35,23 @@ import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 
 // --- Helpers ------------------------------------------------------------------
 
-const STRUCTURE_TOOLS = new Set(["rfdiffusion", "rfantibody", "rosetta"]);
-const SEQUENCE_TOOLS = new Set(["proteinmpnn"]);
+/**
+ * Tools that produce PDB files (the Structure tab is shown for these).
+ * Includes all design + structure-prediction + scoring tools — every comp
+ * tool that emits .pdb output via the simulated generators in
+ * src/app/api/tools/jobs/[id]/file/route.ts.
+ */
+const STRUCTURE_TOOLS = new Set([
+  "rfdiffusion",
+  "rfantibody",
+  "rosetta",
+  "pyrosetta",
+  "rf3",
+  "esmfold",
+  "colabfold",
+]);
+/** Tools that produce FASTA files (the Sequence tab is shown for these). */
+const SEQUENCE_TOOLS = new Set(["proteinmpnn", "ligandmpnn", "solublempnn"]);
 
 // Used as the fallback when the file fetch fails (e.g. server unreachable).
 const SAMPLE_PDB = generateSamplePdb();
@@ -52,6 +67,21 @@ function statusPillClass(status: string): string {
   if (status === "failed") return "bg-rose-500/10 text-rose-700 dark:text-rose-400";
   if (status === "running") return "bg-amber-500/10 text-amber-700 dark:text-amber-400";
   return "bg-muted text-muted-foreground";
+}
+
+/**
+ * Detect whether the job's stdout indicates a simulated run. Mirrors the
+ * detection in tools-panel.tsx so the badge in the dialog header matches
+ * the badge in the Recent Jobs list.
+ */
+function isSimulatedJob(job: ToolJobDTO): boolean {
+  if (job.params && job.params.simulated === true) return true;
+  const out = job.stdout ?? "";
+  if (/^\[SIMULATED/i.test(out)) return true;
+  if (/\(simulated\)/i.test(out)) return true;
+  if (/FOUNDRY-LAB SIMULATION/i.test(out)) return true;
+  if (job.command && /^\[SIMULATED\]/i.test(job.command)) return true;
+  return false;
 }
 
 // --- Component ----------------------------------------------------------------
@@ -136,10 +166,11 @@ export function OutputViewerDialog({
     }
   };
 
-  const hasStructure = !!job && STRUCTURE_TOOLS.has(job.tool);
-  const hasSequence = !!job && SEQUENCE_TOOLS.has(job.tool);
+  const hasStructure = !!job && (STRUCTURE_TOOLS.has(job.tool) || job.outputFiles.some((f) => f.endsWith(".pdb")));
+  const hasSequence = !!job && (SEQUENCE_TOOLS.has(job.tool) || job.outputFiles.some((f) => f.endsWith(".fasta")));
   const hasFiles = !!job?.outputFiles && job.outputFiles.length > 0;
   const hasCommand = !!job?.command;
+  const simulated = !!job && isSimulatedJob(job);
 
   // First matching output file of each type — used for both the inline
   // preview fetch (above) and the Download buttons.
@@ -154,7 +185,7 @@ export function OutputViewerDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="max-h-[88vh] max-w-3xl gap-0 overflow-hidden p-0">
         <DialogHeader className="border-b px-5 py-3">
-          <DialogTitle className="flex items-center gap-2 text-base">
+          <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
             <Wrench className="size-4 text-muted-foreground" />
             <span className="font-mono">{job.tool}</span>
             <span
@@ -165,6 +196,25 @@ export function OutputViewerDialog({
             >
               {job.status}
             </span>
+            {/* REAL / SIMULATED badge — surfaces whether the run used a real
+                algorithm or the synthetic generator. Uses the same
+                detection logic as the Recent Jobs list (above) so the
+                badge is consistent across the UI. */}
+            <Badge
+              variant="outline"
+              className={
+                simulated
+                  ? "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+                  : "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+              }
+              title={
+                simulated
+                  ? "This run used the synthetic generator (no real tool was installed)"
+                  : "This run used a real algorithm"
+              }
+            >
+              {simulated ? "SIMULATED" : "REAL"}
+            </Badge>
             {job.exitCode != null && (
               <Badge variant="outline" className="font-mono text-[10px]">
                 exit {job.exitCode}
@@ -215,14 +265,16 @@ export function OutputViewerDialog({
             </TabsList>
           </div>
 
-          {/* Summary tab — stdout (and stderr if present) */}
+          {/* Summary tab — full stdout (and stderr if present). Pre wraps
+              long lines so wide log output (e.g. coordinate dumps) doesn't
+              force horizontal scroll. */}
           <TabsContent value="summary" className="m-0 flex-1 overflow-hidden p-4">
             <div className="space-y-3">
               <div>
                 <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  stdout
+                  stdout {job.stdout ? `· ${job.stdout.length.toLocaleString()} chars` : ""}
                 </p>
-                <pre className="max-h-96 overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed">
+                <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
                   {job.stdout || "(empty)"}
                 </pre>
               </div>
@@ -231,7 +283,7 @@ export function OutputViewerDialog({
                   <p className="mb-1 text-xs font-medium uppercase tracking-wide text-destructive">
                     stderr
                   </p>
-                  <pre className="max-h-32 overflow-auto rounded-md bg-destructive/10 p-3 font-mono text-xs text-destructive">
+                  <pre className="max-h-32 overflow-auto rounded-md bg-destructive/10 p-3 font-mono text-xs text-destructive whitespace-pre-wrap break-words">
                     {job.stderr}
                   </pre>
                 </div>
@@ -383,7 +435,9 @@ export function OutputViewerDialog({
                 ))}
               </ul>
               <p className="mt-3 text-[10px] text-muted-foreground">
-                Files are generated on-the-fly from the simulated job params.
+                {simulated
+                  ? "Files are generated on-the-fly from the simulated job params (no real tool was installed)."
+                  : "Files are served from the run's work directory."}
               </p>
             </TabsContent>
           )}

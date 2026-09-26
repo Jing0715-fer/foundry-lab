@@ -11,6 +11,7 @@ import {
   Sparkles,
   SquarePen,
   Store,
+  TerminalSquare,
   Users,
   Wrench,
   X,
@@ -62,14 +63,21 @@ const NAV_ITEMS: NavItem[] = [
  * - Top: PI Copilot button (special violet active state, toggles a Sheet
  *   that floats over the canvas so the user can chat with the PI while
  *   watching the workflow build).
+ * - Below the regular nav: Environment button (toggles a Sheet — the store's
+ *   activePanel union doesn't include "environment" so we use a Sheet
+ *   overlay just like the PI Copilot).
  * - Bottom: Seed Data button (POST /api/seed) above a subtle divider.
  */
 export function Sidebar({
   piCopilotOpen = false,
   onTogglePiCopilot,
+  environmentOpen = false,
+  onToggleEnvironment,
 }: {
   piCopilotOpen?: boolean;
   onTogglePiCopilot?: () => void;
+  environmentOpen?: boolean;
+  onToggleEnvironment?: () => void;
 } = {}) {
   const activePanel = useAppStore((s) => s.activePanel);
   const setActivePanel = useAppStore((s) => s.setActivePanel);
@@ -197,6 +205,38 @@ export function Sidebar({
             </li>
           );
         })}
+
+        {/* Environment button — toggles a Sheet (handled by page.tsx). The
+            store's activePanel union doesn't include "environment" so we
+            reuse the Sheet pattern from the PI Copilot. Sits between the
+            regular nav items and the bottom Templates/Marketplace/Seed row
+            so it reads as a settings-style utility. Uses a cyan-tinted
+            active state to distinguish it from the violet PI Copilot button
+            and the regular primary-tinted nav items. */}
+        <li className="mt-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onToggleEnvironment?.()}
+                className={cn(
+                  "group flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors md:px-3",
+                  "justify-center md:justify-start border-l-[3px]",
+                  environmentOpen
+                    ? "bg-cyan-500/10 font-medium text-cyan-600 border-cyan-500"
+                    : "border-transparent font-normal text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
+                aria-pressed={environmentOpen}
+              >
+                <TerminalSquare className="size-4 shrink-0" />
+                <span className="hidden truncate md:inline">Environment</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="md:hidden">
+              Environment
+            </TooltipContent>
+          </Tooltip>
+        </li>
       </ul>
 
       <div className="mt-auto px-2 pb-2">

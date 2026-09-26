@@ -18,6 +18,7 @@ import {
   ChevronDown,
   ChevronRight,
   Copy,
+  Download,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -355,9 +356,42 @@ function ParamsTab({
 /** Logs tab content. Renders live-updating logs as they stream in via SSE
  * (the running case used to show only a "Running…" spinner — now we surface
  * whatever logs the backend has emitted so far, with a small live indicator
- * when the buffer is still empty). */
+ * when the buffer is still empty).
+ *
+ * The <pre> is auto-scrolled to the bottom on each update so the user sees
+ * the latest log line without manually scrolling. A "Download" button
+ * exports the current logs buffer as a .txt file (handy for sharing run
+ * output in bug reports). */
 function LogsTab({ node }: { node: NodeDTO }) {
   const logs = node.logs?.trim();
+  const preRef = React.useRef<HTMLPreElement | null>(null);
+
+  // Auto-scroll to the bottom on each log update — but only if the user is
+  // already near the bottom (within 60px). This preserves scroll position
+  // when the user is reading older log lines.
+  React.useEffect(() => {
+    const el = preRef.current;
+    if (!el) return;
+    const nearBottom =
+      el.scrollHeight - el.scrollTop - el.clientHeight < 60;
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [logs]);
+
+  const handleDownload = () => {
+    if (!logs) return;
+    const blob = new Blob([logs], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${node.name.replace(/[^\w-]+/g, "_")}_logs.txt`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   if (!logs && node.status === "running") {
     return (
       <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
@@ -374,15 +408,55 @@ function LogsTab({ node }: { node: NodeDTO }) {
     );
   }
   return (
-    <pre className="m-3 max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words">
-      {logs}
-    </pre>
+    <div className="flex flex-col gap-2 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          logs · {logs.length.toLocaleString()} chars
+          {node.status === "running" && (
+            <span className="ml-2 inline-flex items-center gap-1 text-amber-600 dark:text-amber-400">
+              <Loader2 className="size-2.5 animate-spin" /> live
+            </span>
+          )}
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px]"
+          onClick={handleDownload}
+          type="button"
+        >
+          <Download className="size-3" />
+          Download
+        </Button>
+      </div>
+      <pre
+        ref={preRef}
+        className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words"
+      >
+        {logs}
+      </pre>
+    </div>
   );
 }
 
-/** Result tab content. Renders the live-updating result as it streams in. */
+/** Result tab content. Renders the live-updating result as it streams in.
+ * A "Download" button exports the result markdown as a .md file. */
 function ResultTab({ node }: { node: NodeDTO }) {
   const result = node.result?.trim();
+
+  const handleDownload = () => {
+    if (!result) return;
+    const blob = new Blob([result], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${node.name.replace(/[^\w-]+/g, "_")}_result.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   if (!result && node.status === "running") {
     return (
       <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
@@ -399,8 +473,25 @@ function ResultTab({ node }: { node: NodeDTO }) {
     );
   }
   return (
-    <div className="prose prose-sm dark:prose-invert max-w-none p-3">
-      <ReactMarkdown>{result}</ReactMarkdown>
+    <div className="flex flex-col gap-2 p-3">
+      <div className="flex items-center justify-between">
+        <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+          result · {result.length.toLocaleString()} chars
+        </p>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-7 gap-1 px-2 text-[11px]"
+          onClick={handleDownload}
+          type="button"
+        >
+          <Download className="size-3" />
+          Download
+        </Button>
+      </div>
+      <div className="prose prose-sm dark:prose-invert max-w-none">
+        <ReactMarkdown>{result}</ReactMarkdown>
+      </div>
     </div>
   );
 }

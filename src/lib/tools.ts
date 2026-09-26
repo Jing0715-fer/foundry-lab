@@ -48,6 +48,8 @@ export const COMP_TOOLS: CompToolDef[] = [
       { key: "hotspot", label: "Hotspot residues", type: "text", default: "", flag: "ppi.hotspot_res", group: "PPI", hint: "Target residues to bind (e.g. A30,A45)" },
       { key: "symmetry", label: "Symmetry", type: "select", default: "none", options: ["none", "C2", "C3", "C4", "C5", "D2", "icos"], flag: "inference.symmetry", group: "Symmetry" },
       { key: "seed", label: "Random seed", type: "number", default: 314, min: 0, max: 99999, step: 1, flag: "inference.seed", group: "Inference", advanced: true },
+      { key: "diffuser_partial_T", label: "Partial diffusion steps", type: "number", default: 0, min: 0, max: 100, step: 1, flag: "diffuser.partial_T", group: "Diffuser", advanced: true, hint: "Non-zero = noise + denoise an input structure (motif scaffolding / partial diffusion)." },
+      { key: "ckpt_override_path", label: "Checkpoint override path", type: "path", default: "", flag: "inference.ckpt_override_path", group: "Inference", advanced: true, hint: "Custom .pt checkpoint (e.g. finetuned binder model)." },
     ],
     resultSummary: (p) =>
       `RFdiffusion produced ${p.num_designs ?? 8} scaffolds (length ${p.total_length ?? 150}). All outputs written as PDB.`,
@@ -85,6 +87,8 @@ export const COMP_TOOLS: CompToolDef[] = [
       { key: "sampling_temp", label: "Sampling temperature", type: "number", default: 0.1, min: 0.01, max: 1.0, step: 0.01, flag: "--sampling_temp", group: "Sampling", advanced: true },
       { key: "soluble", label: "SolubleMPNN mode", type: "bool", default: false, flag: "--soluble", group: "Variant" },
       { key: "ligand", label: "LigandMPNN mode", type: "bool", default: false, flag: "--ligand_mpnn", group: "Variant" },
+      { key: "path_to_fasta", label: "Output FASTA path", type: "path", default: "", flag: "--path_to_fasta", group: "Output", hint: "Where to write the designed sequences (FASTA)." },
+      { key: "batch_cost", label: "Batch cost", type: "number", default: 1, min: 1, max: 32, step: 1, flag: "--batch_cost", group: "Performance", advanced: true, hint: "Higher = more memory, faster." },
       { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "--seed", group: "Sampling", advanced: true },
     ],
     resultSummary: (p) =>
@@ -195,6 +199,7 @@ export const COMP_TOOLS: CompToolDef[] = [
     paramFields: [
       { key: "sequence", label: "Protein sequence", type: "text", default: "", flag: "--sequence", group: "Input", required: true, hint: "One-letter AA sequence" },
       { key: "num_recycles", label: "Recycles", type: "number", default: 4, min: 0, max: 24, step: 1, flag: "--recycles", group: "Inference" },
+      { key: "model_name", label: "Model checkpoint", type: "select", default: "esmfold_v1", options: ["esmfold_v1"], flag: "--model_name", group: "Model", advanced: true },
       { key: "chunk_size", label: "Chunk size", type: "number", default: 512, min: 64, max: 2048, step: 64, flag: "--chunk_size", group: "Performance", advanced: true },
     ],
     resultSummary: (p) =>
@@ -213,6 +218,7 @@ export const COMP_TOOLS: CompToolDef[] = [
       { key: "fasta_path", label: "Input FASTA path", type: "path", default: "", flag: "--fasta", group: "Input", required: true },
       { key: "model_type", label: "Model type", type: "select", default: "alphafold2_ptm", options: ["alphafold2", "alphafold2_ptm", "alphafold2_multimer_v3"], flag: "--model-type", group: "Model" },
       { key: "num_recycles", label: "Recycles", type: "number", default: 3, min: 0, max: 24, step: 1, flag: "--recycles", group: "Inference" },
+      { key: "use_templates", label: "Use templates", type: "bool", default: true, flag: "--templates", group: "Templates", hint: "Pull PDB templates during MSA generation." },
       { key: "use_amber", label: "AMBER relaxation", type: "bool", default: true, flag: "--amber", group: "Relaxation" },
       { key: "num_predictions", label: "Predictions per target", type: "number", default: 1, min: 1, max: 20, step: 1, flag: "--num-predictions", group: "Output" },
     ],
