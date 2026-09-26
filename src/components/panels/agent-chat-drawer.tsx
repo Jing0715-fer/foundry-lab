@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
-import { Loader2, Send, Trash2, Wrench, FlaskConical } from "lucide-react";
+import { Loader2, Send, Trash2, Wrench, Database, type LucideIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -28,9 +28,11 @@ export function AgentChatDrawer({
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
   const [agent, setAgent] = React.useState<AgentDTO | null>(null);
+  const [atTop, setAtTop] = React.useState(true);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   const agents = useAppStore((s) => s.agents);
   const toast = useAppStore((s) => s.toast);
+  const MAX_CHARS = 2000;
 
   // Load chat history when opening with a new agentId.
   React.useEffect(() => {
@@ -59,6 +61,13 @@ export function AgentChatDrawer({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, open]);
+
+  // Track whether the message list is scrolled to the top (for the gradient overlay).
+  const handleScroll = React.useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    setAtTop(el.scrollTop <= 4);
+  }, []);
 
   const handleSend = async () => {
     const text = input.trim();
@@ -157,35 +166,42 @@ export function AgentChatDrawer({
           </div>
         </SheetHeader>
 
-        <div ref={scrollRef} className="flex-1 overflow-y-auto px-4 py-4">
-          {loading && messages.length === 0 ? (
-            <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" />
-              Loading chat…
-            </div>
-          ) : messages.length === 0 ? (
-            <div className="flex h-full items-center justify-center py-12 text-center text-sm text-muted-foreground">
-              No messages yet. Send a prompt below to start the conversation.
-            </div>
-          ) : (
-            <div className="space-y-4">
-              {messages.map((m) => (
-                <MessageBubble key={m.id} message={m} />
-              ))}
-              {loading && (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="size-4 animate-spin" />
-                  Agent is thinking…
-                </div>
-              )}
-            </div>
+        <div className="relative flex-1 overflow-hidden">
+          {!atTop && (
+            <div
+              className="pointer-events-none absolute inset-x-0 top-0 z-10 h-6 bg-gradient-to-b from-background to-transparent"
+              aria-hidden
+            />
           )}
+          <div
+            ref={scrollRef}
+            onScroll={handleScroll}
+            className="h-full overflow-y-auto px-4 py-4"
+          >
+            {loading && messages.length === 0 ? (
+              <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                Loading chat…
+              </div>
+            ) : messages.length === 0 ? (
+              <div className="flex h-full items-center justify-center py-12 text-center text-sm text-muted-foreground">
+                No messages yet. Send a prompt below to start the conversation.
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {messages.map((m) => (
+                  <MessageBubble key={m.id} message={m} />
+                ))}
+                {loading && <TypingIndicator />}
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="border-t p-3">
           <Textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => setInput(e.target.value.slice(0, MAX_CHARS))}
             onKeyDown={onKeyDown}
             placeholder="Type a message… (Ctrl/Cmd+Enter to send)"
             className="min-h-[72px] resize-none"
@@ -195,14 +211,32 @@ export function AgentChatDrawer({
             <span className="text-xs text-muted-foreground">
               {agent?.model ? `model: ${agent.model}` : ""}
             </span>
-            <Button size="sm" onClick={handleSend} disabled={!input.trim() || loading || !agentId}>
-              <Send className="size-3.5" />
-              Send
-            </Button>
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-muted-foreground">
+                {input.length}/{MAX_CHARS}
+              </span>
+              <Button size="sm" onClick={handleSend} disabled={!input.trim() || loading || !agentId}>
+                <Send className="size-3.5" />
+                Send
+              </Button>
+            </div>
           </div>
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+function TypingIndicator() {
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <div className="flex items-center gap-1 rounded-2xl bg-muted px-3.5 py-2.5">
+        <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.3s]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60 [animation-delay:-0.15s]" />
+        <span className="size-1.5 animate-bounce rounded-full bg-muted-foreground/60" />
+      </div>
+      <span className="text-xs text-muted-foreground">Agent is thinking…</span>
+    </div>
   );
 }
 
@@ -238,9 +272,17 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
 
 function ToolCallCard({ call }: { call: ToolCall }) {
   const isComp = call.kind === "comp";
-  const Icon = isComp ? Wrench : FlaskConical;
+  const Icon: LucideIcon = isComp ? Wrench : Database;
   const resultText = call.result ?? "";
   const truncated = resultText.length > 240 ? resultText.slice(0, 240) + "…" : resultText;
+  const statusPill =
+    call.status === "completed"
+      ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+      : call.status === "failed"
+        ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
+        : call.status === "running"
+          ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+          : "bg-muted text-muted-foreground";
   return (
     <div className="rounded-md border bg-card p-2 text-xs">
       <div className="mb-1 flex items-center gap-1.5 font-medium">
@@ -248,7 +290,9 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         <span className="uppercase tracking-wide text-muted-foreground">{call.kind}</span>
         <span className="font-mono">{call.tool}</span>
         {call.status && (
-          <span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[10px] uppercase">
+          <span
+            className={`ml-auto inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase ${statusPill}`}
+          >
             {call.status}
           </span>
         )}

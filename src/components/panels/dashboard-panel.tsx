@@ -6,6 +6,8 @@ import {
   ListTodo,
   Users,
   FlaskConical,
+  BookOpen,
+  SquarePen,
   Workflow as WorkflowIcon,
   Sparkles,
   ArrowRight,
@@ -15,6 +17,7 @@ import {
   CheckCircle2,
   Loader2,
   XCircle,
+  Clock,
 } from "lucide-react";
 import {
   PieChart,
@@ -126,13 +129,18 @@ export function DashboardPanel() {
     },
   ].filter((d) => d.value > 0);
 
-  const quickActions: { label: string; icon: React.ReactNode; panel: "agents" | "tasks" | "meetings" | "research" | "tools" | "canvas" }[] = [
-    { label: "Agents", icon: <Bot className="size-4" />, panel: "agents" },
-    { label: "Tasks", icon: <ListTodo className="size-4" />, panel: "tasks" },
-    { label: "Meetings", icon: <Users className="size-4" />, panel: "meetings" },
-    { label: "Research", icon: <FlaskConical className="size-4" />, panel: "research" },
-    { label: "Tools", icon: <Wrench className="size-4" />, panel: "tools" },
-    { label: "Canvas", icon: <LayoutGrid className="size-4" />, panel: "canvas" },
+  const quickActions: {
+    label: string;
+    description: string;
+    icon: React.ReactNode;
+    panel: "agents" | "tasks" | "meetings" | "research" | "tools" | "canvas";
+  }[] = [
+    { label: "Agents", description: "Personas & tools", icon: <Bot className="size-4" />, panel: "agents" },
+    { label: "Tasks", description: "Run a prompt", icon: <SquarePen className="size-4" />, panel: "tasks" },
+    { label: "Meetings", description: "Multi-agent debate", icon: <Users className="size-4" />, panel: "meetings" },
+    { label: "Research", description: "Pipeline + report", icon: <BookOpen className="size-4" />, panel: "research" },
+    { label: "Tools", description: "Comp + bio tools", icon: <Wrench className="size-4" />, panel: "tools" },
+    { label: "Canvas", description: "Visual workflow", icon: <LayoutGrid className="size-4" />, panel: "canvas" },
   ];
 
   return (
@@ -158,7 +166,7 @@ export function DashboardPanel() {
         <StatCard
           title="Tasks"
           value={taskCounts.total}
-          icon={<ListTodo className="size-5" />}
+          icon={<SquarePen className="size-5" />}
           accent="#3b82f6"
           sub={`${taskCounts.completed} done · ${taskCounts.running} running`}
           onClick={() => setActivePanel("tasks")}
@@ -174,7 +182,7 @@ export function DashboardPanel() {
         <StatCard
           title="Research Reports"
           value={research.length}
-          icon={<FlaskConical className="size-5" />}
+          icon={<BookOpen className="size-5" />}
           accent="#f59e0b"
           sub={`${research.filter((r) => r.status === "completed").length} completed`}
           onClick={() => setActivePanel("research")}
@@ -260,17 +268,20 @@ export function DashboardPanel() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+          <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {quickActions.map((qa) => (
-              <Button
+              <button
                 key={qa.label}
-                variant="outline"
-                className="justify-start"
+                type="button"
                 onClick={() => setActivePanel(qa.panel)}
+                className="flex flex-col items-start gap-2 rounded-xl border bg-card p-3 text-left shadow-sm transition-all hover:shadow-md hover:border-primary/40"
               >
-                {qa.icon}
-                {qa.label}
-              </Button>
+                <span className="flex size-8 items-center justify-center rounded-md bg-primary/10 text-primary">
+                  {qa.icon}
+                </span>
+                <span className="text-sm font-medium text-foreground">{qa.label}</span>
+                <span className="text-xs text-muted-foreground">{qa.description}</span>
+              </button>
             ))}
           </div>
         </CardContent>
@@ -291,7 +302,10 @@ export function DashboardPanel() {
                   <KindIcon kind={item.kind} />
                   <span className="flex-1 truncate">{item.label}</span>
                   <Badge variant="outline" className="text-xs">{item.kind}</Badge>
-                  <span className="text-xs text-muted-foreground">{timeAgo(item.createdAt)}</span>
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                    <Clock className="size-3" />
+                    {timeAgo(item.createdAt)}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -300,6 +314,16 @@ export function DashboardPanel() {
       </Card>
     </div>
   );
+}
+
+/** Convert a hex color (#rrggbb) to an rgba() string with the given alpha. */
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
 }
 
 function StatCard({
@@ -317,17 +341,23 @@ function StatCard({
   sub?: string;
   onClick?: () => void;
 }) {
+  const softBg = hexToRgba(accent, 0.12);
   return (
     <Card
       role={onClick ? "button" : undefined}
       onClick={onClick}
-      className="cursor-pointer overflow-hidden transition-colors hover:bg-accent/50"
+      className="cursor-pointer overflow-hidden transition-shadow hover:shadow-md"
     >
-      <div className="h-1 w-full" style={{ background: accent }} />
+      <div className="h-[3px] w-full" style={{ background: accent }} />
       <CardContent className="space-y-1 pt-4">
         <div className="flex items-center justify-between">
           <span className="text-sm text-muted-foreground">{title}</span>
-          <span style={{ color: accent }}>{icon}</span>
+          <span
+            className="flex size-9 items-center justify-center rounded-lg"
+            style={{ background: softBg, color: accent }}
+          >
+            {icon}
+          </span>
         </div>
         <div className="text-3xl font-semibold">{value}</div>
         {sub && <div className="text-xs text-muted-foreground">{sub}</div>}

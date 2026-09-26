@@ -12,7 +12,6 @@ import {
   Flag,
   Box,
   Check,
-  X,
   Loader2,
   Play,
   Copy,
@@ -373,15 +372,39 @@ function NodeCardImpl({ node }: NodeCardProps) {
             {/* Card body */}
             <div
               className={cn(
-                "relative h-full w-full overflow-hidden rounded-xl border bg-card shadow-sm transition-shadow",
+                "card-hover relative h-full w-full overflow-hidden rounded-xl border bg-card shadow-sm hover:shadow-md",
                 isSelected ? "border-primary ring-2 ring-primary/40" : "border-border",
+                // Running pulse: border color pulses in addition to job-running glow.
+                status === "running" &&
+                  "border-teal-500/60 animate-pulse",
               )}
             >
               {/* Left color bar */}
               <div className={cn("absolute left-0 top-0 bottom-0 w-1", color.bg)} />
 
+              {/* Status badge (top-right corner) */}
+              {status === "completed" && (
+                <span
+                  className="absolute right-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm"
+                  title="Completed"
+                >
+                  <Check className="size-3" />
+                </span>
+              )}
+              {status === "failed" && (
+                <span
+                  className="absolute right-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-rose-500 text-white font-bold shadow-sm"
+                  title="Failed"
+                >
+                  !
+                </span>
+              )}
+              {status === "running" && (
+                <Loader2 className="absolute right-2 top-2 size-3.5 animate-spin text-teal-500" />
+              )}
+
               {/* Top row */}
-              <div className="flex items-center gap-2 pl-3 pr-2 pt-2.5">
+              <div className="flex min-w-0 items-center gap-2 pl-3 pr-7 pt-2.5">
                 <div
                   className={cn(
                     "flex h-6 w-6 shrink-0 items-center justify-center rounded-md",
@@ -391,29 +414,19 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 >
                   <Icon className="h-3.5 w-3.5" />
                 </div>
-                <div className="flex-1 truncate text-sm font-semibold leading-tight">
+                <div
+                  className="min-w-0 flex-1 truncate text-sm font-semibold leading-tight"
+                  title={node.name || spec?.label || node.type}
+                >
                   {node.name || spec?.label || node.type}
                 </div>
-                {status === "completed" && (
-                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-500 text-white">
-                    <Check className="h-3 w-3" />
-                  </span>
-                )}
-                {status === "failed" && (
-                  <span className="flex h-4 w-4 items-center justify-center rounded-full bg-rose-500 text-white">
-                    <X className="h-3 w-3" />
-                  </span>
-                )}
-                {status === "running" && (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin text-teal-500" />
-                )}
               </div>
 
               {/* Second row: status pill + spec label */}
-              <div className="flex items-center gap-1.5 px-3 pt-1">
+              <div className="flex min-w-0 items-center gap-1.5 px-3 pt-1">
                 <span
                   className={cn(
-                    "rounded px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide",
+                    "shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide",
                     STATUS_PILL[status] ?? STATUS_PILL.idle,
                   )}
                 >
@@ -437,12 +450,18 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   </div>
                 )}
                 {status === "completed" && (
-                  <div className="truncate text-[11px] text-muted-foreground">
+                  <div
+                    className="max-w-full truncate text-[11px] text-muted-foreground"
+                    title={node.result || undefined}
+                  >
                     {node.result ? node.result.slice(0, 80) : "Done"}
                   </div>
                 )}
                 {status === "failed" && (
-                  <div className="truncate text-[11px] text-rose-500">
+                  <div
+                    className="max-w-full truncate text-[11px] text-rose-500"
+                    title={node.result || undefined}
+                  >
                     {node.result ? node.result.slice(0, 80) : "Error"}
                   </div>
                 )}
@@ -453,10 +472,10 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 )}
               </div>
 
-              {/* Bottom status strip */}
+              {/* Bottom status strip (4px for better visibility) */}
               <div
                 className={cn(
-                  "absolute bottom-0 left-0 right-0 h-[3px]",
+                  "absolute bottom-0 left-0 right-0 h-1",
                   STATUS_STRIP[status] ?? STATUS_STRIP.idle,
                 )}
               />

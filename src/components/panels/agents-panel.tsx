@@ -81,6 +81,16 @@ function AgentIcon({ name, className }: { name: string; className?: string }) {
   return <Cmp className={className} />;
 }
 
+/** Convert a hex color (#rrggbb) to an rgba() string with the given alpha. */
+function hexToRgba(hex: string, alpha: number): string {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex.trim());
+  if (!m) return hex;
+  const r = parseInt(m[1].slice(0, 2), 16);
+  const g = parseInt(m[1].slice(2, 4), 16);
+  const b = parseInt(m[1].slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 export function AgentsPanel() {
   const agents = useAppStore((s) => s.agents);
   const setAgents = useAppStore((s) => s.setAgents);
@@ -262,15 +272,19 @@ function AgentCard({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const capabilities = agent.knowledge?.capabilities ?? [];
+  const visibleCaps = capabilities.slice(0, 3);
+  const extraCaps = Math.max(0, capabilities.length - visibleCaps.length);
+  const softBg = hexToRgba(agent.color, 0.12);
   return (
-    <Card className="overflow-hidden">
-      <div className="h-1.5 w-full" style={{ background: agent.color }} />
+    <Card className="overflow-hidden transition-shadow hover:shadow-md">
+      <div className="h-[3px] w-full" style={{ background: agent.color }} />
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between gap-2">
           <div className="flex items-center gap-2.5">
             <span
-              className="flex size-9 items-center justify-center rounded-lg text-white"
-              style={{ background: agent.color }}
+              className="flex size-10 items-center justify-center rounded-xl"
+              style={{ background: softBg, color: agent.color }}
             >
               <AgentIcon name={agent.icon} className="size-5" />
             </span>
@@ -288,24 +302,35 @@ function AgentCard({
           {agent.goal}
         </p>
         <div className="flex flex-wrap gap-1.5">
-          {agent.knowledge.bioToolsEnabled && (
+          {visibleCaps.map((c) => (
+            <Badge key={c} variant="outline" className="text-[10px]">{c}</Badge>
+          ))}
+          {extraCaps > 0 && (
+            <Badge variant="secondary" className="text-[10px]">+{extraCaps} more</Badge>
+          )}
+          {agent.knowledge?.bioToolsEnabled && (
             <Badge variant="outline" className="text-[10px]">bio tools</Badge>
           )}
-          {agent.knowledge.webSearchEnabled && (
+          {agent.knowledge?.webSearchEnabled && (
             <Badge variant="outline" className="text-[10px]">web</Badge>
           )}
-          <Badge variant="outline" className="text-[10px]">{agent.role.split(" ")[0]}</Badge>
         </div>
         <div className="flex gap-2 pt-1">
-          <Button size="sm" variant="default" onClick={onChat} className="flex-1">
+          <Button size="sm" variant="default" onClick={onChat} className="flex-1 gap-1.5">
             <MessageSquare className="size-3.5" />
             Chat
           </Button>
-          <Button size="sm" variant="outline" onClick={onEdit}>
+          <Button size="sm" variant="outline" onClick={onEdit} className="flex-1 gap-1.5">
             <Pencil className="size-3.5" />
             Edit
           </Button>
-          <Button size="sm" variant="ghost" onClick={onDelete} className="text-destructive hover:text-destructive">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onDelete}
+            className="text-destructive hover:text-destructive"
+            aria-label="Delete agent"
+          >
             <Trash2 className="size-3.5" />
           </Button>
         </div>
@@ -465,45 +490,50 @@ function AgentEditorDialog({
         </DialogHeader>
 
         <div className="grid gap-3 py-2">
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-title">Title</Label>
-            <Input
-              id="agent-title"
-              value={form.title}
-              onChange={(e) => set("title", e.target.value)}
-              placeholder="e.g. Principal Investigator"
-            />
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-title">Title</Label>
+              <Input
+                id="agent-title"
+                value={form.title}
+                onChange={(e) => set("title", e.target.value)}
+                placeholder="e.g. Principal Investigator"
+              />
+            </div>
+
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-expertise">Expertise</Label>
+              <Input
+                id="agent-expertise"
+                value={form.expertise}
+                onChange={(e) => set("expertise", e.target.value)}
+                placeholder="e.g. Scientific strategy"
+              />
+            </div>
           </div>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-expertise">Expertise</Label>
-            <Input
-              id="agent-expertise"
-              value={form.expertise}
-              onChange={(e) => set("expertise", e.target.value)}
-              placeholder="e.g. Scientific strategy, project leadership"
-            />
-          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-goal">Goal</Label>
+              <Textarea
+                id="agent-goal"
+                value={form.goal}
+                onChange={(e) => set("goal", e.target.value)}
+                placeholder="The agent's objective."
+                rows={2}
+              />
+            </div>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-goal">Goal</Label>
-            <Textarea
-              id="agent-goal"
-              value={form.goal}
-              onChange={(e) => set("goal", e.target.value)}
-              placeholder="One or two sentences describing the agent's objective."
-              rows={2}
-            />
-          </div>
-
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-role">Role</Label>
-            <Input
-              id="agent-role"
-              value={form.role}
-              onChange={(e) => set("role", e.target.value)}
-              placeholder="e.g. Team lead — sets agenda, moderates debate."
-            />
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-role">Role</Label>
+              <Textarea
+                id="agent-role"
+                value={form.role}
+                onChange={(e) => set("role", e.target.value)}
+                placeholder="e.g. Team lead — sets agenda, moderates debate."
+                rows={2}
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -557,28 +587,30 @@ function AgentEditorDialog({
             </div>
           </div>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-domain">Domain knowledge (one per line)</Label>
-            <Textarea
-              id="agent-domain"
-              value={form.domainKnowledge}
-              onChange={(e) => set("domainKnowledge", e.target.value)}
-              placeholder="Computational protein design&#10;Wet-lab validation strategy"
-              rows={3}
-              className="font-mono text-xs"
-            />
-          </div>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-domain">Domain knowledge (one per line)</Label>
+              <Textarea
+                id="agent-domain"
+                value={form.domainKnowledge}
+                onChange={(e) => set("domainKnowledge", e.target.value)}
+                placeholder="Computational protein design&#10;Wet-lab validation strategy"
+                rows={3}
+                className="font-mono text-xs"
+              />
+            </div>
 
-          <div className="grid gap-1.5">
-            <Label htmlFor="agent-capabilities">Capabilities (one per line)</Label>
-            <Textarea
-              id="agent-capabilities"
-              value={form.capabilities}
-              onChange={(e) => set("capabilities", e.target.value)}
-              placeholder="Decompose research questions&#10;Critically evaluate arguments"
-              rows={3}
-              className="font-mono text-xs"
-            />
+            <div className="grid gap-1.5">
+              <Label htmlFor="agent-capabilities">Capabilities (one per line)</Label>
+              <Textarea
+                id="agent-capabilities"
+                value={form.capabilities}
+                onChange={(e) => set("capabilities", e.target.value)}
+                placeholder="Decompose research questions&#10;Critically evaluate arguments"
+                rows={3}
+                className="font-mono text-xs"
+              />
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">

@@ -14,6 +14,12 @@ interface EdgesLayerProps {
  * SVG edge layer. Renders one <svg> sized to the content box of all nodes
  * (so all coordinates are workspace coords). pointer-events: none on the svg,
  * but per-edge hit-paths re-enable pointer-events: all for hover/click.
+ *
+ * Visual states:
+ *  - Base: subtle border color stroke + small arrowhead at the target end.
+ *  - Hovered / selected: primary stroke (3px) + drop-shadow filter for depth.
+ *  - Running source: gradient stroke + animated particles (animateMotion).
+ *  - Completed → pending: subtle teal gradient.
  */
 function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
   const [hoveredId, setHoveredId] = React.useState<string | null>(null);
@@ -52,6 +58,13 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
     [removeEdge, toast],
   );
 
+  // Unique gradient ids per render so multiple SVGs on the page don't clash.
+  const uid = React.useId().replace(/:/g, "");
+  const arrowId = `arrowhead-${uid}`;
+  const arrowSelId = `arrowhead-sel-${uid}`;
+  const gradRunId = `grad-run-${uid}`;
+  const gradDoneId = `grad-done-${uid}`;
+
   return (
     <svg
       className="pointer-events-none absolute overflow-visible"
@@ -63,17 +76,88 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
       }}
       viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
     >
+      <defs>
+        {/* Subtle base arrowhead (muted-foreground). */}
+        <marker
+          id={arrowId}
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="8"
+          markerHeight="8"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path
+            d="M 0 0 L 10 5 L 0 10 z"
+            fill="hsl(var(--muted-foreground))"
+          />
+        </marker>
+        {/* Primary-colored arrowhead for hovered/selected edges. */}
+        <marker
+          id={arrowSelId}
+          viewBox="0 0 10 10"
+          refX="9"
+          refY="5"
+          markerWidth="9"
+          markerHeight="9"
+          orient="auto-start-reverse"
+          markerUnits="userSpaceOnUse"
+        >
+          <path d="M 0 0 L 10 5 L 0 10 z" fill="hsl(var(--primary))" />
+        </marker>
+        {/* Gradient for running source edges. */}
+        <linearGradient id={gradRunId} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="hsl(var(--primary) / 0.35)" />
+          <stop offset="50%" stopColor="hsl(var(--primary))" />
+          <stop offset="100%" stopColor="hsl(var(--primary) / 0.35)" />
+        </linearGradient>
+        {/* Subtle teal gradient for completed→pending edges. */}
+        <linearGradient id={gradDoneId} x1="0%" y1="0%" x2="100%" y2="0%">
+          <stop offset="0%" stopColor="oklch(0.7 0.14 145 / 0.5)" />
+          <stop offset="100%" stopColor="oklch(0.7 0.14 145)" />
+        </linearGradient>
+      </defs>
+
       {geoms.map((g) => {
         const edge = edges.find((e) => e.id === g.id);
         if (!edge) return null;
         const fromNode = nodeById.get(edge.fromNodeId);
+        const toNode = nodeById.get(edge.toNodeId);
         const isRunning = fromNode?.status === "running";
+        const isCompleted =
+          fromNode?.status === "completed" &&
+          (toNode?.status === "pending" || toNode?.status === "idle");
         const isHovered = hoveredId === g.id;
         const isSelected = selectedIds.includes(edge.id);
-        const highlighted = isHovered || isSelected || isRunning;
+        const highlighted = isHovered || isSelected;
 
-        const stroke = highlighted ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.55)";
-        const strokeWidth = isHovered ? 3.2 : 2.25;
+        // Stroke color logic.
+        let stroke: string;
+        let strokeWidth: number;
+        let markerEnd: string;
+        let className: string | undefined;
+        if (isRunning) {
+          stroke = `url(#${gradRunId})`;
+          strokeWidth = isHovered ? 3 : 2.5;
+          markerEnd = `url(#${arrowSelId})`;
+          className = "edge-flow";
+        } else if (isCompleted) {
+          stroke = `url(#${gradDoneId})`;
+          strokeWidth = isHovered ? 3 : 2.25;
+          markerEnd = `url(#${arrowId})`;
+        } else if (highlighted) {
+          stroke = "hsl(var(--primary))";
+          strokeWidth = 3;
+          markerEnd = `url(#${arrowSelId})`;
+        } else {
+          stroke = "hsl(var(--border))";
+          strokeWidth = 2;
+          markerEnd = `url(#${arrowId})`;
+        }
+
+        // Drop-shadow on hovered edges for depth.
+        const filterClass = highlighted ? "edge-glow" : undefined;
 
         return (
           <g key={g.id}>
@@ -95,7 +179,8 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
               stroke={stroke}
               strokeWidth={strokeWidth}
               strokeLinecap="round"
-              className={isRunning ? "edge-flow" : undefined}
+              markerEnd={markerEnd}
+              className={cnEdges(className, filterClass)}
             />
             {/* Running dashes: travelling dots via animateMotion */}
             {isRunning && (
@@ -115,12 +200,13 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
             )}
             {/* Endpoints */}
             <circle cx={g.src.x} cy={g.src.y} r={3} fill="hsl(var(--primary))" />
+            {/* Target dot (kept alongside the arrowhead for a pro combo) */}
             <circle
               cx={g.tgt.x}
               cy={g.tgt.y}
               r={4.2}
               fill="hsl(var(--background))"
-              stroke="hsl(var(--primary))"
+              stroke={highlighted ? "hsl(var(--primary))" : "hsl(var(--primary) / 0.7)"}
               strokeWidth={2}
             />
             {/* Delete chip when hovered */}
@@ -153,6 +239,11 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
       })}
     </svg>
   );
+}
+
+// Local cn helper (avoids importing cn into the SVG scope where it isn't needed elsewhere).
+function cnEdges(...parts: Array<string | false | null | undefined>): string {
+  return parts.filter(Boolean).join(" ");
 }
 
 export const EdgesLayer = React.memo(EdgesLayerImpl);

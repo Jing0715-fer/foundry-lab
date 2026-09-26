@@ -12,6 +12,7 @@ import {
   Flag,
   Box,
   Loader2,
+  Workflow,
   type LucideIcon,
 } from "lucide-react";
 import type { NodeDTO, NodeType, NodeSpec } from "@/lib/types";
@@ -227,6 +228,42 @@ export function WorkflowCanvas() {
     setCreateMenu({ screenX: sx, screenY: sy, worldX: wx, worldY: wy });
   };
 
+  // ─── Empty-state quick-start: drop a node at the visible viewport center. ──
+  const createNodeAtViewportCenter = React.useCallback(
+    async (type: NodeType) => {
+      const spec = nodeSpec(type);
+      if (!spec) return;
+      const el = rootRef.current;
+      const w = el?.clientWidth && el.clientWidth > 0 ? el.clientWidth : 900;
+      const h = el?.clientHeight && el.clientHeight > 0 ? el.clientHeight : 600;
+      const vp = useAppStore.getState().viewport;
+      const worldCenterX = (vp.x + w / 2) / vp.zoom - 124;
+      const worldCenterY = (vp.y + h / 2) / vp.zoom - 58;
+      const pos = clampDrop(worldCenterX, worldCenterY);
+      try {
+        const res = await fetch("/api/workflow/nodes", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: spec.type,
+            name: spec.label,
+            x: pos.x,
+            y: pos.y,
+          }),
+        });
+        if (!res.ok) throw new Error("create failed");
+        const created: NodeDTO = await res.json();
+        upsertNode(created);
+        useAppStore.getState().select(created.id);
+        useAppStore.getState().inspect(created.id);
+        toast({ title: `${spec.label} added`, variant: "success" });
+      } catch {
+        toast({ title: "Failed to add node", variant: "destructive" });
+      }
+    },
+    [upsertNode, toast],
+  );
+
   // ─── Create node from menu. ─────────────────────────────────────────────
   const createNode = React.useCallback(
     async (spec: NodeSpec) => {
@@ -327,6 +364,7 @@ export function WorkflowCanvas() {
   return (
     <section
       ref={rootRef}
+      data-canvas="viewport"
       className={cnCanvas(
         "canvas-grid relative flex-1 overflow-hidden touch-none bg-background select-none",
         dragActive ? "cursor-grabbing" : "cursor-grab",
@@ -383,9 +421,47 @@ export function WorkflowCanvas() {
 
       {/* Empty state. */}
       {nodes.length === 0 && (
-        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
-          <div className="rounded-lg border border-dashed border-border bg-card/60 px-6 py-4 text-center text-sm text-muted-foreground shadow-sm">
-            Drag a node from the palette, or double-click to add one.
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
+          <div className="pointer-events-auto flex max-w-md flex-col items-center gap-4 rounded-2xl border border-dashed border-border bg-card/70 px-8 py-8 text-center shadow-sm backdrop-blur-sm">
+            {/* Large icon in a muted circle */}
+            <div className="empty-state-icon flex size-16 items-center justify-center rounded-full bg-muted text-muted-foreground">
+              <Workflow className="size-8" />
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <h3 className="text-lg font-medium">Start building your workflow</h3>
+              <p className="text-sm text-muted-foreground">
+                Drag nodes from the left palette, or double-click anywhere to add one.
+              </p>
+            </div>
+
+            {/* Quick-start hint chips */}
+            <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={() => void createNodeAtViewportCenter("agent")}
+                className="inline-flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-violet-500/20 dark:text-violet-300"
+              >
+                <Bot className="size-3.5" />
+                Add an Agent
+              </button>
+              <button
+                type="button"
+                onClick={() => void createNodeAtViewportCenter("task")}
+                className="inline-flex items-center gap-1.5 rounded-full border border-slate-500/30 bg-slate-500/10 px-3 py-1.5 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-500/20 dark:text-slate-300"
+              >
+                <SquarePen className="size-3.5" />
+                Add a Task
+              </button>
+              <button
+                type="button"
+                onClick={() => void createNodeAtViewportCenter("comptool")}
+                className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-500/20 dark:text-cyan-300"
+              >
+                <Cpu className="size-3.5" />
+                Add a Comp Tool
+              </button>
+            </div>
           </div>
         </div>
       )}

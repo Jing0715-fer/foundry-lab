@@ -43,9 +43,10 @@ const NAV_ITEMS: NavItem[] = [
 
 /**
  * Vertical navigation rail.
- * - w-16 icons-only on mobile; w-56 with labels on md+.
- * - Active item: bg-primary/10 text-primary border-l-2 border-primary.
- * - Bottom: Seed Data button (POST /api/seed).
+ * - w-14 icons-only on mobile; w-56 with labels on md+.
+ * - Active item: bg-primary/10 text-primary font-medium + 3px left border accent.
+ * - Hover: bg-accent text-accent-foreground.
+ * - Bottom: Seed Data button (POST /api/seed) above a subtle divider.
  */
 export function Sidebar() {
   const activePanel = useAppStore((s) => s.activePanel);
@@ -105,7 +106,7 @@ export function Sidebar() {
 
   return (
     <nav
-      className="flex h-full w-16 shrink-0 flex-col border-r bg-sidebar/40 md:w-56"
+      className="flex h-full w-14 shrink-0 flex-col border-r bg-sidebar/40 md:w-56"
       aria-label="Primary"
     >
       <ul className="flex flex-1 flex-col gap-1 p-2">
@@ -120,15 +121,15 @@ export function Sidebar() {
                     type="button"
                     onClick={() => setActivePanel(item.key)}
                     className={cn(
-                      "group flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-sm font-medium transition-colors md:px-3",
-                      "justify-center md:justify-start",
+                      "group flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors md:px-3",
+                      "justify-center md:justify-start border-l-[3px]",
                       active
-                        ? "bg-primary/10 text-primary border-l-2 border-primary"
-                        : "text-muted-foreground hover:bg-accent hover:text-accent-foreground border-l-2 border-transparent",
+                        ? "bg-primary/10 font-medium text-primary border-primary"
+                        : "border-transparent font-normal text-muted-foreground hover:bg-accent hover:text-accent-foreground",
                     )}
                     aria-current={active ? "page" : undefined}
                   >
-                    <Icon className="size-5 shrink-0" />
+                    <Icon className="size-4 shrink-0" />
                     <span className="hidden md:inline truncate">
                       {item.label}
                     </span>
@@ -143,7 +144,8 @@ export function Sidebar() {
         })}
       </ul>
 
-      <div className="border-t p-2">
+      <div className="mt-auto px-2 pb-2">
+        <div className="mb-2 h-px bg-border" aria-hidden />
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -151,7 +153,7 @@ export function Sidebar() {
               size="sm"
               onClick={handleSeed}
               disabled={seeding}
-              className="w-full justify-center md:justify-start gap-2"
+              className="w-full justify-center gap-2 md:justify-start"
             >
               {seeding ? (
                 <Loader2 className="size-4 animate-spin" />

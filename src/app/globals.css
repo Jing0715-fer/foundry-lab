@@ -223,12 +223,29 @@
   }
 }
 
+/* ─── Canvas polish utilities (Task 9-a) ─────────────────────────────────── */
+
+/* Edge shadow filter for hover depth */
+.edge-glow { filter: drop-shadow(0 0 4px hsl(var(--primary) / 0.3)); }
+
+/* Node card hover transition */
+.card-hover { transition: box-shadow 200ms ease, border-color 200ms ease; }
+.card-hover:hover { box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.1); }
+
+/* Empty state animation */
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.empty-state-icon { animation: float 3s ease-in-out infinite; }
+
+/* Inspector header accent */
+.inspector-accent { background: linear-gradient(180deg, hsl(var(--primary) / 0.05), transparent); }
+
 /* ─── Reduced motion ────────────────────────────────────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   .edge-flow,
   .band-ants,
   .job-running,
-  .progress-shimmer {
+  .progress-shimmer,
+  .empty-state-icon {
     animation: none !important;
   }
   *,

@@ -13,7 +13,7 @@ import {
   Clock,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -50,22 +50,52 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
-const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  queued: { label: "Queued", color: "#64748b", bg: "#64748b1a" },
-  draft: { label: "Draft", color: "#94a3b8", bg: "#94a3b81a" },
-  pending: { label: "Pending", color: "#3b82f6", bg: "#3b82f61a" },
-  running: { label: "Running", color: "#f59e0b", bg: "#f59e0b1a" },
-  completed: { label: "Completed", color: "#10b981", bg: "#10b9811a" },
-  failed: { label: "Failed", color: "#ef4444", bg: "#ef44441a" },
-  cancelled: { label: "Cancelled", color: "#6b7280", bg: "#6b72801a" },
+const STATUS_META: Record<
+  string,
+  { label: string; pill: string; accent: string }
+> = {
+  queued: {
+    label: "Queued",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
+  draft: {
+    label: "Draft",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
+  pending: {
+    label: "Pending",
+    pill: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    accent: "#3b82f6",
+  },
+  running: {
+    label: "Running",
+    pill: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    accent: "#f59e0b",
+  },
+  completed: {
+    label: "Completed",
+    pill: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    accent: "#10b981",
+  },
+  failed: {
+    label: "Failed",
+    pill: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
+    accent: "#ef4444",
+  },
+  cancelled: {
+    label: "Cancelled",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#6b7280",
+  },
 };
 
 function StatusPill({ status }: { status: RunStatus | string }) {
   const meta = STATUS_META[status] ?? STATUS_META["draft"];
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium"
-      style={{ color: meta.color, background: meta.bg }}
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${meta.pill}`}
     >
       {meta.label}
     </span>
@@ -252,55 +282,72 @@ export function MeetingsPanel() {
       </div>
 
       {/* New meeting form */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+      <section className="rounded-xl border bg-card p-4 shadow-sm">
+        <header className="mb-3 flex items-center gap-2">
+          <span className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
             <Plus className="size-4" />
-            New Meeting
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="grid gap-1.5">
-              <Label>Type</Label>
-              <Select value={type} onValueChange={(v: "team" | "individual") => {
-                setType(v);
-                setLeadId("");
-                setMemberIds([]);
-              }}>
-                <SelectTrigger className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="team">team — round-robin</SelectItem>
-                  <SelectItem value="individual">individual — with critic</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="meeting-rounds">Rounds</Label>
-              <Input
-                id="meeting-rounds"
-                type="number"
-                min={1}
-                max={10}
-                value={numRounds}
-                onChange={(e) => setNumRounds(Math.max(1, Number(e.target.value) || 1))}
-              />
-            </div>
-            <div className="grid gap-1.5">
-              <Label htmlFor="meeting-temp">Temperature</Label>
-              <Input
-                id="meeting-temp"
-                type="number"
-                min={0}
-                max={2}
-                step={0.1}
-                value={temperature}
-                onChange={(e) => setTemperature(Number(e.target.value) || 0.7)}
-              />
-            </div>
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">New Meeting</h3>
+        </header>
+        <div className="space-y-3">
+          <div className="grid gap-1.5">
+            <Label>Type</Label>
+            <Select value={type} onValueChange={(v: "team" | "individual") => {
+              setType(v);
+              setLeadId("");
+              setMemberIds([]);
+            }}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="team">
+                  <span className="flex items-center gap-2">
+                    <Users className="size-3.5" />
+                    team — round-robin
+                  </span>
+                </SelectItem>
+                <SelectItem value="individual">
+                  <span className="flex items-center gap-2">
+                    <User className="size-3.5" />
+                    individual — with critic
+                  </span>
+                </SelectItem>
+              </SelectContent>
+            </Select>
           </div>
+
+          {type === "individual" ? (
+            <p className="rounded-md bg-muted/60 px-3 py-2 text-xs text-muted-foreground">
+              Individual meetings run 3 rounds with the Scientific Critic.
+            </p>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-1.5">
+                <Label htmlFor="meeting-rounds">Rounds</Label>
+                <Input
+                  id="meeting-rounds"
+                  type="number"
+                  min={1}
+                  max={10}
+                  value={numRounds}
+                  onChange={(e) => setNumRounds(Math.max(1, Number(e.target.value) || 1))}
+                />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="meeting-temp">Temperature</Label>
+                <Input
+                  id="meeting-temp"
+                  type="number"
+                  min={0}
+                  max={2}
+                  step={0.1}
+                  value={temperature}
+                  onChange={(e) => setTemperature(Number(e.target.value) || 0.7)}
+                />
+              </div>
+            </div>
+          )}
 
           <div className="grid gap-1.5">
             <div className="flex items-center justify-between">
@@ -349,6 +396,7 @@ export function MeetingsPanel() {
                   ))}
                 </SelectContent>
               </Select>
+              <p className="text-xs text-muted-foreground">Select the team lead agent</p>
             </div>
           )}
 
@@ -382,11 +430,11 @@ export function MeetingsPanel() {
                 })}
               </div>
             )}
-            {type === "individual" && (
-              <p className="text-xs text-muted-foreground">
-                A Scientific Critic persona will be auto-injected to challenge the subject.
-              </p>
-            )}
+            <p className="text-xs text-muted-foreground">
+              {type === "team"
+                ? "Add team members"
+                : "A Scientific Critic persona will be auto-injected to challenge the subject."}
+            </p>
           </div>
 
           <div className="flex justify-end">
@@ -395,8 +443,8 @@ export function MeetingsPanel() {
               Create meeting
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {/* Meetings list */}
       <div className="space-y-3">
@@ -484,23 +532,32 @@ function MeetingCard({
   const members = meeting.memberIds
     .map((id) => agents.find((a) => a.id === id))
     .filter(Boolean) as { id: string; title: string; color: string }[];
+  const accent = (STATUS_META[meeting.status] ?? STATUS_META["draft"]).accent;
 
   return (
-    <Card>
+    <Card
+      className="overflow-hidden transition-shadow hover:shadow-md"
+      style={{ borderLeftColor: accent, borderLeftWidth: 3 }}
+    >
       <CardContent className="space-y-3 py-4">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 space-y-1">
             <div className="flex flex-wrap items-center gap-2">
-              {meeting.type === "team" ? (
-                <Users className="size-4 text-emerald-500" />
-              ) : (
-                <User className="size-4 text-blue-500" />
-              )}
+              <Badge
+                variant="outline"
+                className="gap-1 px-2 py-0.5 text-[10px]"
+              >
+                {meeting.type === "team" ? (
+                  <Users className="size-3 text-emerald-500" />
+                ) : (
+                  <User className="size-3 text-blue-500" />
+                )}
+                {meeting.type}
+              </Badge>
               <h4 className="font-medium leading-tight">
                 {meeting.saveName ?? (meeting.agenda.slice(0, 60) || "Untitled meeting")}
               </h4>
               <StatusPill status={meeting.status} />
-              <Badge variant="outline" className="text-[10px]">{meeting.type}</Badge>
               <Badge variant="outline" className="text-[10px]">{meeting.numRounds}r</Badge>
             </div>
             <p className="line-clamp-2 text-xs text-muted-foreground">{meeting.agenda}</p>

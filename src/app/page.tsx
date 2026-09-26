@@ -20,10 +20,56 @@ import { ResearchPanel } from "@/components/panels/research-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
+import { CommandPalette } from "@/components/command-palette";
 
 import { useAppStore } from "@/lib/store";
 import { useChatStore } from "@/lib/chat-store";
+import {
+  useKeyboardShortcuts,
+  type ShortcutConfig,
+} from "@/lib/keyboard-shortcuts";
 import type { WorkflowDTO } from "@/lib/types";
+
+/**
+ * Delete every node in the current multi-selection. Bound to both Delete and
+ * Backspace (so it works on Mac keyboards where Backspace is the primary
+ * "delete" key). Reads from the store at call time so it always operates on
+ * the latest selection state.
+ */
+async function deleteSelectedNodes(): Promise<void> {
+  const st = useAppStore.getState();
+  const { selectedIds, removeNode, select, toast } = st;
+  if (selectedIds.length === 0) return;
+  const results = await Promise.allSettled(
+    selectedIds.map((id) =>
+      fetch(`/api/workflow/nodes/${id}`, { method: "DELETE" }),
+    ),
+  );
+  const okIds: string[] = [];
+  let failCount = 0;
+  results.forEach((r, i) => {
+    if (r.status === "fulfilled" && r.value.ok) {
+      okIds.push(selectedIds[i]);
+    } else {
+      failCount += 1;
+    }
+  });
+  okIds.forEach((id) => removeNode(id));
+  select(null);
+  if (failCount === 0) {
+    toast({
+      title: "Deleted",
+      description: `${okIds.length} node${okIds.length === 1 ? "" : "s"} removed`,
+      variant: "success",
+    });
+  } else {
+    toast({
+      title: "Some deletes failed",
+      description: `${okIds.length} removed, ${failCount} failed`,
+      variant: "destructive",
+    });
+  }
+}
 
 /**
  * Foundry Lab main shell. Single-page composition:
@@ -129,6 +175,53 @@ export default function Home() {
     }
   }, [toast]);
 
+  // ─── Global keyboard shortcuts (Delete + Escape) ────────────────────────
+  // Cmd+K / Ctrl+K is owned by the CommandPalette component itself.
+  const shortcuts = React.useMemo<ShortcutConfig[]>(
+    () => [
+      {
+        key: "Delete",
+        skipInputs: true,
+        description: "Delete selected node(s)",
+        handler: deleteSelectedNodes,
+      },
+      {
+        key: "Backspace",
+        skipInputs: true,
+        description: "Delete selected node(s) (Mac keyboards)",
+        handler: deleteSelectedNodes,
+      },
+      {
+        key: "Escape",
+        description: "Cancel connection / close inspector",
+        handler: () => {
+          // Skip if a dialog / sheet / menu is open — those handle Esc themselves.
+          if (
+            document.querySelector(
+              '[role="dialog"][data-state="open"], [role="menu"][data-state="open"]',
+            )
+          ) {
+            return;
+          }
+          const st = useAppStore.getState();
+          if (st.pendingFrom) {
+            st.cancelConnect();
+            return;
+          }
+          if (st.inspectId) {
+            st.inspect(null);
+            return;
+          }
+          if (st.selectedId) {
+            st.select(null);
+          }
+        },
+      },
+    ],
+    [],
+  );
+  useKeyboardShortcuts(shortcuts);
+
   return (
     <div className="flex min-h-screen flex-col">
       <Header />
@@ -160,6 +253,7 @@ export default function Home() {
         open={!!chatAgentId}
         onClose={closeChat}
       />
+      <CommandPalette />
     </div>
   );
 }

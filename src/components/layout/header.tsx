@@ -16,8 +16,9 @@ import { useAppStore } from "@/lib/store";
 /**
  * Top application bar.
  * - Left: brand chip (FlaskConical in a teal pill) + "Foundry Lab" wordmark.
- * - Center (md+): editable workflow name (read-only for now — PATCH later).
- * - Right: Run Workflow (POST /api/workflow/run), theme toggle, GitHub link.
+ * - Center (sm+): editable workflow name (max-w-xs, display-only — PATCH later).
+ * - Right: Run Workflow (Play icon + text), theme toggle, GitHub link.
+ * - All elements vertically aligned items-center; subtle shadow-sm under border.
  */
 export function Header() {
   const { theme, setTheme } = useTheme();
@@ -69,24 +70,24 @@ export function Header() {
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-background/80 px-4 backdrop-blur">
+    <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-background/80 px-4 shadow-sm backdrop-blur">
       {/* Left: brand */}
-      <div className="flex items-center gap-3 min-w-0">
+      <div className="flex min-w-0 items-center gap-3">
         <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
           <FlaskConical className="size-5" />
         </div>
-        <div className="flex flex-col min-w-0">
-          <span className="font-semibold leading-none truncate">
+        <div className="flex min-w-0 flex-col">
+          <span className="truncate font-semibold leading-none">
             Foundry Lab
           </span>
-          <span className="hidden sm:inline text-xs text-muted-foreground leading-none mt-1">
+          <span className="mt-1 hidden text-xs leading-none text-muted-foreground sm:inline">
             Agentic Research Studio
           </span>
         </div>
       </div>
 
-      {/* Center: workflow name (md+) */}
-      <div className="hidden md:flex flex-1 justify-center min-w-0 px-4">
+      {/* Center: workflow name (sm+) */}
+      <div className="hidden min-w-0 flex-1 justify-center px-4 sm:flex">
         {workflow ? (
           <Input
             value={workflow.name}
@@ -94,7 +95,7 @@ export function Header() {
               /* PATCH /api/workflow/:id wired later — keep display-only for now */
             }}
             readOnly
-            className="h-8 max-w-md text-center text-sm font-medium focus-visible:ring-0"
+            className="h-8 max-w-xs text-center text-sm font-medium focus-visible:ring-0"
             aria-label="Workflow name"
           />
         ) : (
@@ -124,7 +125,7 @@ export function Header() {
               variant="outline"
               size="icon"
               onClick={toggleTheme}
-              aria-label="Toggle theme"
+              aria-label="Toggle dark mode"
             >
               {mounted && theme === "dark" ? (
                 <Sun className="size-4" />
@@ -133,7 +134,7 @@ export function Header() {
               )}
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Toggle theme</TooltipContent>
+          <TooltipContent>Toggle dark mode</TooltipContent>
         </Tooltip>
 
         <Tooltip>
@@ -143,13 +144,13 @@ export function Header() {
                 href="https://github.com/Jing0715-fer/foundry-lab"
                 target="_blank"
                 rel="noopener noreferrer"
-                aria-label="GitHub repository"
+                aria-label="View source on GitHub"
               >
                 <Github className="size-4" />
               </a>
             </Button>
           </TooltipTrigger>
-          <TooltipContent>GitHub</TooltipContent>
+          <TooltipContent>View source on GitHub</TooltipContent>
         </Tooltip>
       </div>
     </header>

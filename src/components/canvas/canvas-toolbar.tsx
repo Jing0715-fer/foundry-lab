@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   Play,
   Loader2,
+  Crosshair,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -16,6 +17,12 @@ import { ZOOM_MIN, ZOOM_MAX, CARD_W, CARD_H } from "@/lib/workflow-catalog";
 import { autoLayout } from "@/lib/canvas-utils";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
 
 /** Compute a fit viewport for the given nodes & available canvas size. */
 function computeFit(
@@ -46,7 +53,26 @@ function computeFit(
   };
 }
 
-/** Floating canvas toolbar: zoom, fit, auto-arrange, run-all. */
+/** A button wrapped with a Tooltip. */
+function ToolButton({
+  label,
+  children,
+  ...props
+}: {
+  label: string;
+  children: React.ReactNode;
+} & React.ComponentProps<typeof Button>) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button aria-label={label} {...props}>{children}</Button>
+      </TooltipTrigger>
+      <TooltipContent side="top">{label}</TooltipContent>
+    </Tooltip>
+  );
+}
+
+/** Floating canvas toolbar: zoom, reset view, fit, auto-arrange, run-all. */
 export function CanvasToolbar() {
   const viewport = useAppStore((s) => s.viewport);
   const setViewport = useAppStore((s) => s.setViewport);
@@ -76,11 +102,12 @@ export function CanvasToolbar() {
 
   const onZoomOut = () => zoomTo(viewport.zoom - 0.1);
   const onZoomIn = () => zoomTo(viewport.zoom + 0.1);
-  const onReset = () => setViewport({ x: 120, y: 80, zoom: 1 });
+  const onResetZoom = () => setViewport({ zoom: 1 });
+  const onResetView = () => setViewport({ x: 120, y: 80, zoom: 1 });
 
   const onFit = () => {
     if (nodes.length === 0) {
-      onReset();
+      onResetView();
       return;
     }
     const { w, h } = canvasSize();
@@ -154,98 +181,127 @@ export function CanvasToolbar() {
     }
   };
 
+  // Round to nearest integer percent — fits the "85%" example.
   const pct = Math.round(viewport.zoom * 100);
 
   return (
-    <div
-      ref={ref}
-      className={cn(
-        "absolute bottom-3 left-3 z-20",
-        "flex items-center gap-1 rounded-lg border bg-card p-1 shadow-sm",
-      )}
-    >
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8"
-        onClick={onZoomOut}
-        disabled={viewport.zoom <= ZOOM_MIN}
-        title="Zoom out"
-      >
-        <Minus className="size-4" />
-      </Button>
-
-      <button
-        type="button"
-        onClick={onReset}
-        className="h-8 min-w-[3.5rem] rounded-md px-2 text-center text-xs font-medium tabular-nums hover:bg-accent"
-        title="Reset zoom to 100%"
-      >
-        {pct}%
-      </button>
-
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8"
-        onClick={onZoomIn}
-        disabled={viewport.zoom >= ZOOM_MAX}
-        title="Zoom in"
-      >
-        <Plus className="size-4" />
-      </Button>
-
-      <Separator orientation="vertical" className="mx-0.5 h-6" />
-
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8"
-        onClick={onFit}
-        disabled={nodes.length === 0}
-        title="Fit to content"
-      >
-        <Maximize className="size-4" />
-      </Button>
-
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-8"
-        onClick={onAutoArrange}
-        disabled={arranging || nodes.length === 0}
-        title="Auto-arrange layout"
-      >
-        {arranging ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <LayoutGrid className="size-4" />
+    <TooltipProvider delayDuration={250}>
+      <div
+        ref={ref}
+        className={cn(
+          "absolute bottom-3 left-3 z-20",
+          "flex items-center gap-1 rounded-lg border bg-card p-1 shadow-sm",
         )}
-      </Button>
-
-      <Separator orientation="vertical" className="mx-0.5 h-6" />
-
-      <Button
-        variant="default"
-        size="sm"
-        onClick={onRunAll}
-        disabled={runningAll || nodes.length === 0}
-        className="h-8 gap-1.5"
-        title="Run whole workflow"
       >
-        {runningAll ? (
-          <Loader2 className="size-4 animate-spin" />
-        ) : (
-          <Play className="size-4" />
-        )}
-        Run All
-      </Button>
+        {/* Zoom-out */}
+        <ToolButton
+          label="Zoom out"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onZoomOut}
+          disabled={viewport.zoom <= ZOOM_MIN}
+        >
+          <Minus className="size-4" />
+        </ToolButton>
 
-      <Separator orientation="vertical" className="mx-0.5 h-6" />
+        {/* Zoom percentage — click resets zoom to 100% */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              onClick={onResetZoom}
+              className="h-8 min-w-[3.5rem] rounded-md px-2 text-center text-xs font-medium tabular-nums hover:bg-accent"
+            >
+              {pct}%
+            </button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Reset zoom to 100%</TooltipContent>
+        </Tooltip>
 
-      <span className="px-2 text-xs tabular-nums text-muted-foreground">
-        nodes: {nodes.length}
-      </span>
-    </div>
+        {/* Zoom-in */}
+        <ToolButton
+          label="Zoom in"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onZoomIn}
+          disabled={viewport.zoom >= ZOOM_MAX}
+        >
+          <Plus className="size-4" />
+        </ToolButton>
+
+        {/* Reset view (full viewport) */}
+        <ToolButton
+          label="Reset view"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onResetView}
+        >
+          <Crosshair className="size-4" />
+        </ToolButton>
+
+        {/* Subtle separator between zoom controls and layout controls */}
+        <Separator orientation="vertical" className="mx-1 h-6 bg-border/70" />
+
+        {/* Fit */}
+        <ToolButton
+          label="Fit to content"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onFit}
+          disabled={nodes.length === 0}
+        >
+          <Maximize className="size-4" />
+        </ToolButton>
+
+        {/* Auto-arrange */}
+        <ToolButton
+          label="Auto-arrange layout"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onAutoArrange}
+          disabled={arranging || nodes.length === 0}
+        >
+          {arranging ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <LayoutGrid className="size-4" />
+          )}
+        </ToolButton>
+
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
+
+        {/* Run all */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={onRunAll}
+              disabled={runningAll || nodes.length === 0}
+              className="h-8 gap-1.5"
+            >
+              {runningAll ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Play className="size-4" />
+              )}
+              Run All
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="top">Run whole workflow</TooltipContent>
+        </Tooltip>
+
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
+
+        <span className="px-2 text-xs tabular-nums text-muted-foreground">
+          nodes: {nodes.length}
+        </span>
+      </div>
+    </TooltipProvider>
   );
 }

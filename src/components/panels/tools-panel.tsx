@@ -261,9 +261,9 @@ export function ToolsPanel() {
             {commandPreview && (
               <div className="grid gap-1">
                 <Label className="text-xs text-muted-foreground">Command preview</Label>
-                <pre className="overflow-x-auto rounded-md bg-muted p-2 font-mono text-[11px]">
+                <code className="block overflow-x-auto rounded-md bg-muted p-2 font-mono text-xs">
                   {commandPreview}
-                </pre>
+                </code>
               </div>
             )}
 
@@ -351,7 +351,7 @@ export function ToolsPanel() {
                   onChange={(e) => setBioMax(Math.max(1, Math.min(10, Number(e.target.value) || 5)))}
                 />
               </div>
-              {bioKey === "blast" && (
+              {bioKey === "blast" ? (
                 <div className="grid gap-1.5">
                   <Label htmlFor="blast-program">Program</Label>
                   <Select value={blastProgram} onValueChange={setBlastProgram}>
@@ -365,11 +365,13 @@ export function ToolsPanel() {
                     </SelectContent>
                   </Select>
                 </div>
+              ) : (
+                <div />
               )}
             </div>
 
             {bioKey === "blast" && (
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid gap-3 sm:grid-cols-2">
                 <div className="grid gap-1.5">
                   <Label htmlFor="blast-db">Database</Label>
                   <Input
@@ -393,7 +395,17 @@ export function ToolsPanel() {
               </div>
             )}
 
-            <div className="flex justify-end">
+            <div className="flex items-center justify-end gap-2">
+              {bioResult && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setBioResult(null)}
+                  disabled={bioRunning}
+                >
+                  Clear results
+                </Button>
+              )}
               <Button onClick={handleRunBio} disabled={bioRunning}>
                 {bioRunning ? <Loader2 className="size-4 animate-spin" /> : <Search className="size-4" />}
                 Search
@@ -439,7 +451,10 @@ export function ToolsPanel() {
       {/* Recent jobs */}
       <Card>
         <CardHeader>
-          <CardTitle className="text-base">Recent Tool Jobs</CardTitle>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Wrench className="size-4" />
+            Recent Tool Jobs
+          </CardTitle>
         </CardHeader>
         <CardContent>
           {loadingJobs ? (
@@ -451,44 +466,50 @@ export function ToolsPanel() {
             <p className="py-8 text-center text-sm text-muted-foreground">No tool jobs yet.</p>
           ) : (
             <ul className="space-y-2">
-              {jobs.map((job) => (
-                <li
-                  key={job.id}
-                  className="flex flex-wrap items-center gap-2 rounded-md border p-2.5 text-sm"
-                >
-                  <Badge variant="secondary" className="font-mono text-[10px]">{job.tool}</Badge>
-                  <Badge
-                    variant="outline"
-                    className="text-[10px]"
-                    style={{
-                      color:
-                        job.status === "completed"
-                          ? "#10b981"
-                          : job.status === "failed"
-                            ? "#ef4444"
-                            : "#f59e0b",
-                    }}
+              {jobs.map((job) => {
+                const def = COMP_TOOLS.find((t) => t.key === job.tool);
+                const JobIcon = (def && COMP_TOOL_ICONS[def.icon]) || Wrench;
+                const statusPill =
+                  job.status === "completed"
+                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                    : job.status === "failed"
+                      ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
+                      : job.status === "running"
+                        ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                        : "bg-muted text-muted-foreground";
+                return (
+                  <li
+                    key={job.id}
+                    className="flex flex-wrap items-center gap-2 rounded-md border p-2.5 text-sm"
                   >
-                    {job.status}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    by {job.triggeredBy || "user"}
-                  </span>
-                  {job.command && (
-                    <code className="hidden max-w-[40%] truncate text-[10px] text-muted-foreground md:inline">
-                      {job.command}
-                    </code>
-                  )}
-                  <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-                    <Clock className="size-3" />
-                    {timeAgo(job.createdAt)}
-                  </span>
-                  <Button size="sm" variant="outline" onClick={() => setViewJob(job)}>
-                    <Eye className="size-3.5" />
-                    View output
-                  </Button>
-                </li>
-              ))}
+                    <span className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground">
+                      <JobIcon className="size-3.5" />
+                    </span>
+                    <Badge variant="secondary" className="font-mono text-[10px]">{job.tool}</Badge>
+                    <span
+                      className={`inline-flex items-center rounded-md px-2 py-0.5 text-[10px] font-medium ${statusPill}`}
+                    >
+                      {job.status}
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      by {job.triggeredBy || "user"}
+                    </span>
+                    {job.command && (
+                      <code className="hidden max-w-[40%] truncate text-[10px] text-muted-foreground md:inline">
+                        {job.command}
+                      </code>
+                    )}
+                    <span className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
+                      <Clock className="size-3" />
+                      {timeAgo(job.createdAt)}
+                    </span>
+                    <Button size="sm" variant="outline" onClick={() => setViewJob(job)}>
+                      <Eye className="size-3.5" />
+                      View output
+                    </Button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </CardContent>

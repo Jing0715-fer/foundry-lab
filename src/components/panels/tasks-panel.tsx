@@ -10,11 +10,12 @@ import {
   Eye,
   Loader2,
   Sparkles,
+  SquarePen,
   CheckCircle2,
   Clock,
   AlertCircle,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -52,26 +53,72 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
-const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  queued: { label: "Queued", color: "#64748b", bg: "#64748b1a" },
-  idle: { label: "Idle", color: "#94a3b8", bg: "#94a3b81a" },
-  pending: { label: "Pending", color: "#3b82f6", bg: "#3b82f61a" },
-  running: { label: "Running", color: "#f59e0b", bg: "#f59e0b1a" },
-  completed: { label: "Completed", color: "#10b981", bg: "#10b9811a" },
-  failed: { label: "Failed", color: "#ef4444", bg: "#ef44441a" },
-  cancelled: { label: "Cancelled", color: "#6b7280", bg: "#6b72801a" },
-  draft: { label: "Draft", color: "#94a3b8", bg: "#94a3b81a" },
-  planning: { label: "Planning", color: "#3b82f6", bg: "#3b82f61a" },
-  researching: { label: "Researching", color: "#8b5cf6", bg: "#8b5cf61a" },
-  writing: { label: "Writing", color: "#06b6d4", bg: "#06b6d41a" },
+const STATUS_META: Record<
+  string,
+  { label: string; pill: string; accent: string }
+> = {
+  queued: {
+    label: "Queued",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
+  idle: {
+    label: "Idle",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
+  draft: {
+    label: "Draft",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
+  pending: {
+    label: "Pending",
+    pill: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    accent: "#3b82f6",
+  },
+  running: {
+    label: "Running",
+    pill: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    accent: "#f59e0b",
+  },
+  completed: {
+    label: "Completed",
+    pill: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    accent: "#10b981",
+  },
+  failed: {
+    label: "Failed",
+    pill: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
+    accent: "#ef4444",
+  },
+  cancelled: {
+    label: "Cancelled",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#6b7280",
+  },
+  planning: {
+    label: "Planning",
+    pill: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    accent: "#3b82f6",
+  },
+  researching: {
+    label: "Researching",
+    pill: "bg-purple-500/10 text-purple-700 dark:text-purple-400",
+    accent: "#8b5cf6",
+  },
+  writing: {
+    label: "Writing",
+    pill: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
+    accent: "#06b6d4",
+  },
 };
 
 function StatusPill({ status }: { status: RunStatus | string }) {
   const meta = STATUS_META[status] ?? STATUS_META["idle"];
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium"
-      style={{ color: meta.color, background: meta.bg }}
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${meta.pill}`}
     >
       {meta.label}
     </span>
@@ -240,14 +287,14 @@ export function TasksPanel() {
       </div>
 
       {/* New task form */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Plus className="size-4" />
-            New Task
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+      <section className="rounded-xl border bg-card p-4 shadow-sm">
+        <header className="mb-3 flex items-center gap-2">
+          <span className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
+            <SquarePen className="size-4" />
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">New Task</h3>
+        </header>
+        <div className="space-y-3">
           <div className="grid gap-1.5">
             <Label htmlFor="task-title">Title</Label>
             <Input
@@ -279,7 +326,7 @@ export function TasksPanel() {
             />
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label>Task type</Label>
               <Select value={taskType} onValueChange={setTaskType}>
@@ -343,8 +390,8 @@ export function TasksPanel() {
               Create task
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {/* Task list */}
       <div className="space-y-3">
@@ -422,9 +469,13 @@ function TaskCard({
   const taskAgents = task.agentIds
     .map((id) => agents.find((a) => a.id === id))
     .filter(Boolean) as { id: string; title: string; color: string }[];
+  const accent = (STATUS_META[task.status] ?? STATUS_META["idle"]).accent;
 
   return (
-    <Card>
+    <Card
+      className="overflow-hidden transition-shadow hover:shadow-md"
+      style={{ borderLeftColor: accent, borderLeftWidth: 3 }}
+    >
       <CardContent className="space-y-3 py-4">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 space-y-1">

@@ -37,7 +37,9 @@ export async function chat(
       thinking: { type: opts.thinking === "enabled" ? "enabled" : "disabled" },
     };
     if (opts.maxTokens != null) payload.max_tokens = opts.maxTokens;
-    const completion = await (zai.chat.completions.create as unknown as (p: Record<string, unknown>) => Promise<{ choices: { message: { content?: string } }[] }>)>(payload);
+    type Completion = { choices: { message: { content?: string } }[] };
+    const create = zai.chat.completions.create as unknown as (p: Record<string, unknown>) => Promise<Completion>;
+    const completion = await create(payload);
     const content = completion.choices[0]?.message?.content;
     return typeof content === "string" ? content : "";
   } catch (err) {

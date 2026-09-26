@@ -13,7 +13,7 @@ import {
   ChevronDown,
   ChevronRight,
 } from "lucide-react";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -49,25 +49,67 @@ function timeAgo(iso: string): string {
   return `${d}d ago`;
 }
 
-const STATUS_META: Record<string, { label: string; color: string; bg: string }> = {
-  draft: { label: "Draft", color: "#94a3b8", bg: "#94a3b81a" },
-  planning: { label: "Planning", color: "#3b82f6", bg: "#3b82f61a" },
-  researching: { label: "Researching", color: "#8b5cf6", bg: "#8b5cf61a" },
-  writing: { label: "Writing", color: "#06b6d4", bg: "#06b6d41a" },
-  running: { label: "Running", color: "#f59e0b", bg: "#f59e0b1a" },
-  pending: { label: "Pending", color: "#3b82f6", bg: "#3b82f61a" },
-  completed: { label: "Completed", color: "#10b981", bg: "#10b9811a" },
-  failed: { label: "Failed", color: "#ef4444", bg: "#ef44441a" },
-  cancelled: { label: "Cancelled", color: "#6b7280", bg: "#6b72801a" },
-  queued: { label: "Queued", color: "#64748b", bg: "#64748b1a" },
+const STATUS_META: Record<
+  string,
+  { label: string; pill: string; accent: string }
+> = {
+  draft: {
+    label: "Draft",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
+  planning: {
+    label: "Planning",
+    pill: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    accent: "#3b82f6",
+  },
+  researching: {
+    label: "Researching",
+    pill: "bg-purple-500/10 text-purple-700 dark:text-purple-400",
+    accent: "#8b5cf6",
+  },
+  writing: {
+    label: "Writing",
+    pill: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    accent: "#f59e0b",
+  },
+  running: {
+    label: "Running",
+    pill: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
+    accent: "#f59e0b",
+  },
+  pending: {
+    label: "Pending",
+    pill: "bg-blue-500/10 text-blue-700 dark:text-blue-400",
+    accent: "#3b82f6",
+  },
+  completed: {
+    label: "Completed",
+    pill: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400",
+    accent: "#10b981",
+  },
+  failed: {
+    label: "Failed",
+    pill: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
+    accent: "#ef4444",
+  },
+  cancelled: {
+    label: "Cancelled",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#6b7280",
+  },
+  queued: {
+    label: "Queued",
+    pill: "bg-muted text-muted-foreground",
+    accent: "#94a3b8",
+  },
 };
 
 function StatusPill({ status }: { status: RunStatus | string }) {
   const meta = STATUS_META[status] ?? STATUS_META["draft"];
   return (
     <span
-      className="inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium"
-      style={{ color: meta.color, background: meta.bg }}
+      className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-xs font-medium ${meta.pill}`}
     >
       {meta.label}
     </span>
@@ -234,14 +276,14 @@ export function ResearchPanel() {
       </div>
 
       {/* New research form */}
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
+      <section className="rounded-xl border bg-card p-4 shadow-sm">
+        <header className="mb-3 flex items-center gap-2">
+          <span className="flex size-7 items-center justify-center rounded-md bg-primary/10 text-primary">
             <Plus className="size-4" />
-            New Research
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          </span>
+          <h3 className="text-sm font-semibold text-foreground">New Research</h3>
+        </header>
+        <div className="space-y-3">
           <div className="grid gap-1.5">
             <Label htmlFor="research-topic">Topic</Label>
             <Input
@@ -262,7 +304,7 @@ export function ResearchPanel() {
             />
           </div>
 
-          <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="grid gap-1.5">
               <Label htmlFor="research-rounds">Rounds</Label>
               <Input
@@ -302,6 +344,7 @@ export function ResearchPanel() {
                 ))}
               </SelectContent>
             </Select>
+            <p className="text-xs text-muted-foreground">Select the team lead agent</p>
           </div>
 
           <div className="grid gap-1.5">
@@ -332,6 +375,7 @@ export function ResearchPanel() {
                 })}
               </div>
             )}
+            <p className="text-xs text-muted-foreground">Add team members</p>
           </div>
 
           <div className="flex justify-end">
@@ -340,8 +384,8 @@ export function ResearchPanel() {
               Create research
             </Button>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </section>
 
       {/* Reports list */}
       <div className="space-y-3">
@@ -418,9 +462,13 @@ function ResearchCard({
   const members = report.memberIds
     .map((id) => agents.find((a) => a.id === id))
     .filter(Boolean) as { id: string; title: string; color: string }[];
+  const accent = (STATUS_META[report.status] ?? STATUS_META["draft"]).accent;
 
   return (
-    <Card>
+    <Card
+      className="overflow-hidden transition-shadow hover:shadow-md"
+      style={{ borderLeftColor: accent, borderLeftWidth: 3 }}
+    >
       <CardContent className="space-y-3 py-4">
         <div className="flex items-start justify-between gap-2">
           <div className="flex-1 space-y-1">

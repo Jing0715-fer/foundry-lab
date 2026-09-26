@@ -78,12 +78,53 @@ function groupByCategory(specs: NodeSpec[]): { category: string; items: NodeSpec
   return out;
 }
 
-/** Drop a new node at the approximate viewport center. */
+/** Find a free spot on the canvas for a new node (avoids overlapping existing nodes). */
+function findFreeSpot(
+  existing: { x: number; y: number }[],
+  centerX: number,
+  centerY: number,
+): { x: number; y: number } {
+  const CARD_W = 248;
+  const CARD_H = 116;
+  const PAD = 40;
+  if (existing.length === 0) return { x: centerX, y: centerY };
+  // Try the center first, then a spiral of expanding positions.
+  const candidates: { x: number; y: number }[] = [{ x: centerX, y: centerY }];
+  for (let ring = 1; ring <= 6; ring++) {
+    const step = CARD_W + PAD;
+    for (let dx = -ring; dx <= ring; dx++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        if (Math.abs(dx) !== ring && Math.abs(dy) !== ring) continue;
+        candidates.push({
+          x: centerX + dx * step,
+          y: centerY + dy * (CARD_H + PAD),
+        });
+      }
+    }
+  }
+  const overlaps = (c: { x: number; y: number }) =>
+    existing.some(
+      (e) =>
+        Math.abs(e.x - c.x) < CARD_W + PAD * 0.5 &&
+        Math.abs(e.y - c.y) < CARD_H + PAD * 0.5,
+    );
+  for (const c of candidates) {
+    if (!overlaps(c)) return { x: Math.round(c.x), y: Math.round(c.y) };
+  }
+  return { x: Math.round(centerX + 40), y: Math.round(centerY + 40) };
+}
+
+/** Drop a new node at the approximate viewport center, avoiding existing nodes. */
 async function createNodeAtCenter(spec: NodeSpec): Promise<void> {
-  const { viewport, upsertNode, toast } = useAppStore.getState();
-  // Rough visible-center in world coords (canvas size unknown here, use a sane default).
-  const x = Math.round(viewport.x + 380 - 124);
-  const y = Math.round(viewport.y + 260 - 58);
+  const { viewport, workflow, upsertNode, toast } = useAppStore.getState();
+  // Compute visible center in world coords.
+  const canvasEl = document.querySelector('[data-canvas="viewport"]');
+  const w = canvasEl?.getBoundingClientRect().width ?? 900;
+  const h = canvasEl?.getBoundingClientRect().height ?? 600;
+  const centerX = (viewport.x + w / 2) / viewport.zoom - 124;
+  const centerY = (viewport.y + h / 2) / viewport.zoom - 58;
+  const existing = (workflow?.nodes ?? []).map((n) => ({ x: n.x, y: n.y }));
+  const { x, y } = findFreeSpot(existing, centerX, centerY);
   try {
     const res = await fetch("/api/workflow/nodes", {
       method: "POST",
@@ -103,6 +144,11 @@ async function createNodeAtCenter(spec: NodeSpec): Promise<void> {
     upsertNode(node);
     useAppStore.getState().select(node.id);
     useAppStore.getState().inspect(node.id);
+    useAppStore.getState().toast({
+      title: "Node added",
+      description: `${spec.label} added to canvas`,
+      variant: "success",
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     toast({

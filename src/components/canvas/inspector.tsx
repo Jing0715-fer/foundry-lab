@@ -17,6 +17,7 @@ import {
   Trash2,
   ChevronDown,
   ChevronRight,
+  Copy,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -54,6 +55,12 @@ import {
   AlertDialogCancel,
   AlertDialogAction,
 } from "@/components/ui/alert-dialog";
+import {
+  Tooltip,
+  TooltipTrigger,
+  TooltipContent,
+  TooltipProvider,
+} from "@/components/ui/tooltip";
 import ReactMarkdown from "react-markdown";
 
 /** Render the lucide icon for a spec.icon string. */
@@ -403,6 +410,7 @@ function NodeInspectorImpl() {
   const patch = useDebouncedPatch();
   const [running, setRunning] = React.useState(false);
   const [runningAll, setRunningAll] = React.useState(false);
+  const [duplicating, setDuplicating] = React.useState(false);
 
   const id = inspectId ?? selectedId;
   const node = React.useMemo(
@@ -414,6 +422,20 @@ function NodeInspectorImpl() {
     () => (node ? nodeSpec(node.type) : undefined),
     [node],
   );
+
+  // ⌘+Enter / Ctrl+Enter to run this node. Ref holds the latest run function
+  // so the keyboard listener doesn't need to re-bind on every keystroke.
+  const runRef = React.useRef<(() => void) | null>(null);
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        runRef.current?.();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   if (!node || !spec) return null;
 
@@ -464,6 +486,37 @@ function NodeInspectorImpl() {
       setRunning(false);
     }
   };
+  // Keep the ref in sync with the latest onRun closure.
+  runRef.current = onRun;
+
+  const onDuplicate = async () => {
+    if (duplicating) return;
+    setDuplicating(true);
+    try {
+      const res = await fetch("/api/workflow/nodes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: node.type,
+          name: `${node.name} copy`,
+          x: node.x + 40,
+          y: node.y + 40,
+          refId: node.refId ?? undefined,
+          params: node.params,
+        }),
+      });
+      if (!res.ok) throw new Error("duplicate failed");
+      const created: NodeDTO = await res.json();
+      upsertNode(created);
+      useAppStore.getState().select(created.id);
+      useAppStore.getState().inspect(created.id);
+      toast({ title: "Duplicated", description: `${node.name} → ${created.name}` });
+    } catch {
+      toast({ title: "Duplicate failed", variant: "destructive" });
+    } finally {
+      setDuplicating(false);
+    }
+  };
 
   const onRunAll = async () => {
     setRunningAll(true);
@@ -499,89 +552,140 @@ function NodeInspectorImpl() {
   };
 
   return (
-    <aside className="flex h-full w-80 shrink-0 flex-col border-l bg-background">
-      {/* Header */}
-      <header className="flex flex-col gap-2 border-b p-3">
-        <div className="flex items-center gap-2">
-          <span
-            className={cn(
-              "flex size-8 shrink-0 items-center justify-center rounded-md border",
-              color.soft,
-              color.border,
-              color.text,
-            )}
-          >
-            <SpecIcon name={spec.icon} className="size-4" />
-          </span>
-          <Input
-            value={node.name}
-            onChange={(e) => onRename(e.target.value)}
-            className="h-8 flex-1 text-sm font-medium"
-            aria-label="Node name"
-          />
-          <Button variant="ghost" size="icon" className="size-8" onClick={onClose} title="Close">
-            <X className="size-4" />
-          </Button>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant="outline" className={cn("border", STATUS_STYLES[node.status] ?? STATUS_STYLES.idle)}>
-            {node.status}
-          </Badge>
-          <span className="text-xs text-muted-foreground">{spec.label}</span>
-          {spec.usesLLM && (
-            <Badge variant="secondary" className="ml-auto text-[10px]">LLM</Badge>
-          )}
-        </div>
-      </header>
-
-      {/* Tabs */}
-      <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
-        <TabsList className="m-2 grid w-[calc(100%-1rem)] grid-cols-3">
-          <TabsTrigger value="params">Params</TabsTrigger>
-          <TabsTrigger value="logs">Logs</TabsTrigger>
-          <TabsTrigger value="result">Result</TabsTrigger>
-        </TabsList>
-        <ScrollArea className="min-h-0 flex-1">
-          <TabsContent value="params" className="m-0">
-            <ParamsTab
-              node={node}
-              spec={spec}
-              agents={agents}
-              onPatchParam={onPatchParam}
+    <TooltipProvider delayDuration={250}>
+      <aside className="flex h-full w-80 shrink-0 flex-col border-l bg-background">
+        {/* Animated progress bar at the top while running */}
+        {isRunning && (
+          <div className="relative h-0.5 w-full overflow-hidden bg-muted">
+            <div
+              className="absolute inset-y-0 left-0 bg-primary transition-[width] duration-300"
+              style={{
+                width: `${Math.max(4, Math.min(100, node.progress || 10))}%`,
+              }}
             />
-          </TabsContent>
-          <TabsContent value="logs" className="m-0">
-            <LogsTab node={node} />
-          </TabsContent>
-          <TabsContent value="result" className="m-0">
-            <ResultTab node={node} />
-          </TabsContent>
-        </ScrollArea>
-      </Tabs>
+          </div>
+        )}
 
-      <Separator />
-
-      {/* Footer actions */}
-      <footer className="flex flex-col gap-2 p-3">
-        <div className="flex gap-2">
-          <Button
-            onClick={onRun}
-            disabled={isRunning}
-            className="flex-1"
-            size="sm"
-          >
-            {isRunning ? (
-              <Loader2 className="size-4 animate-spin" />
-            ) : (
-              <Play className="size-4" />
+        {/* Header with subtle gradient accent matching node color */}
+        <header
+          className={cn(
+            "relative flex flex-col gap-2 overflow-hidden border-b p-3",
+            "inspector-accent",
+          )}
+        >
+          {/* Colored top border accent */}
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-x-0 top-0 h-0.5 opacity-70",
+              color.bg,
             )}
-            Run
-          </Button>
+          />
+          <div className="flex items-center gap-2">
+            <span
+              className={cn(
+                "flex size-8 shrink-0 items-center justify-center rounded-md border",
+                color.soft,
+                color.border,
+                color.text,
+              )}
+            >
+              <SpecIcon name={spec.icon} className="size-4" />
+            </span>
+            <Input
+              value={node.name}
+              onChange={(e) => onRename(e.target.value)}
+              className="h-8 flex-1 text-sm font-medium"
+              aria-label="Node name"
+            />
+            <Button variant="ghost" size="icon" className="size-8" onClick={onClose} title="Close">
+              <X className="size-4" />
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className={cn("border", STATUS_STYLES[node.status] ?? STATUS_STYLES.idle)}>
+              {node.status}
+            </Badge>
+            <span className="text-xs text-muted-foreground">{spec.label}</span>
+            {spec.usesLLM && (
+              <Badge variant="secondary" className="ml-auto text-[10px]">LLM</Badge>
+            )}
+          </div>
+        </header>
+
+        {/* Tabs */}
+        <Tabs value={tab} onValueChange={setTab} className="flex min-h-0 flex-1 flex-col">
+          <TabsList className="m-2 grid w-[calc(100%-1rem)] grid-cols-3">
+            <TabsTrigger value="params">Params</TabsTrigger>
+            <TabsTrigger value="logs">Logs</TabsTrigger>
+            <TabsTrigger value="result">Result</TabsTrigger>
+          </TabsList>
+          <ScrollArea className="min-h-0 flex-1">
+            <TabsContent value="params" className="m-0">
+              <ParamsTab
+                node={node}
+                spec={spec}
+                agents={agents}
+                onPatchParam={onPatchParam}
+              />
+            </TabsContent>
+            <TabsContent value="logs" className="m-0">
+              <LogsTab node={node} />
+            </TabsContent>
+            <TabsContent value="result" className="m-0">
+              <ResultTab node={node} />
+            </TabsContent>
+          </ScrollArea>
+        </Tabs>
+
+        <Separator />
+
+        {/* Footer actions */}
+        <footer className="flex flex-col gap-2 p-3">
+          <div className="flex gap-2">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={onRun}
+                  disabled={isRunning}
+                  className="flex-1"
+                  size="sm"
+                >
+                  {isRunning ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Play className="size-4" />
+                  )}
+                  Run
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">⌘+Enter to run</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  onClick={onDuplicate}
+                  disabled={duplicating}
+                  variant="outline"
+                  size="sm"
+                  className="gap-1.5"
+                >
+                  {duplicating ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Copy className="size-4" />
+                  )}
+                  Duplicate
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="top">Duplicate this node</TooltipContent>
+            </Tooltip>
+          </div>
           <Button
             onClick={onRunAll}
             disabled={runningAll}
-            variant="outline"
+            variant="secondary"
             size="sm"
+            className="w-full"
           >
             {runningAll ? (
               <Loader2 className="size-4 animate-spin" />
@@ -590,34 +694,34 @@ function NodeInspectorImpl() {
             )}
             Run All
           </Button>
-        </div>
-        <AlertDialog>
-          <AlertDialogTrigger asChild>
-            <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive">
-              <Trash2 className="size-4" />
-              Delete node
-            </Button>
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete “{node.name}”?</AlertDialogTitle>
-              <AlertDialogDescription>
-                This removes the node and any connected edges. This cannot be undone.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Cancel</AlertDialogCancel>
-              <AlertDialogAction
-                onClick={onDelete}
-                className="bg-destructive text-white hover:bg-destructive/90"
-              >
-                Delete
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </footer>
-    </aside>
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="ghost" size="sm" className="text-destructive hover:bg-destructive/10 hover:text-destructive">
+                <Trash2 className="size-4" />
+                Delete node
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Delete “{node.name}”?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This removes the node and any connected edges. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction
+                  onClick={onDelete}
+                  className="bg-destructive text-white hover:bg-destructive/90"
+                >
+                  Delete
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </footer>
+      </aside>
+    </TooltipProvider>
   );
 }
 
