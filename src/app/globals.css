@@ -498,3 +498,66 @@ kbd,
     animation: none !important;
   }
 }
+
+/* --- Task 17-b: workflow scheduling + styling polish --------------------- */
+
+/* Node card hover glow — a primary-tinted ring + soft elevation that
+   complements the existing .node-shadow depth. Apply alongside .node-shadow
+   on the card body. */
+.node-glow-hover {
+  transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+.node-glow-hover:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--primary) 30%, transparent),
+    0 8px 24px -4px color-mix(in oklab, var(--primary) 15%, transparent);
+}
+
+/* Entrance animation for panels (e.g. inspector popovers, dialog sections). */
+@keyframes panel-enter {
+  from { opacity: 0; transform: translateY(12px) scale(0.99); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.panel-enter { animation: panel-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Stagger animation for list items — pair with
+   `style={{ animationDelay: `${i * 30}ms` }}` on each <li>. */
+@keyframes stagger-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.stagger-in { animation: stagger-in 0.3s ease-out backwards; }
+
+/* Glass effect for floating elements (tooltips, popovers, command palette). */
+.glass {
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Smooth focus ring — apply alongside other focus styles for a consistent
+   primary-tinted focus halo on custom interactive elements. */
+.focus-ring {
+  transition: box-shadow 0.2s ease;
+}
+.focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 40%, transparent);
+  outline: none;
+}
+
+/* Disable the new animations under reduced-motion. The generic block at the
+   top of the file already covers them defensively, but we list them here so
+   the intent is self-documenting. */
+@media (prefers-reduced-motion: reduce) {
+  .node-glow-hover,
+  .node-glow-hover:hover,
+  .panel-enter,
+  .stagger-in,
+  .focus-ring,
+  .focus-ring:focus-visible {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+    box-shadow: none !important;
+  }
+}

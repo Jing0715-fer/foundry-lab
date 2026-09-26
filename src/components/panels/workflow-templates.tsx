@@ -25,6 +25,7 @@ import {
   ArrowRight,
   Bot,
   BookOpen,
+  CalendarClock,
   Cpu,
   Database,
   Download,
@@ -34,10 +35,13 @@ import {
   RotateCcw,
   Save,
   Sparkles,
+  Trash2,
   Upload,
   Users,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { Input } from "@/components/ui/input";
 
 // Local shape — mirrors WorkflowVersionDTO from the API route.
 interface VersionItem {
@@ -45,6 +49,15 @@ interface VersionItem {
   label: string;
   createdAt: string;
   current?: boolean;
+}
+
+// Local shape — mirrors ScheduleDTO from the schedule API route.
+interface ScheduleItem {
+  id: string;
+  workflowId: string;
+  runAt: string;
+  label: string;
+  createdAt: string;
 }
 
 // Map node.type → lucide icon for the card preview.
@@ -100,6 +113,16 @@ export function WorkflowTemplates({
   const [versions, setVersions] = React.useState<VersionItem[]>([]);
   const [versionsLoading, setVersionsLoading] = React.useState(false);
   const [savingVersion, setSavingVersion] = React.useState(false);
+
+  // Scheduling state — same pattern as versions: fetch on `workflow?.id`
+  // change, optimistic prepend on POST, optimistic remove on DELETE.
+  const [schedules, setSchedules] = React.useState<ScheduleItem[]>([]);
+  const [schedulesLoading, setSchedulesLoading] = React.useState(false);
+  const [savingSchedule, setSavingSchedule] = React.useState(false);
+  const [cancellingScheduleId, setCancellingScheduleId] = React.useState<string | null>(null);
+  // datetime-local value + optional label for the "schedule a new run" form.
+  const [scheduleRunAt, setScheduleRunAt] = React.useState("");
+  const [scheduleLabel, setScheduleLabel] = React.useState("");
 
   const hasNodes = !!(workflow && workflow.nodes && workflow.nodes.length > 0);
 
@@ -333,6 +356,121 @@ export function WorkflowTemplates({
       description: `Restoring "${v.label}" is not yet implemented.`,
       variant: "default",
     });
+  }
+
+  // --- Scheduling -------------------------------------------------------------
+
+  // Fetch schedules whenever the workflow id changes (covers initial dialog
+  // open + switching workflows while the dialog is open). Same lifecycle
+  // pattern as the versions useEffect above.
+  React.useEffect(() => {
+    let cancelled = false;
+    if (!workflow?.id) {
+      setSchedules([]);
+      return;
+    }
+    setSchedulesLoading(true);
+    fetch(`/api/workflows/${workflow.id}/schedule`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+      .then((data: { schedules?: ScheduleItem[] }) => {
+        if (!cancelled) setSchedules(data.schedules ?? []);
+      })
+      .catch(() => {
+        if (!cancelled) setSchedules([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSchedulesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [workflow?.id]);
+
+  async function handleScheduleRun(e: React.FormEvent) {
+    e.preventDefault();
+    if (!workflow?.id || savingSchedule) return;
+    if (!scheduleRunAt) {
+      toast({
+        title: "Pick a time",
+        description: "Choose when the workflow should run.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setSavingSchedule(true);
+    try {
+      const res = await fetch(`/api/workflows/${workflow.id}/schedule`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          runAt: scheduleRunAt,
+          label: scheduleLabel.trim() || undefined,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? `${res.status}`);
+      }
+      const data: { schedule: ScheduleItem } = await res.json();
+      // Optimistic prepend (newest-first by runAt).
+      setSchedules((prev) =>
+        [...prev, data.schedule].sort((a, b) => a.runAt.localeCompare(b.runAt)),
+      );
+      // Reset the form.
+      setScheduleRunAt("");
+      setScheduleLabel("");
+      toast({
+        title: "Run scheduled",
+        description: `${data.schedule.label} — ${new Date(data.schedule.runAt).toLocaleString()}`,
+        variant: "success",
+      });
+    } catch (err) {
+      toast({
+        title: "Failed to schedule run",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    } finally {
+      setSavingSchedule(false);
+    }
+  }
+
+  async function handleCancelSchedule(s: ScheduleItem) {
+    if (!workflow?.id || cancellingScheduleId) return;
+    setCancellingScheduleId(s.id);
+    // Optimistic remove — the list updates immediately and the server call
+    // runs in the background. If it fails we refetch to restore.
+    setSchedules((prev) => prev.filter((x) => x.id !== s.id));
+    try {
+      const res = await fetch(
+        `/api/workflows/${workflow.id}/schedule?scheduleId=${encodeURIComponent(s.id)}`,
+        { method: "DELETE" },
+      );
+      if (!res.ok) throw new Error(`${res.status}`);
+      toast({
+        title: "Run cancelled",
+        description: s.label,
+        variant: "default",
+      });
+    } catch (err) {
+      toast({
+        title: "Failed to cancel run",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+      // Refetch to restore the optimistic removal.
+      try {
+        const r = await fetch(`/api/workflows/${workflow.id}/schedule`);
+        if (r.ok) {
+          const data: { schedules?: ScheduleItem[] } = await r.json();
+          setSchedules(data.schedules ?? []);
+        }
+      } catch {
+        // ignore — the toast already reported the failure.
+      }
+    } finally {
+      setCancellingScheduleId(null);
+    }
   }
 
   return (
@@ -581,6 +719,209 @@ export function WorkflowTemplates({
               </li>
             ))}
           </ul>
+        )}
+      </section>
+
+      {/* Schedule — lets the user queue a workflow run for a future time.
+          Storage is mock (in-memory on the server) so schedules reset on
+          server restart, but the full POST/GET/DELETE lifecycle is wired. */}
+      <section className="space-y-2">
+        <div className="flex items-center gap-2">
+          <CalendarClock className="size-4 text-muted-foreground" />
+          <h3 className="text-sm font-medium">Schedule</h3>
+          <span className="text-[11px] text-muted-foreground">
+            Queue a workflow run for a future time (mock storage).
+          </span>
+        </div>
+
+        {!workflow?.id ? (
+          <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
+            Open a workflow to schedule a run.
+          </div>
+        ) : (
+          <>
+            {/* New schedule form */}
+            <form
+              onSubmit={handleScheduleRun}
+              className="grid gap-2 rounded-lg border bg-card p-3 sm:grid-cols-[1fr_1fr_auto]"
+            >
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="schedule-run-at"
+                  className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                >
+                  Run at
+                </label>
+                <Input
+                  id="schedule-run-at"
+                  type="datetime-local"
+                  value={scheduleRunAt}
+                  onChange={(e) => setScheduleRunAt(e.target.value)}
+                  disabled={savingSchedule}
+                  className="h-9 text-xs"
+                  aria-label="Run at"
+                />
+              </div>
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="schedule-label"
+                  className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+                >
+                  Label <span className="text-muted-foreground/70">(optional)</span>
+                </label>
+                <Input
+                  id="schedule-label"
+                  type="text"
+                  value={scheduleLabel}
+                  onChange={(e) => setScheduleLabel(e.target.value)}
+                  disabled={savingSchedule}
+                  placeholder="e.g. Nightly batch"
+                  className="h-9 text-xs"
+                  aria-label="Label (optional)"
+                />
+              </div>
+              <div className="flex items-end">
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={savingSchedule || !scheduleRunAt}
+                  className="h-9 gap-1.5"
+                >
+                  {savingSchedule ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <CalendarClock className="size-3.5" />
+                  )}
+                  Schedule run
+                </Button>
+              </div>
+            </form>
+
+            {/* Existing schedules list */}
+            {schedulesLoading ? (
+              <div className="flex items-center gap-2 rounded-lg border bg-muted/30 px-3 py-4 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                Loading scheduled runs…
+              </div>
+            ) : schedules.length === 0 ? (
+              <div className="rounded-lg border border-dashed bg-muted/30 px-3 py-6 text-center text-xs text-muted-foreground">
+                No scheduled runs. Pick a time above to queue one.
+              </div>
+            ) : (
+              <ul className="space-y-1.5">
+                {schedules.map((s, i) => {
+                  const runAtDate = new Date(s.runAt);
+                  const isPast = runAtDate.getTime() < Date.now();
+                  return (
+                    <li
+                      key={s.id}
+                      className="stagger-in flex items-center gap-2 rounded-md border bg-card px-3 py-2"
+                      style={{ animationDelay: `${Math.min(i, 8) * 30}ms` }}
+                    >
+                      <div
+                        className={cn(
+                          "flex size-7 shrink-0 items-center justify-center rounded-md",
+                          isPast
+                            ? "bg-muted text-muted-foreground"
+                            : "bg-primary/10 text-primary",
+                        )}
+                      >
+                        <CalendarClock className="size-3.5" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-1.5">
+                          <span className="truncate text-xs font-medium">
+                            {s.label}
+                          </span>
+                          {isPast && (
+                            <Badge
+                              variant="outline"
+                              className="border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[9px] text-amber-600 dark:text-amber-400"
+                            >
+                              past due
+                            </Badge>
+                          )}
+                        </div>
+                        <div className="text-[10px] text-muted-foreground">
+                          {runAtDate.toLocaleString()}
+                        </div>
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                        onClick={() => void handleCancelSchedule(s)}
+                        disabled={!!cancellingScheduleId}
+                        type="button"
+                        title="Cancel this scheduled run"
+                      >
+                        {cancellingScheduleId === s.id ? (
+                          <Loader2 className="size-3 animate-spin" />
+                        ) : (
+                          <X className="size-3" />
+                        )}
+                        Cancel
+                      </Button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {/* Bulk cancel — only shown when there are schedules. */}
+            {schedules.length > 0 && (
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
+                  onClick={async () => {
+                    if (!workflow?.id || cancellingScheduleId) return;
+                    setCancellingScheduleId("all");
+                    setSchedules([]);
+                    try {
+                      const res = await fetch(
+                        `/api/workflows/${workflow.id}/schedule`,
+                        { method: "DELETE" },
+                      );
+                      if (!res.ok) throw new Error(`${res.status}`);
+                      toast({
+                        title: "All runs cancelled",
+                        variant: "default",
+                      });
+                    } catch (err) {
+                      toast({
+                        title: "Failed to cancel runs",
+                        description:
+                          err instanceof Error ? err.message : String(err),
+                        variant: "destructive",
+                      });
+                      // Refetch to restore.
+                      try {
+                        const r = await fetch(
+                          `/api/workflows/${workflow.id}/schedule`,
+                        );
+                        if (r.ok) {
+                          const data: { schedules?: ScheduleItem[] } =
+                            await r.json();
+                          setSchedules(data.schedules ?? []);
+                        }
+                      } catch {
+                        // ignore
+                      }
+                    } finally {
+                      setCancellingScheduleId(null);
+                    }
+                  }}
+                  disabled={!!cancellingScheduleId}
+                  type="button"
+                >
+                  <Trash2 className="size-3" />
+                  Cancel all
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </section>
     </div>

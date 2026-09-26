@@ -20,6 +20,7 @@ import {
   Loader2,
   Sparkles,
   GitCompare,
+  BarChart3,
   Play,
   X,
 } from "lucide-react";
@@ -67,6 +68,7 @@ import type { AgentDTO, AgentKnowledgeConfig } from "@/lib/types";
 import { useChatStore } from "@/lib/chat-store";
 import { AgentChatDrawer } from "./agent-chat-drawer";
 import { AgentCompareDialog } from "./agent-compare";
+import { AgentAnalyticsDialog } from "./agent-analytics";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 import { cn } from "@/lib/utils";
 
@@ -188,6 +190,9 @@ export function AgentsPanel() {
   const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
   const [compareOpen, setCompareOpen] = React.useState(false);
 
+  // Analytics dialog state.
+  const [analyticsOpen, setAnalyticsOpen] = React.useState(false);
+
   const compareAgents = React.useMemo(
     () => agents.filter((a) => selectedIds.has(a.id)),
     [agents, selectedIds],
@@ -307,6 +312,15 @@ export function AgentsPanel() {
           >
             <GitCompare className="size-4" />
             Compare
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setAnalyticsOpen(true)}
+            disabled={agents.length === 0}
+            title={agents.length === 0 ? "No agents to analyze" : "View per-agent usage analytics"}
+          >
+            <BarChart3 className="size-4" />
+            Analytics
           </Button>
           <Button
             onClick={() => {
@@ -479,6 +493,11 @@ export function AgentsPanel() {
           setCompareOpen(false);
           setSelectedIds(new Set());
         }}
+      />
+
+      <AgentAnalyticsDialog
+        open={analyticsOpen}
+        onClose={() => setAnalyticsOpen(false)}
       />
     </div>
   );

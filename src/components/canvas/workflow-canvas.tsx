@@ -14,6 +14,9 @@ import {
   Loader2,
   Workflow,
   Search,
+  Trash2,
+  X,
+  Group as GroupIcon,
   type LucideIcon,
 } from "lucide-react";
 import type { NodeDTO, NodeType, NodeSpec } from "@/lib/types";
@@ -33,6 +36,16 @@ import { LiveWire } from "./live-wire";
 import { CanvasMinimap, useMinimapStore } from "./canvas-minimap";
 import { NodeSearch } from "./node-search";
 import { NodeGroupLayer, createGroupFromSelection } from "./node-group";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const ICON_MAP: Record<string, LucideIcon> = {
   bot: Bot,
@@ -63,6 +76,7 @@ export function WorkflowCanvas() {
   const band = useAppStore((s) => s.band);
   const pendingFrom = useAppStore((s) => s.pendingFrom);
   const dragActive = useAppStore((s) => s.dragActive);
+  const selectedIds = useAppStore((s) => s.selectedIds);
 
   const setViewport = useAppStore((s) => s.setViewport);
   const panBy = useAppStore((s) => s.panBy);
@@ -90,6 +104,11 @@ export function WorkflowCanvas() {
   const [searchOpen, setSearchOpen] = React.useState(false);
   const [groupPromptOpen, setGroupPromptOpen] = React.useState(false);
   const [groupLabel, setGroupLabel] = React.useState("");
+
+  // Floating action bar after rubber-band selection (2+ nodes).
+  // Position is in canvas-section-local screen coords (matches bandRect).
+  const [selectionBar, setSelectionBar] = React.useState<{ x: number; y: number } | null>(null);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = React.useState(false);
 
   // --- Keyboard shortcut: Ctrl+F opens the canvas node search. --------
   // Skip when typing in an input / textarea / contenteditable / dialog
@@ -146,6 +165,70 @@ export function WorkflowCanvas() {
   const cancelGroupPrompt = React.useCallback(() => {
     setGroupLabel("");
     setGroupPromptOpen(false);
+  }, []);
+
+  // --- Hide the floating selection action bar whenever the multi-selection
+  // drops below 2 nodes (e.g. user clicks a single node, clicks empty space,
+  // or uses the bar's Cancel button). The bar position is anchored to where
+  // the rubber-band was drawn, so it's only meaningful while that selection
+  // is still active.
+  React.useEffect(() => {
+    if (selectedIds.length < 2) {
+      setSelectionBar(null);
+    }
+  }, [selectedIds]);
+
+  // --- Bulk-delete every node in the current selection. ------------------
+  // Mirrors node-card.tsx's single-node delete: push history snapshot,
+  // optimistically strip from local state, fire all DELETE fetches in
+  // parallel, toast the result.
+  const handleBulkDelete = React.useCallback(async () => {
+    const s = useAppStore.getState();
+    const ids = s.selectedIds;
+    if (ids.length === 0) return;
+    if (s.workflow) {
+      useHistoryStore.getState().push({
+        nodes: s.workflow.nodes,
+        edges: s.workflow.edges,
+        viewport: s.viewport,
+      });
+      const removed = new Set(ids);
+      s.setWorkflow({
+        ...s.workflow,
+        nodes: s.workflow.nodes.filter((n) => !removed.has(n.id)),
+        edges: s.workflow.edges.filter(
+          (e) => !removed.has(e.fromNodeId) && !removed.has(e.toNodeId),
+        ),
+      });
+    }
+    s.select(null);
+    setSelectionBar(null);
+    setBulkDeleteOpen(false);
+    try {
+      await Promise.all(
+        ids.map((id) =>
+          fetch(`/api/workflow/nodes/${id}`, { method: "DELETE" }),
+        ),
+      );
+      toast({
+        title: `Deleted ${ids.length} node${ids.length > 1 ? "s" : ""}`,
+        variant: "success",
+      });
+    } catch {
+      toast({ title: "Some deletes failed", variant: "destructive" });
+    }
+  }, [toast]);
+
+  // --- Group the current selection (from the floating action bar). ------
+  const handleGroupFromBar = React.useCallback(() => {
+    createGroupFromSelection("Group", "teal");
+    setSelectionBar(null);
+  }, []);
+
+  // --- Cancel the floating action bar (= deselect everything). ----------
+  const handleCancelSelectionBar = React.useCallback(() => {
+    useAppStore.getState().select(null);
+    setSelectionBar(null);
   }, []);
 
   // Group specs for the create menu (constant; safe to memoize once).
@@ -402,8 +485,21 @@ export function WorkflowCanvas() {
             })
             .map((n) => n.id) ?? [];
         selectMany(hitIds);
+        // Anchor the floating action bar at the CENTER of the rubber-band
+        // rect (screen coords, relative to the canvas section). Only show it
+        // when the drag actually enclosed 2+ nodes — otherwise the bar would
+        // be a useless stub for single-node selections.
+        if (hitIds.length >= 2) {
+          setSelectionBar({
+            x: (x0 + x1) / 2,
+            y: (y0 + y1) / 2,
+          });
+        } else {
+          setSelectionBar(null);
+        }
       } else {
         select(null);
+        setSelectionBar(null);
       }
       setBand(null);
     }
@@ -607,19 +703,30 @@ export function WorkflowCanvas() {
       {/* LiveWire overlay (screen-relative). */}
       <LiveWire nodes={nodes} />
 
-      {/* Band selection overlay. */}
+      {/* Band selection overlay.
+          • items-start on the wrapper so any future inline children align
+            to the band's top-left rather than centering.
+          • More visible than the prior 6%-alpha ghost: a 14%-alpha primary
+            fill + 1.5px dashed primary stroke (70% alpha) — clearly readable
+            over both light and dark grids. */}
       {bandRect && (
-        <svg className="pointer-events-none absolute inset-0 z-20" width="100%" height="100%">
+        <svg
+          className="pointer-events-none absolute inset-0 z-20 flex items-start"
+          width="100%"
+          height="100%"
+        >
           <rect
             x={bandRect.x}
             y={bandRect.y}
             width={bandRect.w}
             height={bandRect.h}
             className="band-ants"
-            fill="hsl(var(--primary) / 0.06)"
-            stroke="hsl(var(--primary))"
-            strokeWidth={1}
-            strokeDasharray="4 3"
+            fill="hsl(var(--primary) / 0.14)"
+            stroke="hsl(var(--primary) / 0.7)"
+            strokeWidth={1.5}
+            strokeDasharray="6 3"
+            rx={2}
+            ry={2}
           />
         </svg>
       )}
@@ -794,6 +901,80 @@ export function WorkflowCanvas() {
           </div>
         </>
       )}
+
+      {/* Floating action bar — appears after a rubber-band select of 2+ nodes.
+          Anchored at the center of the just-drawn band rect (screen coords).
+          Offers: Group (Ctrl+G), Delete (with confirm), Cancel (deselect). */}
+      {selectionBar && selectedIds.length >= 2 && (
+        <div
+          role="toolbar"
+          aria-label="Selection actions"
+          className="absolute z-50 flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded-lg border border-border bg-card px-1.5 py-1 shadow-lg"
+          style={{ left: selectionBar.x, top: selectionBar.y }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <span className="px-1.5 text-[11px] font-medium text-muted-foreground">
+            {selectedIds.length} selected
+          </span>
+          <div className="h-4 w-px bg-border" />
+          <button
+            type="button"
+            onClick={handleGroupFromBar}
+            title="Group selection (Ctrl+G)"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-foreground transition-colors hover:bg-accent"
+          >
+            <GroupIcon className="size-3.5 text-teal-500" />
+            Group
+            <span className="hidden items-center gap-0.5 sm:inline-flex">
+              <kbd className="rounded border bg-muted px-1 py-0.5 text-[9px] font-mono">Ctrl</kbd>
+              <kbd className="rounded border bg-muted px-1 py-0.5 text-[9px] font-mono">G</kbd>
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setBulkDeleteOpen(true)}
+            title="Delete selected nodes"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-destructive transition-colors hover:bg-destructive/10"
+          >
+            <Trash2 className="size-3.5" />
+            Delete
+          </button>
+          <button
+            type="button"
+            onClick={handleCancelSelectionBar}
+            title="Clear selection"
+            className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-accent"
+          >
+            <X className="size-3.5" />
+            Cancel
+          </button>
+        </div>
+      )}
+
+      {/* Bulk-delete confirm. */}
+      <AlertDialog open={bulkDeleteOpen} onOpenChange={setBulkDeleteOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              Delete {selectedIds.length} node{selectedIds.length > 1 ? "s" : ""}?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove all selected nodes and any edges
+              connected to them. This action cannot be undone (except via
+              Ctrl+Z undo).
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => void handleBulkDelete()}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              Delete {selectedIds.length}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </section>
   );
 }
