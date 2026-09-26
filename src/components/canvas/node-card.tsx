@@ -371,6 +371,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
             className={cn(
               "absolute select-none",
               status === "running" && "job-running",
+              status === "running" && "node-pulse-running",
             )}
             style={{
               left: node.x,
@@ -471,7 +472,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 {status === "running" && (
                   <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                     <div
-                      className="h-full bg-teal-500 transition-[width] duration-200"
+                      className="h-full bg-teal-500 shimmer transition-[width] duration-200"
                       style={{ width: `${Math.max(4, Math.min(100, node.progress || 0))}%` }}
                     />
                   </div>

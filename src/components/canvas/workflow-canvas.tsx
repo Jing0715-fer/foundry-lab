@@ -162,11 +162,45 @@ export function WorkflowCanvas() {
     isApplyingHistoryRef.current = true;
     const s = useAppStore.getState();
     if (s.workflow) {
+      const curNodes = s.workflow.nodes;
+      const snapIds = new Set(snap.nodes.map((n) => n.id));
+      const curIds = new Set(curNodes.map((n) => n.id));
+      // Delete nodes in current but not in snapshot.
+      for (const n of curNodes) {
+        if (!snapIds.has(n.id)) {
+          void fetch(`/api/workflow/nodes/${n.id}`, { method: "DELETE" }).catch(() => {});
+        }
+      }
+      // Re-create nodes in snapshot but not in current.
+      for (const n of snap.nodes) {
+        if (!curIds.has(n.id)) {
+          void fetch("/api/workflow/nodes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: n.type, name: n.name, x: n.x, y: n.y, refId: n.refId ?? undefined, params: n.params }),
+          }).catch(() => {});
+        }
+      }
+      // Sync edges.
+      const snapEdgeKeys = new Set(snap.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
+      const curEdgeKeys = new Set(s.workflow.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
+      for (const e of s.workflow.edges) {
+        if (!snapEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
+          void fetch(`/api/workflow/edges/${e.id}`, { method: "DELETE" }).catch(() => {});
+        }
+      }
+      for (const e of snap.edges) {
+        if (!curEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
+          void fetch("/api/workflow/edges", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fromNodeId: e.fromNodeId, toNodeId: e.toNodeId, fromPort: e.fromPort, toPort: e.toPort }),
+          }).catch(() => {});
+        }
+      }
       s.setWorkflow({ ...s.workflow, nodes: snap.nodes, edges: snap.edges });
     }
     s.setViewport(snap.viewport);
-    // Re-enable history tracking on the next macrotask so the synchronous
-    // store updates above don't themselves push history.
     window.setTimeout(() => {
       isApplyingHistoryRef.current = false;
     }, 0);

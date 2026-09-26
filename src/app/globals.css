@@ -288,3 +288,127 @@
     transparent
   );
 }
+
+/* --- Task 13-b: polish + chart utilities --------------------------------- */
+
+/* Subtle pulse for running nodes (complements job-running halo) */
+@keyframes node-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 12%, transparent); }
+}
+.node-pulse-running { animation: node-pulse 2s ease-in-out infinite; }
+
+/* Fade-in for panel content */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in-up { animation: fade-in-up 0.3s ease-out; }
+
+/* Slide-in for toasts */
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.slide-in-right { animation: slide-in-right 0.25s ease-out; }
+
+/* Shimmer for loading states.
+   Uses background-image (not the background shorthand) so it overlays any
+   existing background-color without replacing it — this lets the class be
+   reused on a tinted progress bar fill, a skeleton block, etc. */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--muted) 80%, transparent) 25%,
+    color-mix(in oklch, var(--accent) 70%, transparent) 50%,
+    color-mix(in oklch, var(--muted) 80%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Card hover lift */
+.card-lift-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-lift-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -4px rgb(0 0 0 / 0.12);
+}
+
+/* Gradient text for headers */
+.gradient-text {
+  background: linear-gradient(
+    135deg,
+    var(--primary),
+    var(--chart-2)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Gradient underline for header bottom border */
+.header-gradient-border {
+  position: relative;
+}
+.header-gradient-border::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklch, var(--primary) 35%, transparent) 30%,
+    color-mix(in oklch, var(--chart-2) 35%, transparent) 70%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* Subtle pulse for action buttons when a workflow is running */
+@keyframes btn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 18%, transparent); }
+}
+.btn-pulse-running { animation: btn-pulse 1.8s ease-in-out infinite; }
+
+/* Consistent keyboard-key styling for the footer shortcut hints.
+   Applied alongside utility classes — defines the shape + feel so
+   every kbd chip across the app renders identically. */
+kbd,
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: color-mix(in oklch, var(--muted) 80%, transparent);
+  border: 1px solid color-mix(in oklch, var(--muted-foreground) 25%, transparent);
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--muted-foreground) 18%, transparent);
+  color: var(--foreground);
+}
+
+/* Extend reduced-motion to disable the new animations explicitly.
+   The generic block above already covers them defensively, but
+   we list them here so the intent is self-documenting. */
+@media (prefers-reduced-motion: reduce) {
+  .node-pulse-running,
+  .fade-in-up,
+  .slide-in-right,
+  .shimmer,
+  .card-lift-hover:hover,
+  .btn-pulse-running {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}

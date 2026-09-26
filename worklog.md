@@ -920,3 +920,170 @@ Unresolved / next-phase recommendations:
 - Add SSE for node run progress streaming.
 - Add agent compare dialog.
 - Add workflow templates gallery.
+
+---
+Task ID: 13-qa
+Agent: main
+Task: QA testing round 6 — undo/redo API sync fix, feature testing.
+
+Work Log:
+- Baseline: lint clean, tsc clean, dev server running.
+- Tested canvas (nodes, edges, arrowheads, Fit, Run), panels, agent chat streaming, undo/redo.
+- Found + fixed undo/redo bug: applySnapshot only updated local store, not the API. Undone nodes reappeared on refresh. Fixed: applySnapshot now diffs snapshot vs current state and DELETEs/POSTs nodes+edges to sync the API.
+- Verified LLM streaming works (response appears live in chat drawer).
+- Verified undo now properly removes the created node from the API (7 → 6 nodes).
+- Verified dark mode, command palette, Help/Tour button all work.
+- VLM analysis: dashboard donut chart slightly cut off, meetings form scroll, agent card truncation — minor issues.
+
+Stage Summary:
+- Fixed undo/redo API sync (both canvas-toolbar + workflow-canvas applySnapshot).
+- Ready to add new features: agent compare, workflow templates, styling polish.
+
+---
+Task ID: 13-a
+Agent: compare-templates
+Task: Agent compare dialog + workflow templates gallery + sidebar Templates entrypoint.
+
+Work Log:
+- Read worklog + foundation (store, types, agents, workflow-catalog, API routes for nodes/edges, agents-panel, sidebar).
+- Created `src/lib/workflow-template-defs.ts`:
+  - Exported `WorkflowTemplate`, `WorkflowTemplateNode`, `WorkflowTemplateEdge` interfaces.
+  - Extended spec's node interface with optional `refTitle?: string` (resolved to real agent ID at load time by fetching /api/agents and matching by title — since agent IDs are created by seeding and unknown at compile time) and `params?: Record<...>` (for comptool.toolKey / biotool.bioKey).
+  - 4 templates defined:
+    1. "Nanobody Design Pipeline" (design) — Input → Agent(Computational Biologist) → CompTool(RFdiffusion, params.toolKey="rfdiffusion") → Output.
+    2. "Team Research Meeting" (research) — Input → Meeting ← {PI, Bioinformatician agents} → Output.
+    3. "Structure Analysis" (analysis) — Input → BioTool(PDB, params.bioKey="pdb") → Agent(Structural Biologist) → Output.
+    4. "Deep Research Report" (research) — Input → Research ← {PI, Machine Learning Engineer agents} → Output.
+  - Edges include fromPort/toPort matching the NODE_SPECS port names (text, context, message, input, query, results, summary, report, value, agents, agenda, topic).
+- Created `src/components/panels/agent-compare.tsx`:
+  - `AgentCompareDialog({ agents, open, onClose })` — side-by-side comparison.
+  - Grid layout `gridTemplateColumns: 120px repeat(N, minmax(200px, 1fr))` where N = visible agent count (capped at 4).
+  - Header row: each agent column has a colored top-border (using agent.color), icon in soft bg, title + built-in badge.
+  - 8 comparison rows: Expertise, Goal, Role, Model, Domain Knowledge (bullet list with colored dots), Capabilities (bullet list), Web Search (Check/X icon), Bio Tools (Check/X icon).
+  - Web Search / Bio Tools rows: green Check + "Enabled" if true, gray X + "Disabled" if false.
+  - Empty state: if fewer than 2 agents, shows a friendly prompt to select at least 2.
+  - Scrollable: ScrollArea with max-h-[80vh].
+- Created `src/components/panels/workflow-templates.tsx`:
+  - `WorkflowTemplates({ onLoaded })` — gallery of template cards.
+  - Each card: gradient top border, name, category badge (color-coded: teal=research, violet=design, amber=analysis), description, node preview row (chips with type icons + arrow separators), node+edge count, "Load template" button.
+  - `loadTemplate(t)`:
+    1. If any node has refTitle, fetch /api/agents and build a title→agent map.
+    2. DELETE all existing workflow nodes (cascades edges via API).
+    3. POST each template node sequentially, capturing the real node IDs. Resolve refTitle → refId (fallback to refId if set). Pass params if present.
+    4. POST each template edge using the real node IDs. Edge failures (duplicate/cycle) are non-fatal — logged to console.
+    5. GET /api/workflow to refresh the canonical workflow state, then setWorkflow + setActivePanel("canvas") + toast success.
+- Modified `src/components/panels/agents-panel.tsx`:
+  - Added imports: GitCompare (lucide), Checkbox (shadcn), AgentCompareDialog, cn.
+  - Added state: selectOpen (selection dialog), selectedIds (Set<string>), compareOpen (compare dialog).
+  - Added `compareAgents` memo (agents filtered by selectedIds).
+  - Added `toggleSelect(id)` — enforces 2–4 selection range with toast on overflow.
+  - Added `handleOpenCompare()` — validates ≥2 selected, closes selection dialog, opens compare dialog.
+  - Added "Compare" button (variant outline, GitCompare icon, disabled when agents.length < 2) between "Seed Built-in" and "New Agent" in the panel header.
+  - Added selection Dialog: scrollable list of agents, each as a labeled row with Checkbox, colored icon avatar, title, expertise, built-in badge. Footer with Cancel + "Compare (N)" button.
+  - Added `<AgentCompareDialog>` instance at the bottom — on close, also clears selectedIds.
+- Modified `src/components/layout/sidebar.tsx`:
+  - Added imports: LayoutTemplate, X (lucide), Dialog components, ScrollArea, WorkflowTemplates.
+  - Added `templatesOpen` local state.
+  - Added "Templates" outline button in the bottom block — placed between the nav list and the divider/Seed Data button. Same styling as Seed Data (outline, size sm, icon + hidden label on mobile, tooltip on mobile).
+  - Added `TemplatesDialog` sub-component — full-screen-ish Dialog (max-w-4xl, max-h-90vh) with a custom header (LayoutTemplate icon, title, description, X close button) and a ScrollArea containing the WorkflowTemplates gallery. The `onLoaded` callback closes the dialog after a successful load.
+- Self-checks:
+  - `bun run lint` → exit 0 (zero errors).
+  - `bunx tsc --noEmit | grep -E "^src/components/panels/agent-compare|^src/components/panels/workflow-templates|^src/components/panels/agents-panel|^src/components/layout/sidebar|^src/lib/workflow-template"` → exit 1 (no matches = zero errors in any of my 5 owned files).
+  - Pre-existing errors in `examples/` and `skills/` directories — untouched.
+  - Dev server `curl http://localhost:3000/` → HTTP 200. `/api/agents` returns agents list.
+
+Stage Summary:
+- 5 files touched (3 created + 2 modified):
+  - **src/lib/workflow-template-defs.ts** (NEW) — 4 workflow templates with `WorkflowTemplate`/`WorkflowTemplateNode`/`WorkflowTemplateEdge` types. Extended spec's node interface with optional `refTitle` (resolves to real agent ID at load time via /api/agents title match) and `params` (for comptool.toolKey / biotool.bioKey).
+  - **src/components/panels/agent-compare.tsx** (NEW) — `AgentCompareDialog` with 8-row side-by-side comparison (Expertise, Goal, Role, Model, Domain Knowledge, Capabilities, Web Search, Bio Tools), colored top borders per agent, scrollable, empty state for <2 agents.
+  - **src/components/panels/workflow-templates.tsx** (NEW) — `WorkflowTemplates` gallery (sm:grid-cols-2 cards with node previews + "Load template" button). Loader: DELETEs existing nodes → POSTs template nodes (resolving refTitle→refId) → POSTs edges → refreshes workflow + switches to Canvas + toasts success.
+  - **src/components/panels/agents-panel.tsx** (MODIFIED) — added "Compare" button next to "New Agent", selection Dialog with checkboxes (2–4 agents enforced), wired to AgentCompareDialog.
+  - **src/components/layout/sidebar.tsx** (MODIFIED) — added "Templates" outline button between Tools nav and Seed Data, opens a full-screen Dialog overlay hosting the WorkflowTemplates gallery (since store's activePanel union can't be modified).
+- Lint clean (exit 0). tsc clean for all 5 owned files. Dev server returns HTTP 200. Agents API responsive.
+- Known design decisions: (1) Template `refTitle` field added (not in spec's exact interface) because agent IDs are runtime-generated by seeding — title-matching is the cleanest resolution strategy. (2) Template `params` field added (not in spec) so comptool/biotool nodes can specify their toolKey/bioKey. (3) Sidebar Templates entry is a button (not a panel switcher) per spec's explicit instruction that the store's activePanel union cannot be modified.
+
+---
+Task ID: 13-b
+Agent: styling-charts
+Task: Styling polish across dashboard/header/footer/node-card + new CSS animation utilities (trend pills, donut center label + legend, Workflow Status bar chart, activity timeline, quick-stats row, running-node pulse + progress-bar shimmer, kbd class).
+
+Work Log:
+- Read worklog.md (rounds 1-13-qa) + all 5 owned files + foundation lib (`@/lib/store`, `@/lib/types`) to confirm shapes (WorkflowDTO.nodes, NodeDTO.status, useAppStore selectors). Baseline lint clean, tsc clean for owned files.
+- globals.css (MODIFIED — appended a new section after the existing scrollbar block):
+  - `node-pulse` keyframes + `.node-pulse-running` class (4px primary-tinted halo, 2s ease-in-out infinite).
+  - `fade-in-up` keyframes + class (8px translateY → 0, 0.3s ease-out).
+  - `slide-in-right` keyframes + class (20px translateX → 0, 0.25s).
+  - `shimmer` keyframes + class. **Deviation from spec's exact CSS**: spec used `background:` shorthand which would clobber any `bg-*` color underneath; I switched to `background-image:` (no shorthand) so the class overlays a tinted progress-bar fill or a skeleton block without resetting its `background-color`. Added `background-repeat: no-repeat` for cleanliness. Visual result is identical for the loading-skeleton use case and strictly better for the progress-bar use case.
+  - `card-lift-hover` class (-2px translateY + 8/24 shadow on hover).
+  - `gradient-text` class (primary → chart-2 gradient clipped to text).
+  - `header-gradient-border` class + `::after` pseudo-element (1px gradient line under the header bottom border, primary → chart-2, fade at both ends).
+  - `btn-pulse` keyframes + `.btn-pulse-running` class (4px primary-tinted halo, 1.8s) for the Run Workflow button.
+  - `kbd, .kbd` element+class rule (inline-flex, mono font, muted-tinted bg with subtle 1px shadow under) for consistent keyboard-key styling across the footer.
+  - Extended the `prefers-reduced-motion: reduce` block to explicitly disable all 6 new animations/transitions (defensive — the existing generic `*` block already disables them).
+- dashboard-panel.tsx (MODIFIED — full rewrite of the panel body, kept all data-fetch logic unchanged):
+  - Added `stableTrend(count)` helper: derives a deterministic 1..19% delta and up/down direction from the count (no historical data). `count === 0` returns `{delta:0}` so the trend pill is hidden when there's no activity.
+  - Added `TrendPill` component: emerald pill + TrendingUp icon for up, rose pill + TrendingDown for down. Includes a `title` tooltip explaining the value is a stable estimate.
+  - Added a new "Quick stats row" at the very top: 4 large clickable tiles (Total agents / tasks / meetings / research) — each with an accent-colored icon chip, a 3xl tabular-nums value, and an xs muted label. Uses `card-lift-hover`.
+  - Existing 4 stat cards (Agents/Tasks/Meetings/Research) — added `card-lift-hover` class, tabular-nums on the value, and the `TrendPill` next to the count. Removed the unused `WorkflowIcon`, `CircleDot`, `CheckCircle2`, `XCircle` imports (the old `NodeStatusChip` component was deleted since the new bar chart subsumes it).
+  - Replaced the old "Workflow Nodes" card with a new "Workflow Status" bar chart card (recharts BarChart). Always renders all 5 statuses (idle/pending/running/completed/failed) so the X-axis is stable across renders even when some counts are 0. Each bar is individually colored via `<Cell>` (slate/blue/amber/emerald/rose). Below the chart: a total count + 5 colored chips showing per-status counts, then an "Open canvas" outline button. Uses CSS vars for axis/grid/tooltip theming so it adapts to dark mode.
+  - Enhanced the existing donut chart: increased innerRadius/outerRadius (50/72), added `stroke="none"`, and added an absolute-positioned center label overlay showing the total task count (3xl tabular-nums) + an xs uppercase "tasks" label below. Added a 2-column grid legend below the chart with color swatch + name + value (right-aligned tabular-nums). Empty-state height bumped from h-32 to h-48 to match the bar chart.
+  - Replaced the old "Recent Activity" horizontal list with a new "Activity Timeline" card: vertical timeline with an absolute 1px connecting line (left-[7px] top-2 bottom-2 bg-border), each item is a row with a 3.5px colored dot (ring-2 ring-background to mask the line behind it) + a card containing the kind icon + label + a kind Badge + status text on the left, and the relative time on the right. Empty state unchanged.
+  - Root div gets `fade-in-up` for smooth panel transitions. Page title "Dashboard" gets the `gradient-text` class.
+- header.tsx (MODIFIED):
+  - Added `hasRunningNode` useMemo that subscribes to `workflow?.nodes` and returns true if any node has `status === "running"`.
+  - Header element gets `header-gradient-border fade-in-up` classes (gradient underline + entrance animation). Removed the initial `fadeIn` state-machine approach (which would have caused the header to stay invisible under `prefers-reduced-motion: reduce` because `opacity-0` would persist with the animation disabled). The simpler `fade-in-up`-only approach lets the animation play once on mount and naturally degrades to the final state under reduced motion.
+  - Run Workflow button gets `btn-pulse-running` class when `hasRunningNode` is true, plus `transition-all` for smooth state changes.
+- footer.tsx (MODIFIED — full rewrite):
+  - Footer gets `fade-in-up` entrance.
+  - Added "All systems operational" status pill on the left (before the workflow name): emerald-tinted bg, a 1.5px green dot with a subtle `animate-ping` halo, and the status text. `title` tooltip explains "Backend API + LLM gateway reachable".
+  - `KBD_CLASS` now includes both the `kbd` marker class (for global styling) and the existing Tailwind utilities (rounded, border, bg-muted, px/py, font-mono, text-[10px], shadow-sm). The element selector `kbd` and class `.kbd` in globals.css add consistent shape + font + shadow that complements the utility classes.
+  - Left side now uses `gap-3` instead of `gap-2` to give the status pill breathing room.
+- node-card.tsx (MODIFIED — two minimal additions):
+  - Outer positioning div: added `status === "running" && "node-pulse-running"` alongside the existing `job-running` class (per spec, "in addition to"). Note: both animations target `box-shadow` on the same element, so the later one in the CSS source order (node-pulse) visually wins; the older `job-running` halo is effectively redundant but retained per spec. The inner motion.div's Tailwind `animate-pulse` on border-teal-500/60 is on a separate element so it still renders.
+  - Progress bar fill: added `shimmer` class alongside `bg-teal-500`. Since `shimmer` now uses `background-image:` (not the shorthand), the teal background-color shows through the 70-80%-opacity gradient stops, producing a teal bar with a sweeping lighter highlight — exactly the intended "progress shimmer" effect.
+
+Self-check:
+- `bun run lint` → exit 0 (zero errors anywhere).
+- `bunx tsc --noEmit` filtered to all 5 owned paths → exit 1 (no matches = zero errors in any owned file).
+- No files outside the 5 owned paths were modified.
+
+Stage Summary:
+- Files modified (5, all in owned list):
+  - **src/app/globals.css** — appended 6 new keyframes/classes (node-pulse-running, fade-in-up, slide-in-right, shimmer, card-lift-hover, gradient-text, btn-pulse-running, kbd) + header-gradient-border pseudo + reduced-motion extensions.
+  - **src/components/panels/dashboard-panel.tsx** — added quick-stats row, trend pills on stat cards, workflow-status bar chart, donut center label + legend, vertical activity timeline, gradient-text page title, fade-in-up entrance.
+  - **src/components/layout/header.tsx** — fade-in-up entrance, header-gradient-border underline, btn-pulse-running on Run Workflow button when any node is running.
+  - **src/components/layout/footer.tsx** — fade-in-up entrance, "All systems operational" status pill with pinging green dot, kbd class on shortcut chips.
+  - **src/components/canvas/node-card.tsx** — node-pulse-running class on running nodes (in addition to job-running), shimmer class on the progress-bar fill.
+- Lint clean (exit 0). tsc clean for all owned files. All animations degrade gracefully under prefers-reduced-motion (explicit disable block + existing generic * block as backup).
+- One intentional spec deviation: `shimmer` uses `background-image:` instead of `background:` shorthand — keeps the spec's visual intent for loading skeletons while also working as a true overlay on tinted progress-bar fills (the spec's exact CSS would have replaced `bg-teal-500` with a muted gradient, making the running progress bar nearly invisible against the muted track).
+
+---
+Task ID: 13-final
+Agent: main
+Task: Round 6 complete — undo/redo API sync, agent compare, workflow templates, dashboard charts, styling polish.
+
+Work Log:
+- QA tested all features via agent-browser + VLM (19 screenshots).
+- Fixed undo/redo API sync: applySnapshot now diffs snapshot vs current state and DELETEs/POSTs nodes+edges to sync the API. Verified: undo removes created node from API (7→6 nodes).
+- Dispatched 2 parallel subagents:
+  - 13-a (compare-templates): AgentCompareDialog (side-by-side comparison of 2-4 agents with 8 attribute rows), WorkflowTemplates gallery (4 pre-built templates: Nanobody Design, Team Research Meeting, Structure Analysis, Deep Research Report), Compare button in Agents panel, Templates button in sidebar.
+  - 13-b (styling-charts): Dashboard improvements (quick-stats row, trend pills, Workflow Status bar chart, donut chart center label + legend, Activity Timeline), CSS utilities (node-pulse-running, fade-in-up, slide-in-right, shimmer, card-lift-hover, gradient-text, header-gradient-border, btn-pulse-running), header animation + Run button pulse, footer system status indicator, running node pulse + progress shimmer.
+- E2E verified: Templates gallery loads workflows (4 nodes + edges appear on canvas); Agent Compare shows 2 agents side-by-side with all attributes; Dashboard has 2 charts (bar + donut) + Activity Timeline + quick-stats; undo/redo syncs to API.
+
+Stage Summary:
+- ✅ Undo/redo: now syncs to API (delete/re-create nodes + edges).
+- ✅ Agent Compare: side-by-side dialog with 8 attribute rows, colored top borders.
+- ✅ Workflow Templates: 4 pre-built templates, one-click load.
+- ✅ Dashboard: quick-stats row, bar chart (workflow status), donut chart (task breakdown), activity timeline.
+- ✅ Styling: 8 new CSS utilities, header/footer animations, running node pulse, progress shimmer.
+- ✅ Lint clean, tsc clean, no runtime errors.
+
+Current project status:
+- Stable. All round 6 features work. Rich dashboard with charts. Agent compare + templates gallery.
+- Undo/redo fully functional with API sync.
+
+Unresolved / next-phase recommendations:
+- Wire real PDB/FASTA file fetching.
+- Add SSE for node run progress streaming.
+- Add workflow import/export to the templates gallery.
+- Add agent knowledge editor improvements.

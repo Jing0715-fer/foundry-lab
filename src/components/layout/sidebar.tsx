@@ -6,22 +6,33 @@ import {
   BookOpen,
   LayoutDashboard,
   LayoutGrid,
+  LayoutTemplate,
   Loader2,
   Sparkles,
   SquarePen,
   Users,
   Wrench,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/lib/store";
+import { WorkflowTemplates } from "@/components/panels/workflow-templates";
 
 type PanelKey = ReturnType<typeof useAppStore.getState>["activePanel"];
 
@@ -53,6 +64,7 @@ export function Sidebar() {
   const setActivePanel = useAppStore((s) => s.setActivePanel);
   const toast = useAppStore((s) => s.toast);
   const [seeding, setSeeding] = React.useState(false);
+  const [templatesOpen, setTemplatesOpen] = React.useState(false);
 
   async function handleSeed() {
     setSeeding(true);
@@ -145,6 +157,25 @@ export function Sidebar() {
       </ul>
 
       <div className="mt-auto px-2 pb-2">
+        {/* Templates button — opens a full-screen gallery Dialog. Not a panel
+            switcher (the store's activePanel union doesn't include "templates"). */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setTemplatesOpen(true)}
+              className="mb-2 w-full justify-center gap-2 md:justify-start"
+            >
+              <LayoutTemplate className="size-4" />
+              <span className="hidden md:inline">Templates</span>
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="md:hidden">
+            Templates
+          </TooltipContent>
+        </Tooltip>
+
         <div className="mb-2 h-px bg-border" aria-hidden />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -168,6 +199,53 @@ export function Sidebar() {
           </TooltipContent>
         </Tooltip>
       </div>
+
+      <TemplatesDialog
+        open={templatesOpen}
+        onOpenChange={setTemplatesOpen}
+      />
     </nav>
+  );
+}
+
+/** Full-screen Dialog overlay hosting the WorkflowTemplates gallery. */
+function TemplatesDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (o: boolean) => void;
+}) {
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="flex max-h-[90vh] w-full flex-col gap-0 p-0 sm:max-w-4xl"
+        showCloseButton={false}
+      >
+        <DialogHeader className="flex flex-row items-start justify-between gap-4 border-b px-6 py-4">
+          <div className="space-y-1">
+            <DialogTitle className="flex items-center gap-2">
+              <LayoutTemplate className="size-5" />
+              Workflow Templates
+            </DialogTitle>
+            <DialogDescription>
+              Load a pre-built workflow with one click. This will replace the
+              current canvas.
+            </DialogDescription>
+          </div>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onOpenChange(false)}
+            aria-label="Close templates"
+          >
+            <X className="size-4" />
+          </Button>
+        </DialogHeader>
+        <ScrollArea className="flex-1 overflow-y-auto px-6 py-5">
+          <WorkflowTemplates onLoaded={() => onOpenChange(false)} />
+        </ScrollArea>
+      </DialogContent>
+    </Dialog>
   );
 }

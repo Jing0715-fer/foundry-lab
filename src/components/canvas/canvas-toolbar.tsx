@@ -131,6 +131,42 @@ export function CanvasToolbar() {
   }) => {
     const s = useAppStore.getState();
     if (s.workflow) {
+      const curNodes = s.workflow.nodes;
+      const snapIds = new Set(snap.nodes.map((n) => n.id));
+      const curIds = new Set(curNodes.map((n) => n.id));
+      // Delete nodes that are in current but not in snapshot (undo of a create).
+      for (const n of curNodes) {
+        if (!snapIds.has(n.id)) {
+          void fetch(`/api/workflow/nodes/${n.id}`, { method: "DELETE" }).catch(() => {});
+        }
+      }
+      // Re-create nodes that are in snapshot but not in current (undo of a delete).
+      for (const n of snap.nodes) {
+        if (!curIds.has(n.id)) {
+          void fetch("/api/workflow/nodes", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ type: n.type, name: n.name, x: n.x, y: n.y, refId: n.refId ?? undefined, params: n.params }),
+          }).catch(() => {});
+        }
+      }
+      // Sync edges: delete edges in current but not in snapshot, create edges in snapshot but not in current.
+      const snapEdgeKeys = new Set(snap.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
+      const curEdgeKeys = new Set(s.workflow.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
+      for (const e of s.workflow.edges) {
+        if (!snapEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
+          void fetch(`/api/workflow/edges/${e.id}`, { method: "DELETE" }).catch(() => {});
+        }
+      }
+      for (const e of snap.edges) {
+        if (!curEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
+          void fetch("/api/workflow/edges", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ fromNodeId: e.fromNodeId, toNodeId: e.toNodeId, fromPort: e.fromPort, toPort: e.toPort }),
+          }).catch(() => {});
+        }
+      }
       s.setWorkflow({ ...s.workflow, nodes: snap.nodes, edges: snap.edges });
     }
     s.setViewport(snap.viewport);

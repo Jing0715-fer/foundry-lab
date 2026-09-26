@@ -30,6 +30,13 @@ export function Header() {
 
   React.useEffect(() => setMounted(true), []);
 
+  // Detect any node currently in "running" state — used to add a subtle pulse
+  // to the Run Workflow button so users see activity is in flight.
+  const hasRunningNode = React.useMemo(
+    () => (workflow?.nodes ?? []).some((n) => n.status === "running"),
+    [workflow?.nodes],
+  );
+
   async function handleRun() {
     if (!workflow) {
       toast({
@@ -71,7 +78,7 @@ export function Header() {
   }
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-background/80 px-4 shadow-sm backdrop-blur">
+    <header className="header-gradient-border fade-in-up sticky top-0 z-30 flex h-14 items-center justify-between gap-3 border-b bg-background/80 px-4 shadow-sm backdrop-blur">
       {/* Left: brand */}
       <div className="flex min-w-0 items-center gap-3">
         <div className="flex size-9 items-center justify-center rounded-xl bg-primary/10 text-primary ring-1 ring-primary/20">
@@ -104,7 +111,7 @@ export function Header() {
           size="sm"
           onClick={handleRun}
           disabled={running || !workflow}
-          className="gap-1.5"
+          className={`gap-1.5 transition-all ${hasRunningNode ? "btn-pulse-running" : ""}`}
         >
           {running ? (
             <Loader2 className="size-4 animate-spin" />

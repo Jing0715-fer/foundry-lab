@@ -19,6 +19,7 @@ import {
   MessageSquare,
   Loader2,
   Sparkles,
+  GitCompare,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -60,7 +62,9 @@ import {
 } from "@/lib/agents";
 import type { AgentDTO, AgentKnowledgeConfig } from "@/lib/types";
 import { AgentChatDrawer } from "./agent-chat-drawer";
+import { AgentCompareDialog } from "./agent-compare";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
+import { cn } from "@/lib/utils";
 
 /** Map agent.icon string → lucide component. */
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -103,6 +107,49 @@ export function AgentsPanel() {
   const [deleteId, setDeleteId] = React.useState<string | null>(null);
   const [chatId, setChatId] = React.useState<string | null>(null);
   const [seeding, setSeeding] = React.useState(false);
+
+  // Compare dialog state.
+  const [selectOpen, setSelectOpen] = React.useState(false);
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [compareOpen, setCompareOpen] = React.useState(false);
+
+  const compareAgents = React.useMemo(
+    () => agents.filter((a) => selectedIds.has(a.id)),
+    [agents, selectedIds],
+  );
+
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        if (next.size >= 4) {
+          toast({
+            title: "Compare limit reached",
+            description: "You can compare up to 4 agents at once.",
+            variant: "destructive",
+          });
+          return prev;
+        }
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const handleOpenCompare = () => {
+    if (compareAgents.length < 2) {
+      toast({
+        title: "Select more agents",
+        description: "Pick at least 2 agents to compare.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setSelectOpen(false);
+    setCompareOpen(true);
+  };
 
   const refresh = React.useCallback(async () => {
     try {
@@ -176,6 +223,15 @@ export function AgentsPanel() {
           <Button variant="outline" onClick={handleSeed} disabled={seeding}>
             {seeding ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
             Seed Built-in
+          </Button>
+          <Button
+            variant="outline"
+            onClick={() => setSelectOpen(true)}
+            disabled={agents.length < 2}
+            title={agents.length < 2 ? "Need at least 2 agents to compare" : "Compare agents side-by-side"}
+          >
+            <GitCompare className="size-4" />
+            Compare
           </Button>
           <Button
             onClick={() => {
@@ -254,6 +310,100 @@ export function AgentsPanel() {
         agentId={chatId}
         open={!!chatId}
         onClose={() => setChatId(null)}
+      />
+
+      {/* Agent selection dialog → opens the compare dialog */}
+      <Dialog
+        open={selectOpen}
+        onOpenChange={(o) => {
+          setSelectOpen(o);
+          if (!o) setSelectedIds(new Set());
+        }}
+      >
+        <DialogContent className="max-h-[80vh] overflow-y-auto sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <GitCompare className="size-4" />
+              Compare agents
+            </DialogTitle>
+            <DialogDescription>
+              Select 2–4 agents to view side-by-side.{" "}
+              <span className="font-medium text-foreground">
+                {selectedIds.size}/4 selected
+              </span>
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="max-h-[55vh] space-y-1.5 overflow-y-auto py-1">
+            {agents.map((a) => {
+              const checked = selectedIds.has(a.id);
+              const softBg = hexToRgba(a.color, 0.12);
+              return (
+                <label
+                  key={a.id}
+                  className={cn(
+                    "flex cursor-pointer items-center gap-3 rounded-md border p-2.5 transition-colors",
+                    checked
+                      ? "border-primary/40 bg-primary/5"
+                      : "border-border hover:bg-accent",
+                  )}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => toggleSelect(a.id)}
+                  />
+                  <span
+                    className="flex size-8 items-center justify-center rounded-lg"
+                    style={{ background: softBg, color: a.color }}
+                  >
+                    <AgentIcon name={a.icon} className="size-4" />
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-medium leading-tight">
+                      {a.title}
+                    </p>
+                    <p className="truncate text-xs text-muted-foreground">
+                      {a.expertise}
+                    </p>
+                  </div>
+                  {a.builtin && (
+                    <Badge variant="secondary" className="text-[9px]">
+                      built-in
+                    </Badge>
+                  )}
+                </label>
+              );
+            })}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setSelectOpen(false);
+                setSelectedIds(new Set());
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleOpenCompare}
+              disabled={compareAgents.length < 2}
+            >
+              <GitCompare className="size-4" />
+              Compare {compareAgents.length > 0 && `(${compareAgents.length})`}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AgentCompareDialog
+        agents={compareAgents}
+        open={compareOpen}
+        onClose={() => {
+          setCompareOpen(false);
+          setSelectedIds(new Set());
+        }}
       />
     </div>
   );
