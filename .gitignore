@@ -62,3 +62,4 @@ download/
 upload/
 agent-ctx/
 .zscripts/
+tool-results/
