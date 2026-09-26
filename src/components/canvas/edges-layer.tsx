@@ -77,6 +77,7 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
 
   return (
     <svg
+      data-edges-layer
       className="pointer-events-none absolute overflow-visible"
       style={{
         left: box.x,
@@ -186,10 +187,11 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
         const labelH = 16;
 
         return (
-          <g key={g.id}>
+          <g key={g.id} data-edge-id={g.id}>
             {/* Per-edge directional running gradient (source → target). */}
             {isRunning && (
               <linearGradient
+                data-e="grad"
                 id={gradRunId}
                 gradientUnits="userSpaceOnUse"
                 x1={g.src.x}
@@ -206,6 +208,7 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
             )}
             {/* Invisible hit area */}
             <path
+              data-e="d"
               d={g.d}
               fill="none"
               stroke="transparent"
@@ -217,6 +220,7 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
             />
             {/* Visible edge */}
             <path
+              data-e="d"
               d={g.d}
               fill="none"
               stroke={
@@ -239,13 +243,14 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
             {isRunning && (
               <>
                 <circle r={2.6} style={{ fill: "var(--primary)" }}>
-                  <animateMotion dur="1.1s" begin="0s" repeatCount="indefinite" path={g.d} />
+                  <animateMotion data-e="motion" dur="1.1s" begin="0s" repeatCount="indefinite" path={g.d} />
                 </circle>
                 <circle
                   r={2.6}
                   style={{ fill: "color-mix(in oklab, var(--primary) 70%, transparent)" }}
                 >
                   <animateMotion
+                    data-e="motion"
                     dur="1.1s"
                     begin="0.37s"
                     repeatCount="indefinite"
@@ -257,6 +262,7 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
                   style={{ fill: "color-mix(in oklab, var(--primary) 45%, transparent)" }}
                 >
                   <animateMotion
+                    data-e="motion"
                     dur="1.1s"
                     begin="0.74s"
                     repeatCount="indefinite"
@@ -266,9 +272,10 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
               </>
             )}
             {/* Endpoints */}
-            <circle cx={g.src.x} cy={g.src.y} r={3} style={{ fill: "var(--primary)" }} />
+            <circle data-e="src" cx={g.src.x} cy={g.src.y} r={3} style={{ fill: "var(--primary)" }} />
             {/* Target dot (kept alongside the arrowhead for a pro combo) */}
             <circle
+              data-e="tgt"
               cx={g.tgt.x}
               cy={g.tgt.y}
               r={4.2}

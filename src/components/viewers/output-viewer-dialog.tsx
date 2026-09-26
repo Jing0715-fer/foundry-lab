@@ -30,7 +30,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolJobDTO } from "@/lib/types";
-import { PdbViewer, generateSamplePdb } from "./pdb-viewer";
+import { generateSamplePdb } from "@/lib/pdb-parser";
+import { Pdb3DViewer } from "./pdb-3d-viewer";
 import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 
 // --- Helpers ------------------------------------------------------------------
@@ -328,7 +329,10 @@ export function OutputViewerDialog({
                   Loading structure…
                 </div>
               ) : (
-                <PdbViewer pdbText={pdbContent ?? SAMPLE_PDB} />
+                <Pdb3DViewer
+                  pdbText={pdbContent ?? SAMPLE_PDB}
+                  className="h-[60vh] overflow-hidden rounded-lg border"
+                />
               )}
             </TabsContent>
           )}
