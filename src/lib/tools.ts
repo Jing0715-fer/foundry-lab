@@ -108,6 +108,117 @@ export const COMP_TOOLS: CompToolDef[] = [
     resultSummary: (p) =>
       `Rosetta ran protocol "${p.protocol ?? "minimize"}" producing ${p.nstruct ?? 1} structure(s).`,
   },
+  // --- MPNN variants ---------------------------------------------------------
+  {
+    key: "ligandmpnn",
+    label: "LigandMPNN",
+    icon: "dna",
+    color: "pink",
+    description: "Inverse folding with ligand context — design sequences aware of bound small molecules, ions, or cofactors.",
+    cliStyle: "argparse",
+    cliCommand: "ligandmpnn_run",
+    defaultParams: {},
+    paramFields: [
+      { key: "pdb_path", label: "Input PDB path", type: "path", default: "", flag: "--pdb_path", group: "Input", required: true },
+      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_targets", group: "Sampling" },
+      { key: "sampling_temp", label: "Sampling temperature", type: "number", default: 0.1, min: 0.01, max: 1.0, step: 0.01, flag: "--sampling_temp", group: "Sampling", advanced: true },
+      { key: "ligand_mpnn_use_side_chain_context", label: "Use side-chain context", type: "bool", default: true, flag: "--ligand_mpnn_use_side_chain_context", group: "Ligand" },
+      { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "--seed", group: "Sampling", advanced: true },
+    ],
+    resultSummary: (p) =>
+      `LigandMPNN generated ${p.num_seq ?? 8} ligand-aware sequences per backbone (T=${p.sampling_temp ?? 0.1}).`,
+  },
+  {
+    key: "solublempnn",
+    label: "SolubleMPNN",
+    icon: "beaker",
+    color: "emerald",
+    description: "Soluble variant of ProteinMPNN — designs sequences optimized for soluble expression (no membrane/aggregation bias).",
+    cliStyle: "argparse",
+    cliCommand: "solublempnn_run",
+    defaultParams: {},
+    paramFields: [
+      { key: "pdb_path", label: "Input PDB path", type: "path", default: "", flag: "--pdb_path", group: "Input", required: true },
+      { key: "num_seq", label: "Sequences per backbone", type: "number", default: 8, min: 1, max: 64, step: 1, flag: "--num_seq_per_targets", group: "Sampling" },
+      { key: "sampling_temp", label: "Sampling temperature", type: "number", default: 0.1, min: 0.01, max: 1.0, step: 0.01, flag: "--sampling_temp", group: "Sampling", advanced: true },
+      { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "--seed", group: "Sampling", advanced: true },
+    ],
+    resultSummary: (p) =>
+      `SolubleMPNN generated ${p.num_seq ?? 8} solubility-optimized sequences (T=${p.sampling_temp ?? 0.1}).`,
+  },
+  {
+    key: "pyrosetta",
+    label: "PyRosetta",
+    icon: "calculator",
+    color: "orange",
+    description: "Interactive PyRosetta scoring — compute Rosetta energy, interface ΔG, and per-residue breakdowns.",
+    cliStyle: "argparse",
+    cliCommand: "python -m pyrosetta.score",
+    defaultParams: {},
+    paramFields: [
+      { key: "pdb_path", label: "Input PDB path", type: "path", default: "", flag: "--pdb", group: "Input", required: true },
+      { key: "scorefunction", label: "Score function", type: "select", default: "ref2015", options: ["ref2015", "beta_nov16", "beta", "talaris2014"], flag: "--scorefunction", group: "Scoring" },
+      { key: "interface", label: "Interface analysis", type: "bool", default: true, flag: "--interface", group: "Analysis" },
+      { key: "ddG", label: "Compute ΔΔG mutants", type: "bool", default: false, flag: "--ddG", group: "Analysis" },
+    ],
+    resultSummary: (p) =>
+      `PyRosetta scored with ${p.scorefunction ?? "ref2015"}${p.interface ? " + interface ΔG" : ""}${p.ddG ? " + ΔΔG" : ""}.`,
+  },
+  // --- Structure prediction --------------------------------------------------
+  {
+    key: "rf3",
+    label: "RoseTTAFold3",
+    icon: "boxes",
+    color: "teal",
+    description: "Structure prediction from sequence via RoseTTAFold3 (RF3). Predicts 3D structure with confidence metrics (pLDDT, pTM).",
+    cliStyle: "hydra",
+    cliCommand: "rf3 fold",
+    defaultParams: {},
+    paramFields: [
+      { key: "fasta_path", label: "Input FASTA path", type: "path", default: "", flag: "input.fasta", group: "Input", required: true },
+      { key: "num_recycles", label: "Recycles", type: "number", default: 3, min: 0, max: 24, step: 1, flag: "num_recycles", group: "Inference" },
+      { key: "use_msa", label: "Use MSA", type: "bool", default: true, flag: "use_msa", group: "MSA" },
+      { key: "seed", label: "Random seed", type: "number", default: 42, min: 0, max: 99999, flag: "seed", group: "Inference", advanced: true },
+    ],
+    resultSummary: (p) =>
+      `RF3 predicted structure from FASTA with ${p.num_recycles ?? 3} recycles${p.use_msa ? " + MSA" : " (no MSA)"}. Outputs pLDDT/pTM confidence.`,
+  },
+  {
+    key: "esmfold",
+    label: "ESMFold",
+    icon: "atom",
+    color: "violet",
+    description: "Fast structure prediction from sequence via ESMFold (no MSA needed). Ideal for rapid iteration.",
+    cliStyle: "argparse",
+    cliCommand: "esmfold predict",
+    defaultParams: {},
+    paramFields: [
+      { key: "sequence", label: "Protein sequence", type: "text", default: "", flag: "--sequence", group: "Input", required: true, hint: "One-letter AA sequence" },
+      { key: "num_recycles", label: "Recycles", type: "number", default: 4, min: 0, max: 24, step: 1, flag: "--recycles", group: "Inference" },
+      { key: "chunk_size", label: "Chunk size", type: "number", default: 512, min: 64, max: 2048, step: 64, flag: "--chunk_size", group: "Performance", advanced: true },
+    ],
+    resultSummary: (p) =>
+      `ESMFold predicted structure (recycles=${p.num_recycles ?? 4}) from ${String(p.sequence ?? "").length} residues. Fast single-sequence prediction.`,
+  },
+  {
+    key: "colabfold",
+    label: "ColabFold",
+    icon: "cpu",
+    color: "cyan",
+    description: "AlphaFold2-based structure prediction via ColabFold (with MSA). High-accuracy predictions for complex topologies.",
+    cliStyle: "argparse",
+    cliCommand: "colabfold_batch",
+    defaultParams: {},
+    paramFields: [
+      { key: "fasta_path", label: "Input FASTA path", type: "path", default: "", flag: "--fasta", group: "Input", required: true },
+      { key: "model_type", label: "Model type", type: "select", default: "alphafold2_ptm", options: ["alphafold2", "alphafold2_ptm", "alphafold2_multimer_v3"], flag: "--model-type", group: "Model" },
+      { key: "num_recycles", label: "Recycles", type: "number", default: 3, min: 0, max: 24, step: 1, flag: "--recycles", group: "Inference" },
+      { key: "use_amber", label: "AMBER relaxation", type: "bool", default: true, flag: "--amber", group: "Relaxation" },
+      { key: "num_predictions", label: "Predictions per target", type: "number", default: 1, min: 1, max: 20, step: 1, flag: "--num-predictions", group: "Output" },
+    ],
+    resultSummary: (p) =>
+      `ColabFold predicted ${p.num_predictions ?? 1} structure(s) using ${p.model_type ?? "alphafold2_ptm"} with ${p.num_recycles ?? 3} recycles${p.use_amber ? " + AMBER relax" : ""}.`,
+  },
 ];
 
 export function getCompTool(key: string): CompToolDef | undefined {
@@ -171,7 +282,7 @@ export function simulateCompRun(
   params: Record<string, unknown>,
 ): { stdout: string; outputFiles: string[] } {
   const seed = Number(params.seed ?? 42);
-  const designs = Number(params.num_designs ?? params.num_seq ?? 4);
+  const designs = Number(params.num_designs ?? params.num_seq ?? params.num_predictions ?? 4);
   const ts = new Date().toISOString().slice(11, 19);
   const lines: string[] = [
     `[${ts}] ${tool.label} starting (simulated)`,
@@ -179,15 +290,29 @@ export function simulateCompRun(
     `[${ts}] Effective seed: ${seed}`,
   ];
   const files: string[] = [];
-  for (let i = 0; i < designs; i++) {
-    const plddt = 70 + ((seed + i * 7) % 25);
-    lines.push(`[${ts}] Design ${i + 1}/${designs} — pLDDT=${plddt} rmsd=${(1.2 + (i % 5) * 0.3).toFixed(2)}Å`);
-    if (tool.key === "proteinmpnn") {
-      const seq = Array.from({ length: 12 }, (_, k) => "ACDEFGHIKLMNPQRSTVWY"[(seed + i + k) % 20]).join("");
-      lines.push(`[${ts}]   seq: ${seq}...`);
-      files.push(`outputs/proteinmpnn/seq_${i}.fasta`);
-    } else {
-      files.push(`outputs/${tool.key}/design_${i}.pdb`);
+  // Sequence-producing tools (MPNN family) → .fasta outputs.
+  const seqTools = new Set(["proteinmpnn", "ligandmpnn", "solublempnn"]);
+  // Structure-prediction tools → single .pdb + confidence metrics.
+  const predTools = new Set(["rf3", "esmfold", "colabfold"]);
+  if (predTools.has(tool.key)) {
+    const plddt = 75 + ((seed * 3) % 20);
+    const ptm = 0.7 + ((seed * 5) % 30) / 100;
+    lines.push(`[${ts}] Predicting structure...`);
+    lines.push(`[${ts}] Recycling iteration 1/${params.num_recycles ?? 3}`);
+    lines.push(`[${ts}] Recycling iteration ${params.num_recycles ?? 3}/${params.num_recycles ?? 3}`);
+    lines.push(`[${ts}] pLDDT=${plddt} pTM=${ptm.toFixed(2)}`);
+    files.push(`outputs/${tool.key}/predicted.pdb`);
+  } else {
+    for (let i = 0; i < designs; i++) {
+      const plddt = 70 + ((seed + i * 7) % 25);
+      lines.push(`[${ts}] Design ${i + 1}/${designs} — pLDDT=${plddt} rmsd=${(1.2 + (i % 5) * 0.3).toFixed(2)}Å`);
+      if (seqTools.has(tool.key)) {
+        const seq = Array.from({ length: 12 }, (_, k) => "ACDEFGHIKLMNPQRSTVWY"[(seed + i + k) % 20]).join("");
+        lines.push(`[${ts}]   seq: ${seq}...`);
+        files.push(`outputs/${tool.key}/seq_${i}.fasta`);
+      } else {
+        files.push(`outputs/${tool.key}/design_${i}.pdb`);
+      }
     }
   }
   lines.push(`[${ts}] ${tool.label} completed. ${files.length} output file(s).`);

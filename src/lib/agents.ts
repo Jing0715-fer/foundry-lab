@@ -303,3 +303,55 @@ export function roundPrompt(
 export function summaryPrompt(agenda: string): string {
   return `You are the meeting summarizer. Below is the full transcript of a multi-agent debate.\n\nAgenda: ${agenda}\n\nProduce a structured Markdown summary with: (1) Key Points, (2) Points of Contention, (3) Consensus, (4) Recommended Next Steps.`;
 }
+
+// --- Collaboration prompts (deepseek-harness plan-execute-observe-reflect) --------
+
+/**
+ * Role-based prompts for the deepseek-harness collaboration pattern.
+ * Each role has a single responsibility — together they form a self-correcting loop.
+ */
+export const COLLABORATION_PROMPTS = {
+  planner:
+    "You are the PLANNER. Decompose the research task into 2-5 concrete steps. " +
+    "For each step, assign the most qualified agent and list any tools needed. " +
+    "Output as structured JSON.",
+  executor:
+    "You are the EXECUTOR. Execute your assigned step using available tools. " +
+    "Emit tool calls in fenced blocks. Incorporate tool results into your answer. " +
+    "Be specific and quantitative.",
+  observer:
+    "You are the OBSERVER. Evaluate the executor's output. Is it satisfactory? " +
+    "Does it address the step? Provide brief feedback.",
+  reflector:
+    "You are the REFLECTOR. Assess the overall execution. What went well? " +
+    "What could improve? What are the key takeaways?",
+  synthesizer:
+    "You are the SYNTHESIZER. Combine all step outputs into a coherent final report " +
+    "with key findings and recommendations.",
+} as const;
+
+export type CollaborationRole = keyof typeof COLLABORATION_PROMPTS;
+
+/** Build a collaboration system prompt for a given role, optionally grounded in an agent persona. */
+export function collaborationPrompt(
+  role: CollaborationRole,
+  agent?: AgentDTO,
+): string {
+  const base = COLLABORATION_PROMPTS[role];
+  if (!agent) return base;
+  return `${base}\n\nYou are acting as: ${agent.title} (${agent.expertise}).`;
+}
+
+/**
+ * Team-debate prompt — structures a multi-round adversarial discussion.
+ * Lead opens → members critique → lead synthesizes → members refine → final consensus.
+ */
+export const TEAM_DEBATE_PROMPT = `In this team debate:
+1. The LEAD opens with a proposal (round 1).
+2. Each MEMBER critiques + proposes alternatives (round 1).
+3. The LEAD synthesizes (round 2).
+4. Members refine (round 2).
+5. Final consensus (round 3).
+
+Be rigorous. Cite evidence. Challenge assumptions. Converge on actionable conclusions.`;
+

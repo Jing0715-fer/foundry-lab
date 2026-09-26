@@ -295,6 +295,25 @@ export async function executeNode(
         return { result: summary, logs: stdout, status: "completed" };
       }
 
+      // Per-tool node types — dispatch on node.type which IS the toolKey.
+      case "rfdiffusion":
+      case "rfantibody":
+      case "proteinmpnn":
+      case "ligandmpnn":
+      case "solublempnn":
+      case "rosetta":
+      case "pyrosetta":
+      case "rf3":
+      case "esmfold":
+      case "colabfold": {
+        const toolKey = node.type;
+        // node.params are already the tool's own params (no prefixing needed).
+        const filtered: Record<string, unknown> = { ...node.params };
+        if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
+        const { summary, stdout } = executeCompTool(toolKey, filtered);
+        return { result: summary, logs: stdout, status: "completed" };
+      }
+
       case "biotool": {
         const bioKey = String(node.params.bioKey ?? "pdb") as
           | "blast"

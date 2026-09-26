@@ -19,9 +19,16 @@ import { MeetingsPanel } from "@/components/panels/meetings-panel";
 import { ResearchPanel } from "@/components/panels/research-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
+import { PiCopilot } from "@/components/panels/pi-copilot";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
 import { CommandPalette } from "@/components/command-palette";
 import { OnboardingTour, useTourStore } from "@/components/onboarding-tour";
+import {
+  Sheet,
+  SheetContent,
+  SheetTitle,
+  SheetDescription,
+} from "@/components/ui/sheet";
 
 import { useAppStore } from "@/lib/store";
 import { useChatStore } from "@/lib/chat-store";
@@ -96,6 +103,11 @@ export default function Home() {
 
   const chatAgentId = useChatStore((s) => s.chatAgentId);
   const closeChat = useChatStore((s) => s.closeChat);
+
+  // PI Copilot Sheet — local state (not in the activePanel union) so it can
+  // float over the canvas while the user keeps working. Toggled from the
+  // Sidebar's "PI Copilot" button.
+  const [piCopilotOpen, setPiCopilotOpen] = React.useState(false);
 
   // Boot sequence — runs once.
   React.useEffect(() => {
@@ -250,7 +262,10 @@ export default function Home() {
     <div className="flex h-dvh flex-col overflow-hidden">
       <Header />
       <div className="flex min-h-0 flex-1">
-        <Sidebar />
+        <Sidebar
+          piCopilotOpen={piCopilotOpen}
+          onTogglePiCopilot={() => setPiCopilotOpen((o) => !o)}
+        />
         <main className="flex min-h-0 flex-1 flex-col">
           {activePanel === "canvas" && (
             <div className="flex min-h-0 flex-1">
@@ -277,6 +292,23 @@ export default function Home() {
         open={!!chatAgentId}
         onClose={closeChat}
       />
+      {/* PI Copilot Sheet — right side, w-full sm:max-w-md. Renders the
+          persistent chat panel; the user can chat with the PI while the
+          canvas stays visible underneath. SheetTitle/Description are
+          visually hidden (sr-only) because PiCopilot renders its own
+          header, but are kept for a11y (Radix requires them). */}
+      <Sheet open={piCopilotOpen} onOpenChange={setPiCopilotOpen}>
+        <SheetContent
+          side="right"
+          className="w-full gap-0 p-0 sm:max-w-md"
+        >
+          <SheetTitle className="sr-only">PI Copilot</SheetTitle>
+          <SheetDescription className="sr-only">
+            Chat with the Principal Investigator orchestrator.
+          </SheetDescription>
+          <PiCopilot />
+        </SheetContent>
+      </Sheet>
       <CommandPalette />
       <OnboardingTour />
     </div>

@@ -19,6 +19,21 @@ import type {
 export interface AgentRunResult {
   text: string;
   toolCalls: ToolCall[];
+  /** The reflected (final) text, if `reflect` was enabled. Same as `text` when not. */
+  reflectedText?: string;
+}
+
+/** Options for `runAgentTurn`. */
+export interface AgentRunOptions {
+  temperature?: number;
+  /** Max tool-calling rounds (default 3). */
+  maxRounds?: number;
+  /**
+   * When true, after the tool-calling loop completes, run one more LLM call
+   * asking the agent to review + improve its answer (deepseek-harness reflect step).
+   * The reflected text becomes the returned `text`. Default `false` (backward-compat).
+   */
+  reflect?: boolean;
 }
 
 /** Parse an Agent row's knowledge JSON into the typed shape. */
@@ -79,11 +94,12 @@ export function toAgentDTO(a: {
 /**
  * Run a single agent turn with a tool-calling loop (up to `maxRounds`).
  * Each round: call LLM → extract tool fences → execute tools → feed results back.
+ * When `opts.reflect` is true, run one final self-critique pass (deepseek-harness reflect).
  */
 export async function runAgentTurn(
   agent: AgentDTO,
   history: { role: "user" | "assistant"; content: string }[],
-  opts: { temperature?: number; maxRounds?: number } = {},
+  opts: AgentRunOptions = {},
 ): Promise<AgentRunResult> {
   const maxRounds = opts.maxRounds ?? 3;
   const temperature = opts.temperature ?? 0.7;
@@ -151,6 +167,27 @@ export async function runAgentTurn(
       }
     }
   }
+
+  // After the tool-calling loop, optionally reflect (deepseek-harness reflect step).
+  if (opts.reflect) {
+    const reflectionReply = await chat(
+      [
+        ...convo,
+        {
+          role: "user",
+          content:
+            "Review your answer above. Is it accurate, complete, and well-structured? " +
+            "If needed, provide an improved final answer. Otherwise, restate your answer concisely.",
+        },
+      ],
+      { temperature: 0.4 },
+    );
+    // Keep the pre-reflection text available for debugging/transparency.
+    const preReflect = lastText;
+    lastText = reflectionReply;
+    return { text: lastText, toolCalls, reflectedText: preReflect };
+  }
+
   return { text: lastText, toolCalls };
 }
 

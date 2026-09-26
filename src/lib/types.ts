@@ -114,7 +114,11 @@ export interface ResearchReportDTO {
 
 export type NodeType =
   | "agent" | "task" | "meeting" | "research"
-  | "comptool" | "biotool" | "input" | "output";
+  | "comptool" | "biotool" | "input" | "output"
+  // Per-tool node types (split from comptool for richer canvas)
+  | "rfdiffusion" | "rfantibody" | "proteinmpnn" | "ligandmpnn" | "solublempnn"
+  | "rosetta" | "pyrosetta"
+  | "rf3" | "esmfold" | "colabfold";
 
 export type NodeStatus =
   | "idle" | "pending" | "running" | "completed" | "failed";
@@ -206,7 +210,10 @@ export interface WorkflowDTO {
 
 // --- Tools -------------------------------------------------------------------
 
-export type CompToolKey = "rfdiffusion" | "rfantibody" | "proteinmpnn" | "rosetta";
+export type CompToolKey =
+  | "rfdiffusion" | "rfantibody" | "proteinmpnn" | "ligandmpnn" | "solublempnn"
+  | "rosetta" | "pyrosetta"
+  | "rf3" | "esmfold" | "colabfold";
 export type BioToolKey = "blast" | "pdb" | "pubmed" | "uniprot";
 
 export interface ToolEnvironmentDTO {

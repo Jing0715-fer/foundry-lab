@@ -135,13 +135,14 @@ export const NODE_SPECS: NodeSpec[] = [
       num("temperature", "Temperature", 0.6, { min: 0, max: 1.5, step: 0.05 }),
     ],
   },
-  // --- Tools ----------------------------------------------------------------
+  // --- Tools (per-tool node types — split from old single "comptool") --------
+  // Generic legacy comptool kept for backward compat with existing workflows.
   {
     type: "comptool",
-    label: "Comp Tool",
+    label: "Comp Tool (legacy)",
     icon: "cpu",
-    color: "cyan",
-    description: "Run a computational tool (RFdiffusion / RFantibody / ProteinMPNN / Rosetta). Connect a context node to pass file paths.",
+    color: "slate",
+    description: "Legacy generic comp tool node. Prefer the specific tool nodes (RFdiffusion, ProteinMPNN, etc.) below.",
     category: "Tools",
     inputs: [
       { name: "input", label: "Input context", kind: "context", accepts: ["text", "context", "results", "*"], multiple: false },
@@ -152,23 +153,39 @@ export const NODE_SPECS: NodeSpec[] = [
     ],
     params: [
       sel("toolKey", "Tool", "rfdiffusion", COMP_TOOLS.map((t) => t.key)),
-      ...COMP_TOOLS.flatMap((t) =>
-        t.paramFields.map((f) => ({
-          key: `param_${t.key}_${f.key}`,
-          label: `${t.label} · ${f.label}`,
-          type: f.type === "path" ? "path" as const : f.type === "bool" ? "bool" as const : f.type === "select" ? "select" as const : f.type === "number" ? "number" as const : "text" as const,
-          default: f.default,
-          options: f.options,
-          min: f.min,
-          max: f.max,
-          step: f.step,
-          unit: f.unit,
-          hint: f.hint,
-          advanced: f.advanced,
-        })),
-      ),
     ],
   },
+  // Per-tool node specs — generated from COMP_TOOLS so the palette + inspector
+  // automatically pick up new tools added to tools.ts.
+  ...COMP_TOOLS.map((t): NodeSpec => ({
+    type: t.key as NodeType,
+    label: t.label,
+    icon: t.icon,
+    color: t.color as NodeSpec["color"],
+    description: t.description,
+    category: "Tools",
+    inputs: [
+      { name: "input", label: "Input context", kind: "context", accepts: ["text", "context", "results", "files", "*"], multiple: false },
+    ],
+    outputs: [
+      { name: "files", label: "Output files", kind: "files" },
+      { name: "summary", label: "Run summary", kind: "text" },
+    ],
+    params: t.paramFields.map((f) => ({
+      key: f.key,
+      label: f.label,
+      type: f.type === "path" ? "path" as const : f.type === "bool" ? "bool" as const : f.type === "select" ? "select" as const : f.type === "number" ? "number" as const : "text" as const,
+      default: f.default,
+      options: f.options,
+      min: f.min,
+      max: f.max,
+      step: f.step,
+      unit: f.unit,
+      hint: f.hint,
+      advanced: f.advanced,
+    })),
+    toolKey: t.key,
+  })),
   {
     type: "biotool",
     label: "Bio Tool",

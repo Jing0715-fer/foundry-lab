@@ -59,9 +59,18 @@ const NAV_ITEMS: NavItem[] = [
  * - w-14 icons-only on mobile; w-56 with labels on md+.
  * - Active item: bg-primary/10 text-primary font-medium + 3px left border accent.
  * - Hover: bg-accent text-accent-foreground.
+ * - Top: PI Copilot button (special violet active state, toggles a Sheet
+ *   that floats over the canvas so the user can chat with the PI while
+ *   watching the workflow build).
  * - Bottom: Seed Data button (POST /api/seed) above a subtle divider.
  */
-export function Sidebar() {
+export function Sidebar({
+  piCopilotOpen = false,
+  onTogglePiCopilot,
+}: {
+  piCopilotOpen?: boolean;
+  onTogglePiCopilot?: () => void;
+} = {}) {
   const activePanel = useAppStore((s) => s.activePanel);
   const setActivePanel = useAppStore((s) => s.setActivePanel);
   const toast = useAppStore((s) => s.toast);
@@ -125,6 +134,37 @@ export function Sidebar() {
       aria-label="Primary"
     >
       <ul className="flex flex-1 flex-col gap-1 p-2">
+        {/* PI Copilot — top of the rail. Toggles a Sheet (handled by page.tsx)
+            rather than switching activePanel, so the user can chat with the
+            PI while still seeing the canvas. Uses a violet-tinted "special"
+            active state to distinguish it from the regular nav items. */}
+        <li className="mb-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onTogglePiCopilot?.()}
+                className={cn(
+                  "group flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors md:px-3",
+                  "justify-center md:justify-start border-l-[3px]",
+                  piCopilotOpen
+                    ? "bg-violet-500/10 font-medium text-violet-600 border-violet-500"
+                    : "border-transparent font-normal text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
+                aria-pressed={piCopilotOpen}
+              >
+                <Bot className="size-4 shrink-0" />
+                <span className="hidden truncate md:inline">PI Copilot</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="md:hidden">
+              PI Copilot
+            </TooltipContent>
+          </Tooltip>
+        </li>
+
+        <li className="mx-2 my-1 h-px bg-border" aria-hidden />
+
         {NAV_ITEMS.map((item) => {
           const Icon = item.icon;
           const active = activePanel === item.key;
