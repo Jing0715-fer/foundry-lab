@@ -561,3 +561,96 @@ kbd,
     box-shadow: none !important;
   }
 }
+
+/* --- Task 18-b: marketplace + styling polish ----------------------------- */
+
+/* Card hover lift with a primary-tinted glow. Pairs nicely with .node-shadow
+   and .node-glow-hover on node cards, and gives marketplace tiles a tactile
+   "lift" affordance on hover. */
+.card-lift-glow {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.25s ease;
+}
+.card-lift-glow:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px -8px
+    color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+/* Gradient border wrapper — a 1px ring rendered via the mask-composite trick
+   so the element's background stays clean (var(--card)) while the border
+   gradient fades primary → transparent across the diagonal. */
+.gradient-border {
+  position: relative;
+  background: var(--card);
+  border-radius: 12px;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, var(--primary), transparent 50%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Shine sweep on hover — a translucent primary-tinted sheen that wipes
+   across the element once when the user hovers it. Used on marketplace
+   tiles to draw the eye toward the "Install" affordance. */
+@keyframes shine {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.shine-on-hover {
+  position: relative;
+  overflow: hidden;
+}
+.shine-on-hover::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--primary) 15%, transparent),
+    transparent
+  );
+  transform: translateX(-100%);
+  transition: none;
+  pointer-events: none;
+}
+.shine-on-hover:hover::after {
+  animation: shine 0.8s ease;
+}
+
+/* Badge pulse for "new" indicators (e.g. the Marketplace button's accent dot).
+   A gentle opacity + scale breath that catches the eye without being noisy. */
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.05); }
+}
+.badge-pulse { animation: badge-pulse 2s ease-in-out infinite; }
+
+/* Disable the new Task 18-b animations under reduced-motion. The generic
+   block above covers them defensively, but we list them explicitly for
+   self-documentation. */
+@media (prefers-reduced-motion: reduce) {
+  .card-lift-glow,
+  .card-lift-glow:hover,
+  .shine-on-hover::after,
+  .shine-on-hover:hover::after,
+  .badge-pulse {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}

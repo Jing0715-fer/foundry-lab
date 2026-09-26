@@ -409,7 +409,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
               animate={{ scale: 1, opacity: 1 }}
               transition={{ duration: 0.2 }}
               className={cn(
-                "card-hover node-shadow node-glow-hover relative h-full w-full overflow-hidden rounded-xl border bg-card shadow-sm transition-all duration-200 hover:shadow-md hover:ring-2 hover:ring-primary/20",
+                "card-hover card-lift-glow node-shadow node-glow-hover relative h-full w-full overflow-hidden rounded-xl border bg-card shadow-sm transition-all duration-200 hover:shadow-md hover:ring-2 hover:ring-primary/20",
                 isSelected ? "border-primary ring-2 ring-primary/40" : "border-border",
                 // Running pulse: border color pulses in addition to job-running glow.
                 status === "running" &&

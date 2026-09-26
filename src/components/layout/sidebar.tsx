@@ -10,6 +10,7 @@ import {
   Loader2,
   Sparkles,
   SquarePen,
+  Store,
   Users,
   Wrench,
   X,
@@ -33,6 +34,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/lib/store";
 import { WorkflowTemplates } from "@/components/panels/workflow-templates";
+import { TemplateMarketplace } from "@/components/panels/template-marketplace";
 
 type PanelKey = ReturnType<typeof useAppStore.getState>["activePanel"];
 
@@ -65,6 +67,7 @@ export function Sidebar() {
   const toast = useAppStore((s) => s.toast);
   const [seeding, setSeeding] = React.useState(false);
   const [templatesOpen, setTemplatesOpen] = React.useState(false);
+  const [marketplaceOpen, setMarketplaceOpen] = React.useState(false);
 
   async function handleSeed() {
     setSeeding(true);
@@ -176,6 +179,32 @@ export function Sidebar() {
           </TooltipContent>
         </Tooltip>
 
+        {/* Marketplace button — opens the community templates dialog.
+            Distinct from the built-in Templates gallery above: this surfaces
+            extended (community-curated) workflow templates. The small pulsing
+            dot signals "new" content without taking layout space on the
+            icon-only (mobile) rail. */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setMarketplaceOpen(true)}
+              className="relative mb-2 w-full justify-center gap-2 md:justify-start"
+            >
+              <Store className="size-4" />
+              <span className="hidden md:inline">Marketplace</span>
+              <span
+                className="badge-pulse absolute right-1 top-1 hidden size-2 rounded-full bg-primary md:block"
+                aria-hidden
+              />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent side="right" className="md:hidden">
+            Marketplace
+          </TooltipContent>
+        </Tooltip>
+
         <div className="mb-2 h-px bg-border" aria-hidden />
         <Tooltip>
           <TooltipTrigger asChild>
@@ -203,6 +232,11 @@ export function Sidebar() {
       <TemplatesDialog
         open={templatesOpen}
         onOpenChange={setTemplatesOpen}
+      />
+
+      <TemplateMarketplace
+        open={marketplaceOpen}
+        onClose={() => setMarketplaceOpen(false)}
       />
     </nav>
   );

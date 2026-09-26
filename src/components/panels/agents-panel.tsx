@@ -23,6 +23,7 @@ import {
   BarChart3,
   Play,
   X,
+  Sliders,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -69,6 +70,7 @@ import { useChatStore } from "@/lib/chat-store";
 import { AgentChatDrawer } from "./agent-chat-drawer";
 import { AgentCompareDialog } from "./agent-compare";
 import { AgentAnalyticsDialog } from "./agent-analytics";
+import { AgentFineTuneDialog } from "./agent-finetune";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 import { cn } from "@/lib/utils";
 
@@ -184,6 +186,7 @@ export function AgentsPanel() {
   const [deleteId, setDeleteId] = React.useState<string | null>(null);
   const [chatId, setChatId] = React.useState<string | null>(null);
   const [seeding, setSeeding] = React.useState(false);
+  const [finetuneAgent, setFinetuneAgent] = React.useState<AgentDTO | null>(null);
 
   // Compare dialog state.
   const [selectOpen, setSelectOpen] = React.useState(false);
@@ -365,6 +368,7 @@ export function AgentsPanel() {
                 setEditing(a);
                 setEditorOpen(true);
               }}
+              onFineTune={() => setFinetuneAgent(a)}
               onDelete={() => setDeleteId(a.id)}
             />
           ))}
@@ -499,6 +503,12 @@ export function AgentsPanel() {
         open={analyticsOpen}
         onClose={() => setAnalyticsOpen(false)}
       />
+
+      <AgentFineTuneDialog
+        agent={finetuneAgent}
+        open={!!finetuneAgent}
+        onClose={() => setFinetuneAgent(null)}
+      />
     </div>
   );
 }
@@ -507,11 +517,13 @@ function AgentCard({
   agent,
   onChat,
   onEdit,
+  onFineTune,
   onDelete,
 }: {
   agent: AgentDTO;
   onChat: () => void;
   onEdit: () => void;
+  onFineTune: () => void;
   onDelete: () => void;
 }) {
   const capabilities = agent.knowledge?.capabilities ?? [];
@@ -565,6 +577,15 @@ function AgentCard({
           <Button size="sm" variant="outline" onClick={onEdit} className="flex-1 gap-1.5">
             <Pencil className="size-3.5" />
             Edit
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onFineTune}
+            aria-label="Fine-tune agent"
+            title="Fine-tune"
+          >
+            <Sliders className="size-3.5" />
           </Button>
           <Button
             size="sm"

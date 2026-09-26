@@ -12,6 +12,8 @@ import {
   Undo2,
   Redo2,
   Map as MapIcon,
+  Download,
+  FileImage,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -29,6 +31,7 @@ import {
   TooltipProvider,
 } from "@/components/ui/tooltip";
 import { useMinimapStore } from "./canvas-minimap";
+import { exportCanvasToPNG, exportCanvasToSVG } from "./canvas-export";
 
 /** Compute a fit viewport for the given nodes & available canvas size. */
 function computeFit(
@@ -432,6 +435,32 @@ export function CanvasToolbar() {
           aria-pressed={minimapOpen}
         >
           <MapIcon className="size-4" />
+        </ToolButton>
+
+        <Separator orientation="vertical" className="mx-0.5 h-6" />
+
+        {/* Export PNG */}
+        <ToolButton
+          label="Export PNG"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={() => void exportCanvasToPNG()}
+          disabled={nodes.length === 0}
+        >
+          <Download className="size-4" />
+        </ToolButton>
+
+        {/* Export SVG */}
+        <ToolButton
+          label="Export SVG"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={() => exportCanvasToSVG()}
+          disabled={nodes.length === 0}
+        >
+          <FileImage className="size-4" />
         </ToolButton>
 
         <Separator orientation="vertical" className="mx-0.5 h-6" />
