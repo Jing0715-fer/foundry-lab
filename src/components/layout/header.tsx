@@ -5,18 +5,18 @@ import { useTheme } from "next-themes";
 import { FlaskConical, Moon, Play, Sun, Github, Loader2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { WorkflowSwitcher } from "@/components/workflow-switcher";
 import { useAppStore } from "@/lib/store";
 
 /**
  * Top application bar.
  * - Left: brand chip (FlaskConical in a teal pill) + "Foundry Lab" wordmark.
- * - Center (sm+): editable workflow name (max-w-xs, display-only — PATCH later).
+ * - Center (sm+): workflow switcher (dropdown to list / create / rename / delete).
  * - Right: Run Workflow (Play icon + text), theme toggle, GitHub link.
  * - All elements vertically aligned items-center; subtle shadow-sm under border.
  */
@@ -86,20 +86,14 @@ export function Header() {
         </div>
       </div>
 
-      {/* Center: workflow name (sm+) */}
+      {/* Center: workflow switcher (sm+) */}
       <div className="hidden min-w-0 flex-1 justify-center px-4 sm:flex">
         {workflow ? (
-          <Input
-            value={workflow.name}
-            onChange={() => {
-              /* PATCH /api/workflow/:id wired later — keep display-only for now */
-            }}
-            readOnly
-            className="h-8 max-w-xs text-center text-sm font-medium focus-visible:ring-0"
-            aria-label="Workflow name"
-          />
+          <WorkflowSwitcher />
         ) : (
-          <span className="text-sm text-muted-foreground">Loading workflow…</span>
+          <span className="text-sm text-muted-foreground">
+            Loading workflow…
+          </span>
         )}
       </div>
 

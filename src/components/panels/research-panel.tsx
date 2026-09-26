@@ -4,6 +4,7 @@ import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import {
   FlaskConical,
+  BookOpen,
   Plus,
   Play,
   Trash2,
@@ -35,6 +36,7 @@ import {
 } from "@/components/ui/select";
 import { useAppStore } from "@/lib/store";
 import type { ResearchReportDTO, RunStatus, DiscussionMessage } from "@/lib/types";
+import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
@@ -304,7 +306,7 @@ export function ResearchPanel() {
             />
           </div>
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 items-start">
             <div className="grid gap-1.5">
               <Label htmlFor="research-rounds">Rounds</Label>
               <Input
@@ -393,17 +395,13 @@ export function ResearchPanel() {
           {reports.length} report{reports.length === 1 ? "" : "s"}
         </h3>
         {loading ? (
-          <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-            <Loader2 className="mr-2 size-4 animate-spin" />
-            Loading research…
-          </div>
+          <PanelSkeleton count={3} />
         ) : reports.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
-              <FlaskConical className="size-8 opacity-50" />
-              No research yet. Create one above.
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={BookOpen}
+            title="No research yet"
+            description="Start a 3-phase research pipeline above."
+          />
         ) : (
           reports.map((r) => (
             <ResearchCard

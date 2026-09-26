@@ -60,6 +60,7 @@ import {
 } from "@/lib/agents";
 import type { AgentDTO, AgentKnowledgeConfig } from "@/lib/types";
 import { AgentChatDrawer } from "./agent-chat-drawer";
+import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 
 /** Map agent.icon string → lucide component. */
 const ICON_MAP: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -189,19 +190,16 @@ export function AgentsPanel() {
       </div>
 
       {loading ? (
-        <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-          <Loader2 className="mr-2 size-4 animate-spin" />
-          Loading agents…
-        </div>
+        <PanelSkeleton count={3} />
       ) : agents.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center gap-3 py-12 text-center">
-            <Bot className="size-8 text-muted-foreground" />
-            <p className="text-sm text-muted-foreground">
-              No agents yet. Seed the built-in personas or create a custom one.
-            </p>
+        <EmptyState
+          icon={Bot}
+          title="No agents yet"
+          description="Seed the built-in personas or create your own."
+          action={
             <div className="flex gap-2">
               <Button variant="outline" onClick={handleSeed} disabled={seeding}>
+                {seeding ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
                 Seed built-in
               </Button>
               <Button onClick={() => setEditorOpen(true)}>
@@ -209,8 +207,8 @@ export function AgentsPanel() {
                 New Agent
               </Button>
             </div>
-          </CardContent>
-        </Card>
+          }
+        />
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {agents.map((a) => (

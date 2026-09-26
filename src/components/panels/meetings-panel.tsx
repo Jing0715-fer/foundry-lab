@@ -36,6 +36,7 @@ import {
 import { useAppStore } from "@/lib/store";
 import { QUICK_START_AGENDA } from "@/lib/agents";
 import type { MeetingDTO, RunStatus, DiscussionMessage } from "@/lib/types";
+import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
@@ -322,7 +323,7 @@ export function MeetingsPanel() {
               Individual meetings run 3 rounds with the Scientific Critic.
             </p>
           ) : (
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 items-start">
               <div className="grid gap-1.5">
                 <Label htmlFor="meeting-rounds">Rounds</Label>
                 <Input
@@ -452,17 +453,13 @@ export function MeetingsPanel() {
           {meetings.length} meeting{meetings.length === 1 ? "" : "s"}
         </h3>
         {loading ? (
-          <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-            <Loader2 className="mr-2 size-4 animate-spin" />
-            Loading meetings…
-          </div>
+          <PanelSkeleton count={3} />
         ) : meetings.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
-              <Users className="size-8 opacity-50" />
-              No meetings yet. Create one above.
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={Users}
+            title="No meetings yet"
+            description="Start a team or individual meeting above."
+          />
         ) : (
           meetings.map((m) => (
             <MeetingCard

@@ -21,6 +21,7 @@ import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
 import { CommandPalette } from "@/components/command-palette";
+import { OnboardingTour, useTourStore } from "@/components/onboarding-tour";
 
 import { useAppStore } from "@/lib/store";
 import { useChatStore } from "@/lib/chat-store";
@@ -175,6 +176,29 @@ export default function Home() {
     }
   }, [toast]);
 
+  // ─── Onboarding tour auto-start ──────────────────────────────────────────
+  // On first visit (no localStorage flag), open the tour after an 800ms delay
+  // so the page has time to render first. The tour store's `close()` persists
+  // the flag for next time.
+  React.useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const seen = localStorage.getItem("foundry-lab:tour-seen");
+      if (!seen) {
+        timer = setTimeout(() => {
+          if (!cancelled) useTourStore.getState().start();
+        }, 800);
+      }
+    } catch {
+      // localStorage unavailable (SSR / private mode) — non-fatal.
+    }
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
   // ─── Global keyboard shortcuts (Delete + Escape) ────────────────────────
   // Cmd+K / Ctrl+K is owned by the CommandPalette component itself.
   const shortcuts = React.useMemo<ShortcutConfig[]>(
@@ -238,12 +262,12 @@ export default function Home() {
               {selectedId && <NodeInspector />}
             </div>
           )}
-          {activePanel === "dashboard" && <DashboardPanel />}
-          {activePanel === "agents" && <AgentsPanel />}
-          {activePanel === "tasks" && <TasksPanel />}
-          {activePanel === "meetings" && <MeetingsPanel />}
-          {activePanel === "research" && <ResearchPanel />}
-          {activePanel === "tools" && <ToolsPanel />}
+          {activePanel === "dashboard" && <div className="overflow-y-auto"><DashboardPanel /></div>}
+          {activePanel === "agents" && <div className="overflow-y-auto"><AgentsPanel /></div>}
+          {activePanel === "tasks" && <div className="overflow-y-auto"><TasksPanel /></div>}
+          {activePanel === "meetings" && <div className="overflow-y-auto"><MeetingsPanel /></div>}
+          {activePanel === "research" && <div className="overflow-y-auto"><ResearchPanel /></div>}
+          {activePanel === "tools" && <div className="overflow-y-auto"><ToolsPanel /></div>}
         </main>
       </div>
       <Footer />
@@ -254,6 +278,7 @@ export default function Home() {
         onClose={closeChat}
       />
       <CommandPalette />
+      <OnboardingTour />
     </div>
   );
 }

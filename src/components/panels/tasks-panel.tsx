@@ -3,7 +3,6 @@
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
 import {
-  ListTodo,
   Plus,
   Play,
   Trash2,
@@ -38,6 +37,7 @@ import {
 import { useAppStore } from "@/lib/store";
 import { QUICK_START_AGENDA } from "@/lib/agents";
 import type { TaskDTO, RunStatus } from "@/lib/types";
+import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 
 /** Relative time formatter — "3m ago", "2h ago", "1d ago". */
 function timeAgo(iso: string): string {
@@ -399,17 +399,13 @@ export function TasksPanel() {
           {tasks.length} task{tasks.length === 1 ? "" : "s"}
         </h3>
         {loading ? (
-          <div className="flex items-center justify-center py-12 text-sm text-muted-foreground">
-            <Loader2 className="mr-2 size-4 animate-spin" />
-            Loading tasks…
-          </div>
+          <PanelSkeleton count={3} />
         ) : tasks.length === 0 ? (
-          <Card>
-            <CardContent className="flex flex-col items-center gap-2 py-12 text-center text-sm text-muted-foreground">
-              <ListTodo className="size-8 opacity-50" />
-              No tasks yet. Create one above.
-            </CardContent>
-          </Card>
+          <EmptyState
+            icon={SquarePen}
+            title="No tasks yet"
+            description="Create a task above to run a prompt with your agents."
+          />
         ) : (
           tasks.map((t) => (
             <TaskCard

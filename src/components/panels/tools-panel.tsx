@@ -12,6 +12,8 @@ import {
   Atom,
   Beaker,
   Dna,
+  Box,
+  Database,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -20,13 +22,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogDescription,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -39,6 +34,8 @@ import { COMP_TOOLS, getCompTool, buildCommand } from "@/lib/tools";
 import type { CompToolDef, CompParamField } from "@/lib/tools";
 import type { ToolJobDTO } from "@/lib/types";
 import type { BioResult } from "@/lib/bio-tools";
+import { OutputViewerDialog } from "@/components/viewers/output-viewer-dialog";
+import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 
 function timeAgo(iso: string): string {
   const then = new Date(iso).getTime();
@@ -58,6 +55,26 @@ const COMP_TOOL_ICONS: Record<string, React.ComponentType<{ className?: string }
   beaker: Beaker,
   dna: Dna,
   "flask-conical": FlaskConical,
+};
+
+/** Output-type meta for the small chip on each Recent Jobs row. */
+const OUTPUT_TYPE_META: Record<
+  string,
+  { Icon: React.ComponentType<{ className?: string }>; label: string; chip: string }
+> = {
+  // structure-producing tools → Box icon (teal)
+  rfdiffusion: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
+  rfantibody: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
+  rosetta: { Icon: Box, label: "structure", chip: "bg-teal-500/10 text-teal-700 dark:text-teal-400" },
+  // sequence-producing tools → Dna icon (violet)
+  proteinmpnn: { Icon: Dna, label: "sequence", chip: "bg-violet-500/10 text-violet-700 dark:text-violet-400" },
+};
+
+/** Fallback for bio tools (BLAST / PDB / PubMed / UniProt) → Database icon (cyan). */
+const OUTPUT_TYPE_FALLBACK = {
+  Icon: Database,
+  label: "bio",
+  chip: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
 };
 
 export function ToolsPanel() {
@@ -458,17 +475,21 @@ export function ToolsPanel() {
         </CardHeader>
         <CardContent>
           {loadingJobs ? (
-            <div className="flex items-center justify-center py-8 text-sm text-muted-foreground">
-              <Loader2 className="mr-2 size-4 animate-spin" />
-              Loading jobs…
-            </div>
+            <PanelSkeleton count={3} />
           ) : jobs.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">No tool jobs yet.</p>
+            <EmptyState
+              icon={Wrench}
+              title="No tool runs yet"
+              description="Run a comp or bio tool above."
+            />
           ) : (
             <ul className="space-y-2">
               {jobs.map((job) => {
                 const def = COMP_TOOLS.find((t) => t.key === job.tool);
                 const JobIcon = (def && COMP_TOOL_ICONS[def.icon]) || Wrench;
+                const outputMeta =
+                  OUTPUT_TYPE_META[job.tool] ?? OUTPUT_TYPE_FALLBACK;
+                const OutputIcon = outputMeta.Icon;
                 const statusPill =
                   job.status === "completed"
                     ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
@@ -484,6 +505,12 @@ export function ToolsPanel() {
                   >
                     <span className="flex size-6 items-center justify-center rounded-md bg-muted text-muted-foreground">
                       <JobIcon className="size-3.5" />
+                    </span>
+                    <span
+                      className={`flex size-5 items-center justify-center rounded-[4px] ${outputMeta.chip}`}
+                      title={`Output type: ${outputMeta.label}`}
+                    >
+                      <OutputIcon className="size-3" />
                     </span>
                     <Badge variant="secondary" className="font-mono text-[10px]">{job.tool}</Badge>
                     <span
@@ -515,54 +542,12 @@ export function ToolsPanel() {
         </CardContent>
       </Card>
 
-      {/* Job output dialog */}
-      <Dialog open={!!viewJob} onOpenChange={(o) => !o && setViewJob(null)}>
-        <DialogContent className="max-h-[85vh] max-w-2xl overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Wrench className="size-4" />
-              {viewJob?.tool} — output
-            </DialogTitle>
-            <DialogDescription>
-              exit code {viewJob?.exitCode ?? "—"} · status {viewJob?.status}
-            </DialogDescription>
-          </DialogHeader>
-          {viewJob?.command && (
-            <div className="mb-2">
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Command</p>
-              <pre className="overflow-x-auto rounded-md bg-muted p-2 font-mono text-[11px]">
-                {viewJob.command}
-              </pre>
-            </div>
-          )}
-          <div>
-            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">stdout</p>
-            <pre className="max-h-[50vh] overflow-auto rounded-md bg-muted p-3 text-xs">
-              {viewJob?.stdout || "(empty)"}
-            </pre>
-          </div>
-          {viewJob?.stderr && (
-            <div>
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-destructive">stderr</p>
-              <pre className="max-h-32 overflow-auto rounded-md bg-destructive/10 p-3 text-xs text-destructive">
-                {viewJob.stderr}
-              </pre>
-            </div>
-          )}
-          {viewJob?.outputFiles && viewJob.outputFiles.length > 0 && (
-            <div>
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Output files
-              </p>
-              <ul className="space-y-1 font-mono text-[11px]">
-                {viewJob.outputFiles.map((f, i) => (
-                  <li key={i} className="text-muted-foreground">{f}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      {/* Job output dialog (tabbed: Summary / Structure / Sequence / Files / Command) */}
+      <OutputViewerDialog
+        job={viewJob}
+        open={!!viewJob}
+        onClose={() => setViewJob(null)}
+      />
     </div>
   );
 }
