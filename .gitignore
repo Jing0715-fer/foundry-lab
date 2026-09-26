@@ -63,3 +63,4 @@ upload/
 agent-ctx/
 .zscripts/
 tool-results/
+outputs/
