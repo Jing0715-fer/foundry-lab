@@ -31,6 +31,7 @@ import {
   Boxes,
   PackageCheck,
   FlaskConical,
+  BookOpen,
   Info,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -72,6 +73,7 @@ interface EngineRow {
   description: string;
   algorithms: string[];
   serves: string[];
+  provenance: { refs: string[]; accuracy: string } | null;
   ok: boolean;
   detail: string;
 }
@@ -732,6 +734,24 @@ function EngineCard({ engine }: { engine: EngineRow }) {
               ))}
             </ul>
           </div>
+          {engine.provenance && (
+            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-2.5">
+              <p className="mb-1 flex items-center gap-1.5 text-[11px] font-medium text-amber-700 dark:text-amber-400">
+                <BookOpen className="size-3" /> Provenance &amp; accuracy
+              </p>
+              <ul className="mb-1.5 space-y-0.5">
+                {engine.provenance.refs.map((r) => (
+                  <li key={r} className="flex items-start gap-1.5 text-[10px] leading-relaxed text-muted-foreground">
+                    <span className="mt-1.5 size-1 shrink-0 rounded-full bg-amber-500/70" />
+                    {r}
+                  </li>
+                ))}
+              </ul>
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                {engine.provenance.accuracy}
+              </p>
+            </div>
+          )}
           <p className="break-all rounded bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
             {engine.detail.slice(0, 160)}
             {engine.detail.length > 160 ? "…" : ""}

@@ -157,6 +157,13 @@ export interface BuiltinEngine {
   algorithms: string[];
   /** Tools served by this engine. */
   serves: string[];
+  /** Honest provenance & accuracy positioning — what published science the
+   *  engine implements, and how it compares to the native upstream tool
+   *  (which remains the gold standard when installed). */
+  provenance?: {
+    refs: string[];
+    accuracy: string;
+  };
 }
 
 export const BUILTIN_ENGINES: BuiltinEngine[] = [
@@ -173,6 +180,15 @@ export const BUILTIN_ENGINES: BuiltinEngine[] = [
       "Steric quality control + resampling",
     ],
     serves: ["rfdiffusion"],
+    provenance: {
+      refs: [
+        "Chou & Fasman, Adv. Enzymol. 47:45-148 (1978) — SS propensity tables",
+        "Hovmöller et al., Acta Cryst. D58:768-776 (2002) — observed Ramachandran distributions",
+        "Engh & Huber, Acta Cryst. A47:392-400 (1991) — protein bond geometry",
+      ],
+      accuracy:
+        "From-scratch re-implementation of the published statistical methods — NOT the trained RFdiffusion network. Produces geometry-valid backbones (bond lengths/angles within Engh-Huber SD, clash-filtered ≤2-7 per design), but the fold distribution comes from Ramachandran statistics rather than learned protein grammar. Install native RFdiffusion for state-of-the-art design.",
+    },
   },
   {
     key: "engine-fold",
@@ -187,6 +203,14 @@ export const BUILTIN_ENGINES: BuiltinEngine[] = [
       "NeRF backbone assembly",
     ],
     serves: ["esmfold", "rf3", "colabfold"],
+    provenance: {
+      refs: [
+        "Chou & Fasman, Adv. Enzymol. 47:45-148 (1978) — full published algorithm",
+        "Kyte & Doolittle, J. Mol. Biol. 157:105-132 (1982) — hydropathy scale",
+      ],
+      accuracy:
+        "Chou-Fasman Q3 accuracy is ~50-65% on average proteins (its published benchmark) — the honest classical baseline. Modern trained predictors (ESMFold / AlphaFold2) exceed 80% Q3 / ~0.8 GDT_TS. Use this engine for education, scaffolds and quick iteration; install fair-esm for real predictions.",
+    },
   },
   {
     key: "engine-mpnn",
@@ -201,6 +225,15 @@ export const BUILTIN_ENGINES: BuiltinEngine[] = [
       "Boltzmann sampling at ProteinMPNN-style temperatures",
     ],
     serves: ["proteinmpnn", "ligandmpnn", "solublempnn"],
+    provenance: {
+      refs: [
+        "Miyazawa & Jernigan, J. Mol. Biol. 256:623-644 (1996) — 20×20 contact matrix",
+        "Shrake & Rupley, Biochemistry 12:3361 (1973) — SASA algorithm",
+        "Tien et al., PLoS ONE 8:e80635 (2013) — max-SASA normalization",
+      ],
+      accuracy:
+        "REAL Gibbs sampling over a knowledge-based statistical potential computed from your actual backbone (contacts, burial, propensities). Not the trained ProteinMPNN graph neural network — native MPNN recovers ~30-50% of native sequences; this sampler explores the same sequence space with a physics-derived energy, trading recovery for interpretability. Install native ProteinMPNN for production design.",
+    },
   },
   {
     key: "engine-score",
@@ -215,6 +248,15 @@ export const BUILTIN_ENGINES: BuiltinEngine[] = [
       "Computational alanine scan",
     ],
     serves: ["rosetta", "pyrosetta"],
+    provenance: {
+      refs: [
+        "Miyazawa & Jernigan (1996) — contact energies",
+        "Chothia, Nature 248:338 (1974) — buried-surface/ΔG correlation (γ)",
+        "Tien et al. (2013) — max-SASA for burial fractions",
+      ],
+      accuracy:
+        "Rosetta-STYLE knowledge-based scoring (MJ contacts + Ramachandran likelihood + solvation + steric clashes) — not the full Rosetta ref2015 energy function with its finely tuned Lennard-Jones/electrostatics. Ranking and ΔΔG trends are meaningful for coarse comparison; absolute energies are not comparable to Rosetta REU. Install Rosetta/PyRosetta for publication-grade energies.",
+    },
   },
   {
     key: "engine-antibody",
@@ -229,6 +271,15 @@ export const BUILTIN_ENGINES: BuiltinEngine[] = [
       "VH/VL pairing geometry + interface ΔSASA",
     ],
     serves: ["rfantibody"],
+    provenance: {
+      refs: [
+        "Sidhu & Fellouse, Methods Mol. Biol. 207:27-41 (2008) — synthetic antibody libraries",
+        "Al-Lazikani et al., J. Mol. Biol. 273:927-948 (1997) — canonical CDR structures",
+        "Tien et al. (2013) — SASA normalization for interface analysis",
+      ],
+      accuracy:
+        "Germline frameworks + IMGT canonical loop lengths + Tyr/Gly/Ser-enriched CDR sampling follow the published statistics of real antibody repertoires. Geometry is Engh-Huber-valid and clash-filtered; CDR conformations are statistical (canonical classes), not the RFantibody network's learned structures.",
+    },
   },
 ];
 

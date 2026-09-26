@@ -9,6 +9,7 @@ import {
   runTeamMeeting,
   runResearch,
   executeCompTool,
+  extractClusterTarget,
 } from "@/lib/run-utils";
 import { runBio } from "@/lib/bio-tools";
 import type {
@@ -286,12 +287,23 @@ export async function executeNode(
 
       case "comptool": {
         const toolKey = String(node.params.toolKey ?? "rfdiffusion");
+        // Cluster target (inspector-managed, task 23-d): a raw `_cluster` param
+        // (JSON string or object) routes this tool to an SSH cluster. It is
+        // stripped from the filtered params so it never reaches buildCommand.
+        const clusterTarget = extractClusterTarget(
+          (node.params as Record<string, unknown>)._cluster,
+        );
         const filtered = filterCompParams(node.params, toolKey);
+        delete (filtered as Record<string, unknown>)._cluster;
         if (inputs) {
           // Pass upstream context as an "inputs" hint — executeCompTool ignores unknown keys.
           (filtered as Record<string, unknown>).__inputs = inputs;
         }
-        const { summary, stdout } = await executeCompTool(toolKey, filtered);
+        const { summary, stdout } = await executeCompTool(
+          toolKey,
+          filtered,
+          clusterTarget ? { cluster: clusterTarget } : {},
+        );
         return { result: summary, logs: stdout, status: "completed" };
       }
 
@@ -307,10 +319,19 @@ export async function executeNode(
       case "esmfold":
       case "colabfold": {
         const toolKey = node.type;
+        // Same cluster routing as the comptool case (raw `_cluster` param).
+        const clusterTarget = extractClusterTarget(
+          (node.params as Record<string, unknown>)._cluster,
+        );
         // node.params are already the tool's own params (no prefixing needed).
         const filtered: Record<string, unknown> = { ...node.params };
+        delete filtered._cluster;
         if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
-        const { summary, stdout } = await executeCompTool(toolKey, filtered);
+        const { summary, stdout } = await executeCompTool(
+          toolKey,
+          filtered,
+          clusterTarget ? { cluster: clusterTarget } : {},
+        );
         return { result: summary, logs: stdout, status: "completed" };
       }
 

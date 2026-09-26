@@ -8,6 +8,7 @@ import {
   LayoutGrid,
   LayoutTemplate,
   Loader2,
+  Server,
   Sparkles,
   SquarePen,
   Store,
@@ -73,11 +74,15 @@ export function Sidebar({
   onTogglePiCopilot,
   environmentOpen = false,
   onToggleEnvironment,
+  clusterOpen = false,
+  onToggleCluster,
 }: {
   piCopilotOpen?: boolean;
   onTogglePiCopilot?: () => void;
   environmentOpen?: boolean;
   onToggleEnvironment?: () => void;
+  clusterOpen?: boolean;
+  onToggleCluster?: () => void;
 } = {}) {
   const activePanel = useAppStore((s) => s.activePanel);
   const setActivePanel = useAppStore((s) => s.setActivePanel);
@@ -234,6 +239,34 @@ export function Sidebar({
             </TooltipTrigger>
             <TooltipContent side="right" className="md:hidden">
               Environment
+            </TooltipContent>
+          </Tooltip>
+        </li>
+
+        {/* Cluster button — toggles the Cluster Execution Sheet (page.tsx),
+            same pattern as Environment. Emerald active state distinguishes
+            the HPC dispatch lane from the cyan local-environment lane. */}
+        <li className="mt-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={() => onToggleCluster?.()}
+                className={cn(
+                  "group flex w-full items-center gap-3 rounded-md px-2.5 py-2 text-sm transition-colors md:px-3",
+                  "justify-center md:justify-start border-l-[3px]",
+                  clusterOpen
+                    ? "bg-emerald-500/10 font-medium text-emerald-600 border-emerald-500"
+                    : "border-transparent font-normal text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+                )}
+                aria-pressed={clusterOpen}
+              >
+                <Server className="size-4 shrink-0" />
+                <span className="hidden truncate md:inline">Cluster</span>
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right" className="md:hidden">
+              Cluster
             </TooltipContent>
           </Tooltip>
         </li>

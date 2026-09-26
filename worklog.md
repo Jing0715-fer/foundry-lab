@@ -2328,3 +2328,85 @@ Stage Summary:
 - Native execution proven: real ProteinMPNN NN ran end-to-end after one-click install + torch.
 - New APIs: /api/tools/scan (3-tier), /api/tools/install(/[id]), /api/tools/file.
 - README.md added; outputs/ + external-tools/ gitignored.
+
+---
+Task ID: 23-b
+Agent: mock-cluster
+Task: Build the mock-cluster mini-service — an ssh2 SSH server on :3022 emulating an HPC login node so the cluster-execution lane (23-a) can be E2E-tested without a real HPC.
+
+Work Log:
+- Studied cryoflow's mock-cluster (server.mjs, 972 lines) for the ssh2 Server patterns: RSA host key via node:crypto generateKeyPairSync (PKCS#1 PEM — ssh2 does not parse PKCS#8), password-only auth with ctx.reject(["password"]) hint, exec-channel accept-then-handle, drain-aware channel close (write callbacks + pendingWrites + re-arming grace + hard cap), stdin wiring (pipe end:false + explicit end on channel EOF), detached spawns so setsid/nohup jobs survive, no sftp listener (subsystem refused automatically), bun --hot listener guard via globalThis symbol.
+- Read Task 23-a's types.ts/connections.ts contracts (remoteRoot ~/foundry-lab, remoteToolsDir ~/foundry-lab/tools, .cf-pid/.cf-exit/run.out/run.err liveness, direct+slurm modes) and tools.ts/real-executor.ts to get the exact CLI grammars (rfdiffusion hydra flags contigmap.contigmap / inference.num_designs / inference.symmetry; proteinmpnn argparse flags; nativeExecution script rewriting).
+- Built mini-services/mock-cluster/index.ts (~1200 lines incl. comments): ssh2 server on 0.0.0.0:3022, auth foundry/demo only; every exec logged with [mock-cluster] prefix (truncated); FS_ROOT fs/ with HOME fs/home/foundry, PATH fs/opt/bin:/usr/bin:/bin:/usr/local/bin, USER foundry (+ whoami/id -un emulated as "foundry"); everything non-scheduler spawns REAL /bin/bash -c with detached sessions.
+- Mini-SLURM in-memory state machine: jobs 900001+, sbatch parses #SBATCH --output/--error/--job-name directives (%j expansion, ~/$HOME expansion, relative-to-submit-cwd resolution via tracked `cd X &&` segments), PENDING → 1.5 s → RUNNING spawns the script FOR REAL with the directive files as spawn stdio (append fds) → COMPLETED/FAILED with real exit code + elapsed; scancel SIGTERMs the process group (TERM trap writes .cf-exit 143) and owns the CANCELLED verdict; squeue -h -o %T grammar + generic %field renderer; sacct default task-23 line <id>|<STATE>|<exit>|<elapsed>|0 PLUS real -o/-n/-P column rendering (State,ExitCode,Elapsed,MaxRSS → "COMPLETED|0:0|00:00:01|0"); sinfo tolerant -o renderer (gpu|2|gpu:4|mixed|08:00:00 + cpu|8|0|idle|72:00:00, %P|%a|%D|%T|%N variant, bare table); nvidia-smi --query-gpu=count,name → "2, NVIDIA A100-SXM4-40GB"; sbatch --version → slurm 24.05.2.
+- Scheduler interception layers: PURE (all segments scheduler/identity → answered entirely in JS, exact bytes + exit code), MIXED compounds (`echo x; sbatch --version`, `cd W && sbatch run.sh` → emulated segments inlined as printf subshells so ;/&&/|| semantics and exit codes survive), heredoc guard (commands containing unquoted `<<` are never split/intercepted — script upload bodies stay intact), newlines stay inside segments (multi-line script bodies never mistaken for scheduler batches).
+- Real tool shims (chmod +x) that route to the REAL built-in numpy engines: fs/opt/bin/RFdiffusion (bash; hydra-flag parser tolerating contigmap.contigs/contigmap.contigmap aliases + inference.output_prefix → payload helper builds {"params",…,"workdir": realpath(dirname(prefix))} for diffusion_engine.py, engine stdout/exit passthrough), fs/opt/bin/{RFantibody,rosetta_scripts,colabfold_batch,rf3} (same pattern via shims/generic_payload.py), fs/home/foundry/foundry-lab/tools/ProteinMPNN/protein_mpnn_run.py (python; REAL protein_mpnn_run.py flag surface --pdb_path/--out_folder/--num_seq_per_target/--sampling_temp/--seed/--use_soluble_model/--ligand_mpnn → mpnn_engine.py; sys.stdout.flush before os.execvp so the banner survives), ~/tools/ProteinMPNN symlink alias; .bash_profile/.bashrc re-export the mock PATH for login shells.
+- E2E-verified with a throwaway ssh2 client (kept at /tmp/test-ssh.mjs): password auth + rejection of wrong password/unknown user; echo/uname/command -v/sbatch --version compound; full sbatch lifecycle (PENDING→RUNNING observed via squeue, purge on finish, sacct COMPLETED both grammars, run.out/run.err honored, script ran FOR REAL); direct-mode setsid contract (PID captured, .cf-exit=0 by the detached child); upload contract (head -c 11 > file with stdin → "hello world" round-trip); sinfo both formats + nvidia-smi; mixed-compound inlining; cd+relative sbatch; scancel (CANCELLED|143 + TERM trap .cf-exit); RFdiffusion shim END-TO-END producing real PDBs (design_0.pdb/design_1.pdb + metrics.json in /tmp/fl-shim-test, C3 symmetry units=3, clashes=0) in both hydra flag dialects; ProteinMPNN shim end-to-end on the fresh backbone (designed.fasta, recovery=0.04); spot checks: 5.3 MB base64 transfer lossless (5403512/5403512 bytes), concurrent exec channels, sbatch missing-script error path (exit 1 + real-style stderr).
+- Committed (2 commits; runtime keys/log/node_modules/fs-scratch gitignored). Service left RUNNING on 0.0.0.0:3022 (bun index.ts, nohup, mock-cluster.log).
+
+Stage Summary:
+- mini-services/mock-cluster = the LOCAL TEST CLUSTER for the execution lane: SSH on :3022, user foundry / password demo, remoteRoot ~/foundry-lab, remoteToolsDir ~/foundry-lab/tools. Commands execute FOR REAL via /bin/bash; ONLY the scheduler is a state machine — no science simulated (labeled "LOCAL TEST CLUSTER" at startup + in README).
+- Verified contracts for 23-a: exec+exit-code fidelity, stdin uploads (head -c N > path), direct-mode setsid background jobs surviving channel close, sbatch/squeue/sacct/scancel/sinfo/nvidia-smi grammars (both the task-23 spec line and the cryoflow -o column grammar), #SBATCH --output/--error landing run.out/run.err in the workdir, scancel TERM traps, real RFdiffusion/ProteinMPNN runs over SSH producing real PDB/FASTA artifacts, lossless multi-MB transfers.
+- Run: cd mini-services/mock-cluster && bun run dev (hot) | bun run start; logs to mock-cluster.log; throwaway E2E client at /tmp/test-ssh.mjs (bun /tmp/test-ssh.mjs from the project root).
+- Deviations: host key saved as PKCS#1 PEM (task text said PKCS#8 — ssh2 rejects PKCS#8, cryoflow's proven pattern wins); ProteinMPNN shim placed at BOTH ~/foundry-lab/tools/ProteinMPNN/ (the connections.ts default 23-a will use) and ~/tools/ProteinMPNN (task-text path, symlink); sacct ExitCode renders plain integers in the default 5-field line and real "N:0" grammar under -o.
+
+---
+Task ID: 23-a
+Agent: main (+ cluster-backend subagent, verified & completed by main)
+Task: Cluster execution backend — ssh2 transport, probe, submission scripts, orchestration sweep, API routes (cryoflow remote-RELION design adapted for comp tools).
+
+Work Log:
+- Studied cryoflow's remote lane (Explore agent on /tmp/cryoflow): ssh2 exec-only pool + serialized queue, .cf-pid/.cf-exit filesystem liveness, direct (setsid nohup) + slurm (generated #SBATCH) doors, batched poll sweep, exec-based file transfer (no SFTP), JSON-file state, mock-cluster test harness.
+- Wrote foundation: src/lib/cluster/types.ts (all DTO contracts) + connections.ts (data/cluster-connections.json 0600, secret-stripping DTO).
+- Subagent built ssh.ts (pool + authConfig + exec queue + upload/download via head -c/cat), probe.ts (7 stages: identity/python/conda/module/slurm+partitions/gpus/tools-on-cluster), run-scripts.ts (wrapper + sbatch generators), cluster-run.ts (startClusterToolRun with input staging + path rewriting, reconcileClusterJobs batched sweep with EXIT/ALIVE/VANISHED ladder + log tails + sync-back, stopClusterJob group-kill, clusterInfoForJob).
+- API routes: /api/cluster/connections (GET/POST), [id] (PATCH/DELETE), [id]/test (probe, persists lastProbe). run route cluster branch (202 async dispatch), jobs routes reconcile+enrich, NEW jobs/[id]/stop. run-utils executeCompToolOnCluster (row + dispatch + 3s poll loop, 30min ceiling). workflow-engine honors node params._cluster for comptool + all 10 per-tool node types.
+- Fixes by main: bio-tools BLAST JSON2_S type (search not array), GPU CSV count parsing, mock-cluster command -v sbatch rewrite.
+- E2E VERIFIED via API: connection create → probe (slurm yes, partitions gpu/cpu, 7/10 tools, 2× A100); POST /api/tools/run cluster slurm → Slurm 900001 → REAL engine ran on the "cluster" → 5 files synced to outputs/; direct mode → pid 11314 → 3 files; file fetch API serves synced PDB; workflow node run → Slurm 900003 → 17 files → node completed with result.
+
+Stage Summary:
+- Complete cluster execution lane: connections CRUD + probe + async dispatch + batched polling + log tails + output sync-back + stop, all over real ssh2.
+- ToolJobDTO extended with `cluster` block; run API returns 202 for cluster targets.
+- Workflow nodes route to clusters via the `_cluster` param (inspector-managed).
+
+---
+Task ID: 23-b
+Agent: mock-cluster
+Task: Local SSH test cluster mini-service (port 3022) — real ssh2 server + mini-SLURM + real tool shims routing to the real numpy engines.
+
+Work Log:
+- (see worklog Task ID: 23-b entry above — 1216-line ssh2 server, password auth foundry/demo, scheduler interception, #SBATCH --output/--error honored, RFdiffusion hydra-flag shim → real diffusion_engine.py, ProteinMPNN shim → real mpnn_engine.py, 51 verification checks passed)
+- Main applied: NODE_ENV env typing fix + `command -v sbatch|squeue|…` rewrite so probes succeed (scheduler tools are JS-intercepted, not files).
+
+Stage Summary:
+- Test harness only — commands arriving over SSH execute FOR REAL via bash; the scheduler is an in-memory state machine. Clearly labeled. Used for E2E of the whole cluster lane without a real HPC.
+
+---
+Task ID: 23-c
+Agent: main (frontend subagent stalled; built by main)
+Task: Cluster Execution UI — panel + sidebar button + Sheet + inspector cluster routing + engine provenance cards.
+
+Work Log:
+- Created src/components/panels/cluster-panel.tsx (~700 lines): connections list + editor (auth method/password/key/agent, envLines, slurm prefs), quick-add for the local test cluster, probe result card (identity, python3/conda/module/slurm partition chips, GPU facts, tools grid), tool launcher (COMP_TOOLS param form incl. advanced disclosure, connection select, Direct/Slurm mode cards, partition from probe, GPU/CPU/walltime steppers, submission preview), cluster jobs list (2.5s polling, phase chips, live remote log tail, Stop, View output via shared OutputViewerDialog).
+- sidebar.tsx: Cluster button (Server icon, emerald active state) after Environment. page.tsx: clusterOpen state + Cluster Sheet (side=left, sm:max-w-2xl).
+- inspector.tsx: ClusterTargetSection on tool nodes — Run-on-cluster switch + connection select + Direct/Slurm + partition from probe; persists `_cluster` JSON param (fixed first-toggle race: await connection list before writing).
+- tools-panel EngineCard: Provenance & accuracy card per engine — paper citations (Chou-Fasman 1978, MJ 1996, Shrake-Rupley 1973, Engh-Huber 1991, Hovmöller 2002, Tien 2013, Kyte-Doolittle 1982, Chothia 1974, Al-Lazikani 1997, Sidhu & Fellouse 2008) + honest positioning vs the native trained tools; threaded through tool-registry BuiltinEngine.provenance + /api/tools/scan.
+- Browser E2E (agent-browser): Cluster button → panel → connection card → Test → probe (Slurm: yes · 7/10 tools) → launch RFdiffusion (Slurm) → Slurm 900002 running → done with live real-engine log tail → View output → Output Viewer → Structure tab 3D canvas 675×300 renders. Inspector: switch on → connection loaded → slurm + partition gpu → _cluster persisted to DB → single-node run → Slurm 900003 → node completed. Mobile 375px: NO_OVERFLOW. Zero console/page errors; dev.log clean; lint clean; tsc clean.
+
+Stage Summary:
+- Full cluster UX: configure → probe → launch → watch live logs → view synced outputs, plus canvas node routing and honest algorithm provenance in the Tools page.
+
+---
+Task ID: 23-final
+Agent: main
+Task: Round 15 — cluster execution lane (cryoflow-style), engine provenance UI, E2E verification, push.
+
+Work Log:
+- Research: cloned cryoflow, exhaustive Explore of its remote-RELION architecture (ssh2 exec-only pool, serialized queues, .cf-pid/.cf-exit liveness protocol, sbatch/wrapper generation, batched sweeps, exec-based transfers, mock-cluster harness).
+- Backend: cluster lib (ssh/probe/run-scripts/cluster-run) + API routes + async run dispatch + reconcile sweeps + sync-back + stop; workflow engine + run-utils cluster threading; ToolJobDTO.cluster.
+- Test harness: mock-cluster mini-service on :3022 (real ssh2 server, mini-SLURM, real engine shims) — commands genuinely execute.
+- Frontend: cluster-panel + sidebar Cluster button + Sheet + inspector _cluster routing + provenance/accuracy cards.
+- E2E: 4 cluster runs verified end-to-end (2 API, 1 UI, 1 workflow-node), both submission modes, output sync-back + 3D viewing, probe correctness, mobile + a11y + zero errors.
+
+Stage Summary:
+- External tools can now run on SSH-reachable clusters (direct or Slurm) exactly in cryoflow's pattern, verified end-to-end against a local test cluster running REAL algorithms.
+- Built-in engines now ship visible provenance (papers) + honest accuracy positioning vs native DL tools.

@@ -1,0 +1,1180 @@
+     1→"use client";
+     2→
+     3→/**
+     4→ * CryoFlow — "Run on cluster" control (job panel action row).
+     5→ *
+     6→ * The dispatch face of the remote layer: pick a saved SSH connection +
+     7→ * the relion module it should load, and the job is POSTed to
+     8→ * /api/jobs/[id]/run with { remote: target } — the store's runJobRemote
+     9→ * owns the response dialect (busy kinds, waiting/staging, honest
+    10→ * failures).
+    11→ *
+    12→ * t297 — the mode door is finally honest: "direct" (nohup on the login
+    13→ * node) or "slurm" (sbatch submission, the sbatch6gpu.sh pattern). In
+    14→ * slurm mode a GPU stepper picks the submission width (1–8, default 6 —
+    15→ * t349: one WORKER rank per GPU plus a dedicated CPU master, so
+    16→ * --ntasks = N+1 while --gres=gpu:N stays N); the connection's useSlurm
+    17→ * flag preselects the mode. The module picker also grew a free-text
+    18→ * door: a beta/hidden module the probe never listed can be typed by its
+    19→ * exact name (the dispatch's module-load guard reports an honest exit-127
+    20→ * if the name is wrong).
+    21→ *
+    22→ * t300 — two more defaults became CHOICES: a REMOTE project locks the
+    23→ * dialog to its bound cluster (the project's picked paths are absolute
+    24→ * THERE — another connection would strand the data), and slurm mode
+    25→ * grows the "node / partition" picker from the probe's sinfo inventory
+    26→ * (the detected node groups, each with its GPU/node figure and hostname
+    27→ * list — picking "brain2" lands the job on that node).
+    28→ *
+    29→ * t326 — the information-architecture redesign (the user's receipt:
+    30→ * the layout felt neither organized nor pretty). The same knobs, the
+    31→ * same contracts (suite-pinned strings, aria grammar, submit body),
+    32→ * regrouped so the eye has anchors: a job-identity header (the name +
+    33→ * type badge sit under a stable title), SECTIONED form (Cluster / Run
+    34→ * mode / Slurm resources), run mode as two selectable CARDS (the
+    35→ * structural choice is visible at a glance instead of buried in a
+    36→ * dropdown), the Slurm knobs inside a bordered panel that only exists
+    37→ * in Slurm mode (cause and effect share a frame), flag-level facts as
+    38→ * mono CHIPS on their own line (never squeezed beside a stepper), a
+    39→ * submission PREVIEW that renders the sbatch directives these knobs
+    40→ * actually produce (honesty: every directive shown is one the dispatch
+    41→ * writes), and a lifecycle strip (stage → load → run → sync) that says
+    42→ * in two lines what the old five-line intro paragraph buried. The
+    43→ * wall-of-text intro is dead; the sync policy it explained lives in
+    44→ * the strip's caption.
+    45→ *
+    46→ * t347 — the height diet (the user's receipt: the submission dialog
+    47→ * outgrew one screen). Same knobs, same contracts — a second column
+    48→ * instead of a longer scroll: the dialog widened to 2xl, connection +
+    49→ * module sit side by side (stacking below sm), the mode cards are one
+    50→ * line each, the GPU-width and Array-split rows share a row when both
+    51→ * exist, and the two helper paragraphs (node-picker grammar, lifecycle
+    52→ * sync policy) moved into title attributes. LAYOUT-ONLY — every data
+    53→ * hook, aria grammar, stepper predicate and the submit payload are
+    54→ * untouched.
+    55→ *
+    56→ * Defaults come from the cluster manager's ACTIVE connection
+    57→ * (localStorage "cryoflow.remote.active"); modules from that
+    58→ * connection's last probe. No connections yet? The dialog offers the
+    59→ * manager instead of a dead select.
+    60→ */
+    61→
+    62→import * as React from "react";
+    63→import { Button } from "@/components/ui/button";
+    64→import { isLogAutopick } from "@/lib/relion/log-autopick";
+    65→import {
+    66→  onEscapeClose,
+    67→  Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger,
+    68→} from "@/components/ui/dialog";
+    69→import {
+    70→  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+    71→} from "@/components/ui/select";
+    72→import { Badge } from "@/components/ui/badge";
+    73→import { Input } from "@/components/ui/input";
+    74→import { slurmWidthFor } from "@/lib/hpc/gpu-width";
+    75→import type { SlurmNodeUsage } from "@/lib/hpc/slurm-usage";
+    76→import {
+    77→  ChevronRight, HardDriveDownload, Loader2, MapPin, Minus, Network, Package, Play, Plus, Server, Terminal, Upload,
+    78→} from "lucide-react";
+    79→import { cn } from "@/lib/utils";
+    80→import { useWorkflowStore } from "@/lib/store";
+    81→import { ClusterUsagePanel } from "./cluster-usage-panel";
+    82→import type { JobDTO } from "@/lib/types";
+    83→import type { RemoteRunTarget } from "@/lib/remote/types";
+    84→import {
+    85→  RemoteClusterDialog,
+    86→  readActiveRemoteConnectionId,
+    87→  useRemoteConnections,
+    88→} from "./remote-cluster-dialog";
+    89→
+    90→const CUSTOM_MODULE_VALUE = "__custom__";
+    91→const PARTITION_AUTO = "__auto__";
+    92→/**
+    93→ * t338 — the Select's display value while a node picked from the live
+    94→ * usage list pins the submission (--nodelist). The field report: 「从节点
+    95→ * 使用情况处选择节点后，node框还是auto没有变化」 — the pin WAS wired
+    96→ * (sbatch --nodelist, stepper ceiling, ask line) but the Node/partition
+    97→ * box kept showing "Auto", so the pick looked dead. The box is now the
+    98→ * single visible truth for WHERE: a pinned node (from the list) or a
+    99→ * partition/Auto (from this dropdown) — never both at once, and picking
+   100→ * anything here releases the pin.
+   101→ *
+   102→ * t340 — the pin and the dropdown now land the SAME sbatch composition.
+   103→ * The follow-up field report: 「两种选择方式即使选同一个node，但是
+   104→ * node框中显示也不一样」，只有下拉选择能提交成功 — the dropdown
+   105→ * carried --partition=<group> while the pin SUPPRESSED the partition, so
+   106→ * the job fell to the cluster's default partition and the controller
+   107→ * refused it ("Requested node configuration is not available"). The pin
+   108→ * now resolves and shows the node's OWN partition (the usage row's
+   109→ * Partitions=, the same word scontrol gave the server), and the preview
+   110→ * writes --partition=<that> + --nodelist=<node> — one grammar, two doors.
+   111→ */
+   112→const NODE_PIN_VALUE = "__node_pin__";
+   113→const ARRAY_MAX_SHARDS = 64;
+   114→/**
+   115→ * t306/t307 — the types whose remote Slurm run can ride an array split (the
+   116→ * dispatch's own ARRAY_FLAVORS gate — per-micrograph embarrassingly parallel,
+   117→ * each with a merge the last task home can do honestly: output-star concat
+   118→ * for motioncorr/ctffind, path-rewritten particle rows for extract, a
+   119→ * collected per-mic coords dir for autopick). The dialog hides the stepper
+   120→ * for everything else — a knob that would be refused at dispatch time is not
+   121→ * a knob, it is a trap.
+   122→ */
+   123→const ARRAY_ELIGIBLE_TYPES = new Set(["motioncorr", "ctffind", "extract", "autopick"]);
+   124→
+   125→/** t326 — a section overline: the eye's anchor between form groups. */
+   126→function SectionLabel({ children }: { children: React.ReactNode }) {
+   127→  return (
+   128→    <p className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/90">
+   129→      {children}
+   130→    </p>
+   131→  );
+   132→}
+   133→
+   134→/** t326 — a mono flag chip: machine dialect, never squeezed into prose. */
+   135→function Chip({ children, title }: { children: React.ReactNode; title?: string }) {
+   136→  return (
+   137→    <span
+   138→      title={title}
+   139→      className="rounded border bg-muted/60 px-1.5 py-0.5 font-mono text-[10px] leading-4 text-muted-foreground"
+   140→    >
+   141→      {children}
+   142→    </span>
+   143→  );
+   144→}
+   145→
+   146→/**
+   147→ * t289 — the run-mode dropdown drives this dialog too: pass `dialogOnly`
+   148→ * with open/onOpenChange to embed the SAME dialog without the standalone
+   149→ * trigger (one dialog component, many doors — the action row's server icon
+   150→ * and the Run button's ▾ menu both open it).
+   151→ */
+   152→export function RemoteRunButton({
+   153→  job,
+   154→  dialogOnly = false,
+   155→  open: openProp,
+   156→  onOpenChange,
+   157→}: {
+   158→  job: JobDTO;
+   159→  /** render just the dialog (no trigger) — for controlled callers. */
+   160→  dialogOnly?: boolean;
+   161→  /** controlled open state (requires dialogOnly). */
+   162→  open?: boolean;
+   163→  onOpenChange?: (open: boolean) => void;
+   164→}) {
+   165→  const [openState, setOpenState] = React.useState(false);
+   166→  const open = dialogOnly ? (openProp ?? false) : openState;
+   167→  const setOpen = (v: boolean) => {
+   168→    setOpenState(v);
+   169→    onOpenChange?.(v);
+   170→  };
+   171→  const { connections, reload } = useRemoteConnections(open);
+   172→  const runJobRemote = useWorkflowStore((s) => s.runJobRemote);
+   173→  // t300 — a REMOTE project's bound cluster is the dialog's DEFAULT (and
+   174→  // locked) target: the project's picked input paths are absolute on THAT
+   175→  // cluster — another connection would strand the data.
+   176→  const projectRemote = useWorkflowStore((s) => s.project?.remote ?? null);
+   177→
+   178→  const [connId, setConnId] = React.useState("");
+   179→  const [module, setModule] = React.useState("");
+   180→  // t297 — mode + the sbatch GPU width + the free-text module door
+   181→  const [mode, setMode] = React.useState<"direct" | "slurm">("direct");
+   182→  const [gpus, setGpus] = React.useState(6);
+   183→  // t300 — the detected node group (Slurm partition) this sbatch pins;
+   184→  // "__auto__" = the scheduler picks (falls back to the connection default)
+   185→  const [partition, setPartition] = React.useState<string>(PARTITION_AUTO);
+   186→  // t332 — the node picked straight from the live usage list (the panel's
+   187→  // rows): an explicit --nodelist that survives multi-host groups. The
+   188→  // full usage row is kept (its gpuTotal caps the stepper); null = no pin
+   189→  // (the t300 single-host derivation applies).
+   190→  const [pickedNode, setPickedNode] = React.useState<SlurmNodeUsage | null>(null);
+   191→  // t306 — the array split (1 = off — the single-job contract; 2..64 shards
+   192→  // ride --array=1-N%4). Defaults OFF: a re-run of an old job must submit
+   193→  // byte-identical scripts unless the user asks for the split.
+   194→  const [shards, setShards] = React.useState(1);
+   195→  const [customModule, setCustomModule] = React.useState("");
+   196→  const [pending, setPending] = React.useState(false);
+   197→  // the nested cluster manager (empty state → add a connection right here)
+   198→  const [clusterOpen, setClusterOpen] = React.useState(false);
+   199→
+   200→  const conn = connections.find((c) => c.id === connId) ?? null;
+   201→  const probedModules = conn?.lastProbe?.relionModules ?? [];
+   202→  const slurmAvailable = conn?.lastProbe?.slurm === true;
+   203→  const partitionInventory = conn?.lastProbe?.slurmGpus ?? [];
+   204→
+   205→  // default connection: the project's binding (locked, see below), else
+   206→  // keep the current pick, else the ACTIVE one, else first
+   207→  React.useEffect(() => {
+   208→    if (!open) return;
+   209→    if (projectRemote) {
+   210→      // the project's cluster wins unconditionally while it exists in the
+   211→      // registry — a remote project's data lives THERE
+   212→      if (connections.some((c) => c.id === projectRemote.connectionId)) {
+   213→        setConnId(projectRemote.connectionId);
+   214→        return;
+   215→      }
+   216→    }
+   217→    setConnId((prev) => {
+   218→      if (prev && connections.some((c) => c.id === prev)) return prev;
+   219→      const active = readActiveRemoteConnectionId();
+   220→      if (active && connections.some((c) => c.id === active)) return active;
+   221→      return connections[0]?.id ?? "";
+   222→    });
+   223→  }, [open, connections, projectRemote]);
+   224→
+   225→  // module default follows the connection (its defaultModule, else first probed)
+   226→  React.useEffect(() => {
+   227→    if (!conn) {
+   228→      setModule("");
+   229→      return;
+   230→    }
+   231→    const probed = conn.lastProbe?.relionModules ?? [];
+   232→    if (conn.defaultModule && probed.includes(conn.defaultModule)) setModule(conn.defaultModule);
+   233→    else setModule(probed[0] ?? conn.defaultModule ?? "");
+   234→  }, [conn]);
+   235→
+   236→  // t297 — the mode defaults to the connection's preference, and degrades
+   237→  // to direct when this cluster offers no Slurm client (the probe's word).
+   238→  React.useEffect(() => {
+   239→    if (!conn) return;
+   240→    if (conn.useSlurm && conn.lastProbe?.slurm) setMode("slurm");
+   241→    else setMode("direct");
+   242→  }, [conn]);
+   243→
+   244→  // t300 — partition default: the connection's pinned partition when the
+   245→  // probe's inventory actually lists it, else auto
+   246→  React.useEffect(() => {
+   247→    if (!conn) return;
+   248→    setPartition(
+   249→      conn.slurmPartition && partitionInventory.some((p) => p.partition === conn.slurmPartition)
+   250→        ? conn.slurmPartition
+   251→        : PARTITION_AUTO
+   252→    );
+   253→  }, [conn, partitionInventory]);
+   254→
+   255→  // t332 — a node pin belongs to ONE cluster's inventory: a different
+   256→  // connection's nodes are a different world, and the pin must not
+   257→  // survive the switch (the panel's rows re-fetch underneath it)
+   258→  React.useEffect(() => {
+   259→    setPickedNode(null);
+   260→  }, [conn?.id]);
+   261→
+   262→  // t300 — the GPU width's ceiling: the SELECTED node group's per-node
+   263→  // GPUs (sinfo), falling back to the widest partition the probe saw, else 8.
+   264→  // t332 — a node PINNED from the usage list caps the stepper with THAT
+   265→  // node's own GPUs (scontrol's word — a 6-GPU node cannot honor
+   266→  // --gres=gpu:8 however wide its partition's other machines are; a
+   267→  // 0-GPU node keeps the old ceiling and lets the ask line name the
+   268→  // contradiction instead).
+   269→  const selectedGroup =
+   270→    partition === PARTITION_AUTO ? null : partitionInventory.find((p) => p.partition === partition) ?? null;
+   271→  const nodePin = pickedNode?.node ?? null;
+   272→  // t337 — AUTO is not "the inventory's first group": with no picked
+   273→  // partition (and no pin) the script still carries the CONNECTION'S
+   274→  // default (conn.slurmPartition — exactly what the engine's
+   275→  // effectivePartition resolves to). The stepper's ceiling must be the
+   276→  // group the sbatch will actually name, or it offers widths the
+   277→  // controller refuses at submit time ("auto" + 6 on a 5-GPU default
+   278→  // partition was the user's live receipt).
+   279→  const autoGroup = conn?.slurmPartition
+   280→    ? partitionInventory.find((p) => p.partition === conn?.slurmPartition) ?? null
+   281→    : null;
+   282→  const maxGpus = Math.max(
+   283→    1,
+   284→    Math.min(
+   285→      8,
+   286→      pickedNode && pickedNode.gpuTotal > 0
+   287→        ? pickedNode.gpuTotal
+   288→        : (selectedGroup?.gpusPerNode ?? autoGroup?.gpusPerNode ?? partitionInventory[0]?.gpusPerNode ?? 8)
+   289→    )
+   290→  );
+   291→  // clamping the pick when the partition changes (a 5-GPU partition cannot
+   292→  // honor a 6-GPU request — the stepper must not offer it)
+   293→  React.useEffect(() => {
+   294→    setGpus((g) => Math.min(g, maxGpus));
+   295→  }, [maxGpus]);
+   296→
+   297→  const disabled = job.status === "running" || job.linkedJobId != null;
+   298→
+   299→  // t306 — the array stepper only exists for eligible types (the dispatch
+   300→  // would refuse the split for anything else) and only in slurm mode.
+   301→  const arrayEligible = ARRAY_ELIGIBLE_TYPES.has(job.type);
+   302→
+   303→  // t320 — a LoG Auto-picking job is CPU-only (RELION's autopicker.cpp
+   304→  // refuses --gpu on the Laplacian-of-Gaussian picker outright). The GPU
+   305→  // stepper would be a knob the dispatch refuses at submit time — "a knob
+   306→  // that would be refused is not a knob, it is a trap" (the array row's
+   307→  // own doctrine): show the CPU contract instead. References/Topaz
+   308→  // picking keep the stepper.
+   309→  const logPick = isLogAutopick(job.type, job.params);
+   310→
+   311→  /** The module the dispatch will actually load: the free-text door wins
+   312→   *  over the select while it carries a value. */
+   313→  const effectiveModule =
+   314→    module === CUSTOM_MODULE_VALUE ? customModule.trim() : module;
+   315→
+   316→  // t326 — the WIDTH truth: the dispatch honors the GPU-stepper width only
+   317→  // for the MPI-multi-GPU types (relion_refine_mpi splits particles across
+   318→  // ranks); everything else sizes itself (one GPU per task for motioncorr
+   319→  // and References-picking, CPU tasks for ctffind/extract/LoG, single-GPU
+   320→  // for the Topaz-style trainers). A stepper promising a width the sbatch
+   321→  // would not write is a trap, not a knob — t320's own doctrine, applied
+   322→  // to the width. The table is the SAME pure module the strategy derives
+   323→  // from (gpu-width.ts): the dialog cannot drift from the dispatch.
+   324→  const widthTruth = slurmWidthFor(job.type, { gpus, logAutopick: logPick });
+   325→  // and the width is only real when the chosen MODULE can actually run
+   326→  // MPI (a no-mpirun module falls back to a sequential single-GPU run —
+   327→  // the probe's relionMpi map says which modules carry mpirun)
+   328→  const moduleHasMpi = !!conn?.lastProbe?.relionMpi?.[effectiveModule];
+   329→  const widthIsReal = !logPick && widthTruth.mode === "multi-gpu" && moduleHasMpi;
+   330→  // t349 — the MPI rank count the dispatch writes for a real width:
+   331→  // N+1 for N ≥ 2 (RELION's dedicated-master layout — rank 0 is the CPU
+   332→  // master, one worker per card), 1 for width 1 (a single process; no
+   333→  // split to make on one card). The preview speaks this number, the
+   334→  // sbatch carries it (CF_RANKS in the script).
+   335→  const mpiRankCount = gpus >= 2 ? gpus + 1 : 1;
+   336→
+   337→  // t326 — the submission preview's partition: the picked group, else the
+   338→  // connection's pinned default (exactly what the dispatch's
+   339→  // effectivePartition resolves to — the preview never invents a flag).
+   340→  // t332 — an explicit node pin speaks for itself: the connection's
+   341→  // default partition must not ride along (the engine suppresses it the
+   342→  // same way — a --partition=normal + --nodelist=brain3 combo is refused
+   343→  // at submit time; the node's own partition is where it lands).
+   344→  // t340 — while a usage-list pin speaks, the node's OWN home is the
+   345→  // partition that rides — the partition STATE (possibly the
+   346→  // auto-initialized connection default) must not compose a contradiction
+   347→  // the preview would then lie about. Unknown home → no partition
+   348→  // line: the default decides, honestly shown.
+   349→  const previewPartition = nodePin
+   350→    ? (pickedNode?.partitions?.[0] ?? null)
+   351→    : partition !== PARTITION_AUTO
+   352→      ? partition
+   353→      : (conn?.slurmPartition ?? null);
+   354→
+   355→  // t326 — the sbatch directives these knobs produce. Every entry here is
+   356→  // one the dispatch's script builder actually writes (remote-run.ts):
+   357→  // --partition (picked or connection default), --nodelist (single-host
+   358→  // group), --gres/--ntasks (the MPI width), --array (the split). The
+   359→  // preview is a promise the sbatch keeps.
+   360→  const sbatchDirectives: string[] = [];
+   361→  if (mode === "slurm") {
+   362→    if (previewPartition) sbatchDirectives.push(`--partition=${previewPartition}`);
+   363→    // t332 — the explicit node pick (the usage list's rows) pins the node
+   364→    // outright; the t300 single-host group derivation stands only without
+   365→    // one — the user's later, more specific choice speaks
+   366→    if (nodePin) sbatchDirectives.push(`--nodelist=${nodePin}`);
+   367→    else if (selectedGroup && selectedGroup.hosts?.length === 1)
+   368→      sbatchDirectives.push(`--nodelist=${selectedGroup.hosts[0]}`);
+   369→    if (logPick) sbatchDirectives.push("--ntasks=1");
+   370→    else if (widthIsReal) {
+   371→      // t349 — the dedicated-master layout: N workers + 1 CPU master
+   372→      sbatchDirectives.push(`--ntasks=${mpiRankCount}`, `--gres=gpu:${gpus}`);
+   373→    } else if (widthTruth.gpus === 1) {
+   374→      // single-GPU steps, array-1-GPU shards, and the no-mpirun fallback
+   375→      // all land the same shape: one GPU task
+   376→      sbatchDirectives.push("--ntasks=1", "--gres=gpu:1");
+   377→    } else {
+   378→      sbatchDirectives.push("--ntasks=1");
+   379→    }
+   380→    if (arrayEligible && shards >= 2) sbatchDirectives.push(`--array=1-${shards}%4`);
+   381→  }
+   382→
+   383→  // t327 — what THIS submission needs from the cluster right now, for
+   384→  // the live usage panel's ask line: per-task GPUs (the width truth —
+   385→  // the stepper's pick where real, the honest width elsewhere) × the
+   386→  // simultaneous tasks (an array's shards capped by the %4 concurrency
+   387→  // the sbatch actually writes).
+   388→  const usageAsk = React.useMemo(() => {
+   389→    const perTask = logPick ? 0 : widthIsReal ? gpus : widthTruth.gpus;
+   390→    const tasks = arrayEligible && shards >= 2 ? Math.min(shards, 4) : 1;
+   391→    return { gpus: perTask, tasks };
+   392→  }, [logPick, widthIsReal, gpus, widthTruth.gpus, arrayEligible, shards]);
+   393→
+   394→  // t326 — radiogroup keyboard grammar: arrows move between the two mode
+   395→  // cards (right/down → slurm when the cluster has a client, left/up →
+   396→  // direct). Click/Enter/Space ride the native button semantics.
+   397→  const onModeCardKey = (e: React.KeyboardEvent<HTMLElement>) => {
+   398→    if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+   399→      e.preventDefault();
+   400→      if (slurmAvailable) setMode("slurm");
+   401→    } else if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+   402→      e.preventDefault();
+   403→      setMode("direct");
+   404→    }
+   405→  };
+   406→
+   407→  // t326 — the honest width box: what the dispatch will actually request
+   408→  // when the stepper's width is not real for this type. Same shape as the
+   409→  // LoG CPU box (t320): the contract, stated — not a knob that lies.
+   410→  const widthBox = (() => {
+   411→    if (widthTruth.mode === "multi-gpu" && !moduleHasMpi)
+   412→      return {
+   413→        headline: "1 × GPU — this module has no mpirun",
+   414→        detail:
+   415→          `relion_refine_mpi needs the module's own mpirun — ${effectiveModule || "this module"} ` +
+   416→          "was not probed with one, so the dispatch runs the sequential single-GPU path " +
+   417→          "(--gres=gpu:1, --ntasks=1, no mpirun). Pick an MPI-capable module to unlock the width stepper.",
+   418→      };
+   419→    if (widthTruth.mode === "single")
+   420→      return {
+   421→        headline: "1 × GPU — single-GPU step",
+   422→        detail:
+   423→          "This step runs on exactly one GPU (--gres=gpu:1, --ntasks=1) — " +
+   424→          (job.type === "topaztrain"
+   425→            ? "Topaz training converges on one GPU; multi-GPU would need DDP."
+   426→            : "the external model works one GPU per job."),
+   427→      };
+   428→    if (widthTruth.mode === "array" && widthTruth.gpus === 1)
+   429→      return {
+   430→        headline: "1 × GPU per task",
+   431→        detail:
+   432→          "Each array shard runs on one GPU (--ntasks=1, --gres=gpu:1, no mpirun) — " +
+   433→          "the real parallelism knob is the Array split below (more shards, not wider jobs).",
+   434→      };
+   435→    // t338 — the extract-specific CPU contract. The field question:
+   436→    // 「extraction无法用GPU吗？」 — no: relion_preprocess (RELION's
+   437→    // extraction engine) has NO GPU code path; box cutting + normalization
+   438→    // run on the CPU, so a GPU allocation would just sit idle (and shrink
+   439→    // the pool the classification jobs need). The honest speed knob is
+   440→    // the Array split: N CPU shards, each extracting its share of the
+   441→    // micrographs in parallel.
+   442→    if (job.type === "extract")
+   443→      return {
+   444→        headline: "0 × GPU — CPU-only extraction",
+   445→        detail:
+   446→          "relion_preprocess (RELION's extraction engine) has no GPU code path — box cutting and " +
+   447→          "normalization run on the CPU, so no GPUs are requested or allocated (a GPU here would sit " +
+   448→          "idle while shrinking the pool the classification jobs need). The speed knob is the Array " +
+   449→          "split below: N CPU shards, each extracting its share of the micrographs in parallel.",
+   450→      };
+   451→    if (widthTruth.mode === "array")
+   452→      return {
+   453→        headline: "0 × GPU — CPU tasks",
+   454→        detail:
+   455→          "Each array shard is CPU-only (--ntasks=1, no --gres) — the Array split " +
+   456→          "below is the parallelism knob.",
+   457→      };
+   458→    return {
+   459→      headline: "0 × GPU — CPU step",
+   460→      detail:
+   461→        "CPU-bound bookkeeping / postprocessing — no GPU allocation (frees the " +
+   462→        "GPU queue for the classification jobs).",
+   463→    };
+   464→  })();
+   465→
+   466→  // t297 — the GPU width stepper: the sbatch6gpu.sh pattern at the width
+   467→  // the user picks — but ONLY where the width is REAL (t326): the
+   468→  // MPI-multi-GPU types on an mpirun-capable module. Label left, stepper
+   469→  // right, flags as chips on their own line — the machine dialect never
+   470→  // gets squeezed into a wrapping sentence again.
+   471→  // t320 — the LoG picker: RELION refuses --gpu on it outright, so the
+   472→  // row states the CPU contract instead of offering a width the dispatch
+   473→  // would never send.
+   474→  // t326 — every OTHER non-MPI type gets the same honesty: the width the
+   475→  // dispatch will actually request, stated — not a stepper the sbatch
+   476→  // would ignore.
+   477→  // t347 — the row became a VARIABLE so the compact layout can seat it
+   478→  // beside the Array-split row (a 2-col grid when both exist) or
+   479→  // full-width, without duplicating the three honesty variants.
+   480→  const gpuWidthRow = logPick ? (
+   481→    <div className="space-y-1" data-gpu-width-row="" data-log-cpu-row="">
+   482→      <p className="text-xs font-medium text-foreground/90">GPUs to request</p>
+   483→      <p className="rounded-md border bg-muted/40 px-2.5 py-2 font-mono text-[11px] leading-snug text-muted-foreground">
+   484→        0 × GPU — CPU-only picker
+   485→      </p>
+   486→      <p className="text-[10.5px] leading-snug text-muted-foreground/85">
+   487→        Laplacian-of-Gaussian picking runs on the CPU — RELION rejects{" "}
+   488→        <span className="font-mono">--gpu</span> on the LoG picker (its own error:
+   489→        "does not support GPU acceleration"), so no GPUs are requested or
+   490→        allocated. Switch Picking method to References or Topaz to use GPUs.
+   491→      </p>
+   492→    </div>
+   493→  ) : widthIsReal ? (
+   494→    <div className="space-y-1" data-gpu-width-row="">
+   495→      <div className="flex items-center justify-between gap-3">
+   496→        <p className="text-xs font-medium text-foreground/90">GPUs to request</p>
+   497→        <div className="flex items-center gap-1.5">
+   498→          <Button
+   499→            type="button"
+   500→            variant="outline"
+   501→            size="icon"
+   502→            className="size-7 shrink-0"
+   503→            onClick={() => setGpus((g) => Math.max(1, g - 1))}
+   504→            disabled={gpus <= 1}
+   505→            aria-label="One GPU less"
+   506→          >
+   507→            <Minus className="size-3.5" aria-hidden="true" />
+   508→          </Button>
+   509→          <span
+   510→            className="min-w-16 rounded-md border bg-muted/40 px-2 py-1 text-center font-mono text-sm font-semibold tabular-nums"
+   511→            aria-live="polite"
+   512→            aria-label={`${gpus} GPU${gpus === 1 ? "" : "s"} requested`}
+   513→          >
+   514→            {gpus} × GPU
+   515→          </span>
+   516→          <Button
+   517→            type="button"
+   518→            variant="outline"
+   519→            size="icon"
+   520→            className="size-7 shrink-0"
+   521→            onClick={() => setGpus((g) => Math.min(maxGpus, g + 1))}
+   522→            disabled={gpus >= maxGpus}
+   523→            aria-label="One GPU more"
+   524→          >
+   525→            <Plus className="size-3.5" aria-hidden="true" />
+   526→          </Button>
+   527→        </div>
+   528→      </div>
+   529→      <div className="flex flex-wrap items-center gap-1.5">
+   530→        <Chip>--gres=gpu:{gpus}</Chip>
+   531→        <Chip>mpirun -n {mpiRankCount}</Chip>
+   532→        <Chip title="t349 — each WORKER rank gets its own CUDA_VISIBLE_DEVICES (one card per worker); rank 0 is the CPU master, RELION's np = nGPU + 1 layout">
+   533→          {gpus >= 2 ? `1 master + ${gpus} workers (1 worker → 1 card)` : "1 rank → its card (CUDA_VISIBLE_DEVICES)"}
+   534→        </Chip>
+   535→        {(selectedGroup ?? partitionInventory[0]) != null ? (
+   536→          <span className="text-[10px] text-muted-foreground/80">
+   537→            {(selectedGroup ?? partitionInventory[0])!.partition} offers{" "}
+   538→            {(selectedGroup ?? partitionInventory[0])!.gpusPerNode}/node · {gpus >= 2 ? "1 worker per GPU + 1 CPU master" : "1 rank per GPU"}
+   539→          </span>
+   540→        ) : (
+   541→          <span className="text-[10px] text-muted-foreground/80">{gpus >= 2 ? "1 worker per GPU + 1 CPU master" : "1 rank per GPU"}</span>
+   542→        )}
+   543→      </div>
+   544→    </div>
+   545→  ) : (
+   546→    <div className="space-y-1" data-gpu-width-row="" data-width-truth-row="">
+   547→      <p className="text-xs font-medium text-foreground/90">GPUs to request</p>
+   548→      <p className="rounded-md border bg-muted/40 px-2.5 py-2 font-mono text-[11px] leading-snug text-muted-foreground">
+   549→        {widthBox.headline}
+   550→      </p>
+   551→      <p className="text-[10.5px] leading-snug text-muted-foreground/85">
+   552→        {widthBox.detail}
+   553→      </p>
+   554→    </div>
+   555→  );
+   556→
+   557→  // t306 — the array split stepper (eligible types only): 1 = a single
+   558→  // job (the old contract), 2..64 shards ride ONE sbatch --array=1-N%4 —
+   559→  // each task slices the input STAR by SLURM_ARRAY_TASK_ID, and the last
+   560→  // task home merges the shard output stars back into the canonical one,
+   561→  // so downstream jobs and Results never learn it was an array.
+   562→  // t347 — a variable like its GPU neighbor: it renders beside the width
+   563→  // row (2-col grid) when the type is eligible, not at all otherwise.
+   564→  const arrayRow = (
+   565→    <div className="space-y-1" data-array-shards-row="">
+   566→      <div className="flex items-center justify-between gap-3">
+   567→        <p className="text-xs font-medium text-foreground/90">Array split</p>
+   568→        <div className="flex items-center gap-1.5">
+   569→          <Button
+   570→            type="button"
+   571→            variant="outline"
+   572→            size="icon"
+   573→            className="size-7 shrink-0"
+   574→            onClick={() => setShards((s) => Math.max(1, s - 1))}
+   575→            disabled={shards <= 1}
+   576→            aria-label="One shard fewer"
+   577→          >
+   578→            <Minus className="size-3.5" aria-hidden="true" />
+   579→          </Button>
+   580→          <span
+   581→            className="min-w-20 rounded-md border bg-muted/40 px-2 py-1 text-center font-mono text-sm font-semibold tabular-nums"
+   582→            aria-live="polite"
+   583→            aria-label={shards >= 2 ? `${shards} array shards` : "single job, no split"}
+   584→          >
+   585→            {shards >= 2 ? `${shards} shards` : "1 × job"}
+   586→          </span>
+   587→          <Button
+   588→            type="button"
+   589→            variant="outline"
+   590→            size="icon"
+   591→            className="size-7 shrink-0"
+   592→            onClick={() => setShards((s) => Math.min(ARRAY_MAX_SHARDS, s + 1))}
+   593→            disabled={shards >= ARRAY_MAX_SHARDS}
+   594→            aria-label="One shard more"
+   595→          >
+   596→            <Plus className="size-3.5" aria-hidden="true" />
+   597→          </Button>
+   598→        </div>
+   599→      </div>
+   600→      {shards >= 2 ? (
+   601→        <div className="flex flex-wrap items-center gap-1.5">
+   602→          <Chip>sbatch --array=1-{shards}%4</Chip>
+   603→          <span className="text-[10px] text-muted-foreground/80">
+   604→            each shard takes every {shards}
+   605→            <sup className="text-[8px]">th</sup> micrograph; the last shard home
+   606→            merges the outputs
+   607→          </span>
+   608→        </div>
+   609→      ) : (
+   610→        <p className="text-[10.5px] leading-snug text-muted-foreground/85">
+   611→          Split per micrograph for data-parallel steps (MotionCorr, CTF Find). 1 job = no split.
+   612→        </p>
+   613→      )}
+   614→    </div>
+   615→  );
+   616→
+   617→  const submit = async () => {
+   618→    if (!conn || pending) return;
+   619→    setPending(true);
+   620→    try {
+   621→      const target: RemoteRunTarget = {
+   622→        connectionId: conn.id,
+   623→        module: effectiveModule || null,
+   624→        mode,
+   625→        ...(mode === "slurm"
+   626→          ? {
+   627→              // t320 — a LoG autopick requests no GPUs; omit the width so
+   628→              // the dispatch (and its gpusRequested ledger) hear nothing
+   629→              // but the CPU contract. t326 — the width rides only when it
+   630→              // is REAL (MPI types with an mpirun-capable module); a
+   631→              // 1-GPU truth sends its honest 1, everything else omits
+   632→              // (the dispatch sizes those by its own strategy).
+   633→              ...(logPick || !widthIsReal ? (widthTruth.gpus === 1 ? { gpus: 1 } : {}) : { gpus }),
+   634→              // t340 — while a usage-list pin speaks, the partition
+   635→              // field stays ABSENT — the server resolves the node's OWN
+   636→              // home fresh from scontrol (the freshest word beats any
+   637→              // dialog state, and a stale partition state here could only
+   638→              // compose the contradiction the engine now refuses).
+   639→              ...(nodePin ? {} : partition !== PARTITION_AUTO ? { partition } : {}),
+   640→              // t332 — the explicit node pick from the live usage list
+   641→              ...(nodePin ? { nodelist: nodePin } : {}),
+   642→              ...(arrayEligible && shards >= 2 ? { shards: Math.min(ARRAY_MAX_SHARDS, shards) } : {}),
+   643→            }
+   644→          : {}),
+   645→      };
+   646→      const ok = await runJobRemote(job.id, target);
+   647→      if (ok) setOpen(false);
+   648→    } finally {
+   649→      setPending(false);
+   650→    }
+   651→  };
+   652→
+   653→  return (
+   654→    <Dialog open={open} onOpenChange={setOpen}>
+   655→      {dialogOnly ? null : (
+   656→        <DialogTrigger asChild>
+   657→          <Button
+   658→            variant="outline"
+   659→            size="icon"
+   660→            className="relative size-8 shrink-0 text-muted-foreground hover:text-foreground before:absolute before:-inset-1.5 before:rounded-md before:content-['']"
+   661→            disabled={disabled}
+   662→            aria-label="Run on cluster (SSH)"
+   663→            title={
+   664→              job.linkedJobId != null
+   665→                ? "Linked copies mirror their original — run the original job instead"
+   666→                : "Run on cluster (SSH)"
+   667→            }
+   668→          >
+   669→            <Server className="size-4" aria-hidden="true" />
+   670→          </Button>
+   671→        </DialogTrigger>
+   672→      )}
+   673→      <DialogContent
+   674→        className="max-h-[calc(100vh-3rem)] gap-3 overflow-y-auto p-5 sm:max-w-2xl"
+   675→        onKeyDown={onEscapeClose(() => setOpen(false))}
+   676→      >
+   677→        <DialogHeader>
+   678→          <DialogTitle className="flex items-center gap-2.5">
+   679→            <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+   680→              <Server className="size-4" aria-hidden="true" />
+   681→            </span>
+   682→            Run on cluster
+   683→          </DialogTitle>
+   684→          <DialogDescription className="space-y-1">
+   685→            <span className="flex flex-wrap items-center gap-2">
+   686→              <span className="text-sm font-semibold text-foreground">{job.name}</span>
+   687→              <Badge
+   688→                variant="outline"
+   689→                className="h-5 px-1.5 font-mono text-[10px] font-medium text-muted-foreground"
+   690→              >
+   691→                {job.type}
+   692→              </Badge>
+   693→            </span>
+   694→            <span
+   695→              className="block text-xs leading-snug"
+   696→              title="Stage the inputs over SSH, load the chosen relion module, and submit — key files sync back when it lands."
+   697→            >
+   698→              SSH-stage inputs → load module → submit; key files sync back.
+   699→            </span>
+   700→          </DialogDescription>
+   701→        </DialogHeader>
+   702→
+   703→        {connections.length === 0 ? (
+   704→          <div className="flex flex-col items-center gap-3 rounded-md border border-dashed px-4 py-8 text-center">
+   705→            <div className="flex size-10 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+   706→              <Server className="size-5" aria-hidden="true" />
+   707→            </div>
+   708→            <div>
+   709→              <p className="text-xs font-medium">No cluster connections yet</p>
+   710→              <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+   711→                Add an SSH login node (host, user, password or key), probe it for relion
+   712→                modules, then come back.
+   713→              </p>
+   714→            </div>
+   715→            <Button variant="outline" size="sm" className="h-9 text-sm" onClick={() => setClusterOpen(true)}>
+   716→              Manage clusters
+   717→            </Button>
+   718→          </div>
+   719→        ) : (
+   720→          <>
+   721→            <div className="space-y-3">
+   722→              {/* t326 — SECTION: where it runs. Connection + module share a
+   723→                  frame; the identity (user@host · module) is not repeated
+   724→                  here — the submission preview owns it. t347 — the two
+   725→                  selectors sit side by side (they stack below sm). */}
+   726→              <section className="space-y-2" data-section-cluster="">
+   727→                <SectionLabel>Cluster</SectionLabel>
+   728→                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+   729→                  <div className="space-y-1">
+   730→                    <p className="text-xs font-medium text-foreground/90">Connection</p>
+   731→                    <Select
+   732→                      value={connId}
+   733→                      onValueChange={(v) => {
+   734→                        setConnId(v);
+   735→                        setModule("");
+   736→                        setCustomModule("");
+   737→                      }}
+   738→                    >
+   739→                      <SelectTrigger className="h-8 text-sm" aria-label="Cluster connection">
+   740→                        <SelectValue placeholder="Cluster connection" />
+   741→                      </SelectTrigger>
+   742→                      <SelectContent>
+   743→                        {connections.map((c) => (
+   744→                          <SelectItem key={c.id} value={c.id} className="text-xs">
+   745→                            <span className="flex min-w-0 items-center gap-1.5">
+   746→                              <span
+   747→                                className={
+   748→                                  c.lastProbe?.ok
+   749→                                    ? "size-1.5 shrink-0 rounded-full bg-emerald-500"
+   750→                                    : c.lastProbe
+   751→                                      ? "size-1.5 shrink-0 rounded-full bg-rose-500"
+   752→                                      : "size-1.5 shrink-0 rounded-full bg-slate-400 dark:bg-slate-500"
+   753→                                }
+   754→                                aria-hidden="true"
+   755→                              />
+   756→                              <span className="max-w-[220px] truncate">{c.name || `${c.username}@${c.host}`}</span>
+   757→                            </span>
+   758→                          </SelectItem>
+   759→                        ))}
+   760→                      </SelectContent>
+   761→                    </Select>
+   762→                  </div>
+   763→
+   764→                  <div className="space-y-1">
+   765→                    <p className="text-xs font-medium text-foreground/90">relion module</p>
+   766→                    {probedModules.length > 0 ? (
+   767→                      <Select
+   768→                        value={module}
+   769→                        onValueChange={(v) => {
+   770→                          setModule(v);
+   771→                          if (v !== CUSTOM_MODULE_VALUE) setCustomModule("");
+   772→                        }}
+   773→                      >
+   774→                        <SelectTrigger className="h-8 font-mono text-[13px]" aria-label="relion module to load">
+   775→                          <SelectValue placeholder="module" />
+   776→                        </SelectTrigger>
+   777→                        <SelectContent>
+   778→                          {probedModules.map((m) => (
+   779→                            <SelectItem key={m} value={m} className="font-mono text-xs">
+   780→                              {m}
+   781→                            </SelectItem>
+   782→                          ))}
+   783→                          <SelectItem value={CUSTOM_MODULE_VALUE} className="font-mono text-xs italic">
+   784→                            other — type a module name…
+   785→                          </SelectItem>
+   786→                        </SelectContent>
+   787→                      </Select>
+   788→                    ) : (
+   789→                      <Input
+   790→                        value={module === CUSTOM_MODULE_VALUE ? customModule : module}
+   791→                        onChange={(e) => {
+   792→                          setCustomModule(e.target.value.trim());
+   793→                          setModule(CUSTOM_MODULE_VALUE);
+   794→                        }}
+   795→                        placeholder="relion/beta_5.0_gpu_ompi5_cuda118"
+   796→                        className="h-8 font-mono text-[13px]"
+   797→                        maxLength={200}
+   798→                        aria-label="relion module to load"
+   799→                      />
+   800→                    )}
+   801→                    {module === CUSTOM_MODULE_VALUE ? (
+   802→                      <div className="space-y-1">
+   803→                        <Input
+   804→                          autoFocus
+   805→                          value={customModule}
+   806→                          onChange={(e) => setCustomModule(e.target.value.trim())}
+   807→                          placeholder="relion/beta_5.0_gpu_ompi5_cuda118"
+   808→                          className="h-8 font-mono text-[13px]"
+   809→                          maxLength={200}
+   810→                          aria-label="Custom module name"
+   811→                        />
+   812→                        <p className="text-[10.5px] leading-snug text-muted-foreground/85">
+   813→                          Hidden or beta module? Type its exact name — the run&apos;s module-load
+   814→                          guard verifies it on the cluster and reports an honest error if the
+   815→                          name is wrong. You can also verify it once in the cluster manager.
+   816→                        </p>
+   817→                      </div>
+   818→                    ) : probedModules.length === 0 ? (
+   819→                      <p className="text-[10.5px] leading-snug text-amber-600 dark:text-amber-400">
+   820→                        module not probed — Test the connection first (Remote clusters in the top bar),
+   821→                        or type the exact module name above.
+   822→                      </p>
+   823→                    ) : null}
+   824→                  </div>
+   825→                </div>
+   826→              </section>
+   827→
+   828→              {/* t326 — SECTION: how it runs. The mode is the structural
+   829→                  choice (it gates everything below), so it stopped being a
+   830→                  dropdown: two selectable cards, radiogroup semantics, the
+   831→                  Slurm card states its own unavailability instead of a
+   832→                  disabled option's parenthetical. t347 — one line per card
+   833→                  (icon + name + inline subtitle); the unavailability reason
+   834→                  also rides the Slurm card's title. */}
+   835→              <section className="space-y-2" data-section-mode="">
+   836→                <SectionLabel>Run mode</SectionLabel>
+   837→                <div
+   838→                  role="radiogroup"
+   839→                  aria-label="Run mode"
+   840→                  className="grid grid-cols-2 gap-2"
+   841→                  data-run-mode-cards=""
+   842→                >
+   843→                  <button
+   844→                    type="button"
+   845→                    role="radio"
+   846→                    aria-checked={mode === "direct"}
+   847→                    onClick={() => setMode("direct")}
+   848→                    onKeyDown={onModeCardKey}
+   849→                    className={cn(
+   850→                      "flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+   851→                      mode === "direct"
+   852→                        ? "border-primary/50 bg-primary/5 ring-1 ring-primary/25"
+   853→                        : "hover:bg-muted/50"
+   854→                    )}
+   855→                  >
+   856→                    <span
+   857→                      className={cn(
+   858→                        "flex shrink-0 items-center gap-1.5 text-sm font-medium",
+   859→                        mode === "direct" && "text-primary"
+   860→                      )}
+   861→                    >
+   862→                      <Terminal className="size-3.5" aria-hidden="true" />
+   863→                      Direct
+   864→                    </span>
+   865→                    <span className="min-w-0 flex-1 truncate text-[10.5px] leading-snug text-muted-foreground">
+   866→                      nohup on the login node
+   867→                    </span>
+   868→                  </button>
+   869→                  <button
+   870→                    type="button"
+   871→                    role="radio"
+   872→                    aria-checked={mode === "slurm"}
+   873→                    aria-disabled={!slurmAvailable}
+   874→                    onClick={() => slurmAvailable && setMode("slurm")}
+   875→                    onKeyDown={onModeCardKey}
+   876→                    title={
+   877→                      slurmAvailable
+   878→                        ? undefined
+   879→                        : "Slurm needs a scheduler client on the cluster — the connection probe found none, so only Direct (nohup on the login node) is offered."
+   880→                    }
+   881→                    className={cn(
+   882→                      "flex min-w-0 items-center gap-2 rounded-lg border px-3 py-2 text-left transition-colors",
+   883→                      mode === "slurm"
+   884→                        ? "border-primary/50 bg-primary/5 ring-1 ring-primary/25"
+   885→                        : "hover:bg-muted/50",
+   886→                      !slurmAvailable && "cursor-not-allowed opacity-60 hover:bg-transparent"
+   887→                    )}
+   888→                  >
+   889→                    <span
+   890→                      className={cn(
+   891→                        "flex shrink-0 items-center gap-1.5 text-sm font-medium",
+   892→                        mode === "slurm" && "text-primary"
+   893→                      )}
+   894→                    >
+   895→                      <Network className="size-3.5" aria-hidden="true" />
+   896→                      Slurm
+   897→                    </span>
+   898→                    <span className="min-w-0 flex-1 truncate text-[10.5px] leading-snug text-muted-foreground">
+   899→                      {slurmAvailable
+   900→                        ? "sbatch to the scheduler"
+   901→                        : "no Slurm client on this cluster"}
+   902→                    </span>
+   903→                  </button>
+   904→                </div>
+   905→              </section>
+   906→
+   907→              {/* t326 — the Slurm bundle: partition + GPU width + array
+   908→                  split live inside ONE bordered panel that exists only in
+   909→                  Slurm mode — the knobs and the mode that gates them share
+   910→                  a frame. */}
+   911→              {mode === "slurm" ? (
+   912→                <section
+   913→                  className="space-y-3 rounded-lg border bg-muted/30 p-3"
+   914→                  data-slurm-panel=""
+   915→                >
+   916→                  <SectionLabel>Slurm resources</SectionLabel>
+   917→
+   918→                  {/* t300 — the detected node picker: the probe's sinfo
+   919→                      inventory as submit targets. Each option is a node
+   920→                      group with its GPU/node figure + hostnames; picking
+   921→                      one pins the sbatch (--partition, plus --nodelist
+   922→                      when the group is a single node — "Auto" lets the
+   923→                      scheduler decide). */}
+   924→                  {partitionInventory.length > 0 ? (
+   925→                    <div className="space-y-1" data-node-picker-row="">
+   926→                      <p className="text-xs font-medium text-foreground/90">Node / partition</p>
+   927→                      {/* t338 — the box mirrors the usage-list pin: while a
+   928→                          node picked below pins the submission, THIS select
+   929→                          shows that node (not a stale "Auto"), and picking
+   930→                          anything here releases the pin — the field report
+   931→                          「选了节点后 node 框还是 auto」 was exactly this
+   932→                          missing mirror. */}
+   933→                      <Select
+   934→                        value={nodePin ? NODE_PIN_VALUE : partition}
+   935→                        onValueChange={(v) => {
+   936→                          if (v === NODE_PIN_VALUE) return; // already the pin
+   937→                          // any explicit dropdown pick speaks the LATER,
+   938→                          // more deliberate choice: the pin from the usage
+   939→                          // list stands down (Auto = scheduler decides
+   940→                          // again; a partition = the group's own nodes)
+   941→                          setPickedNode(null);
+   942→                          setPartition(v);
+   943→                        }}
+   944→                      >
+   945→                        <SelectTrigger className="h-8 text-sm" aria-label="Node or partition to submit to">
+   946→                          <SelectValue />
+   947→                        </SelectTrigger>
+   948→                        <SelectContent>
+   949→                          {nodePin ? (
+   950→                            <SelectItem value={NODE_PIN_VALUE} className="text-xs">
+   951→                              <span className="flex flex-col gap-0.5">
+   952→                                <span className="flex min-w-0 items-center gap-1.5">
+   953→                                  <MapPin className="size-3 shrink-0 text-primary" aria-hidden="true" />
+   954→                                  <span className="font-mono">{nodePin}</span>
+   955→                                  {/* t340 — the node's OWN partition rides the
+   956→                                      mirror (the usage row's Partitions= word),
+   957→                                      so the box speaks the same grammar as a
+   958→                                      group pick: WHERE the job lands, node and
+   959→                                      partition both named. */}
+   960→                                  {pickedNode?.partitions?.[0] ? (
+   961→                                    <span className="shrink-0 rounded border border-primary/40 bg-primary/10 px-1 font-mono text-[9.5px] leading-4 text-primary">
+   962→                                      {pickedNode.partitions[0]}
+   963→                                    </span>
+   964→                                  ) : null}
+   965→                                  <span className="text-muted-foreground">— pinned from the live list</span>
+   966→                                </span>
+   967→                                <span className="text-[10px] font-normal text-muted-foreground">
+   968→                                  exact node (--nodelist){pickedNode?.partitions?.[0] ? ` in partition ${pickedNode.partitions[0]} (--partition)` : " · partition unknown — the cluster default decides"} · picked in the usage list below · choose Auto or a group here to release
+   969→                                </span>
+   970→                              </span>
+   971→                            </SelectItem>
+   972→                          ) : null}
+   973→                          <SelectItem value={PARTITION_AUTO} className="text-xs">
+   974→                            <span className="flex flex-col gap-0.5">
+   975→                              <span>Auto — scheduler picks</span>
+   976→                              <span className="text-[10px] font-normal text-muted-foreground">
+   977→                                {conn?.slurmPartition
+   978→                                  ? `connection default: ${conn.slurmPartition}`
+   979→                                  : "the cluster's default partition"}
+   980→                              </span>
+   981→                            </span>
+   982→                          </SelectItem>
+   983→                          {partitionInventory.map((p) => (
+   984→                            <SelectItem key={p.partition} value={p.partition} className="text-xs">
+   985→                              <span className="flex flex-col gap-0.5">
+   986→                                <span className="flex min-w-0 items-center gap-1.5">
+   987→                                  <span className="font-mono">{p.partition}</span>
+   988→                                  {p.hosts && p.hosts.length > 0 ? (
+   989→                                    <span className="max-w-[180px] truncate font-mono text-[10px] text-muted-foreground">
+   990→                                      {p.hosts.slice(0, 3).join(", ")}
+   991→                                      {p.hosts.length > 3 ? ` +${p.hosts.length - 3}` : ""}
+   992→                                    </span>
+   993→                                  ) : null}
+   994→                                </span>
+   995→                                <span className="text-[10px] font-normal text-muted-foreground">
+   996→                                  {p.gpusPerNode} GPU/node · {p.nodes} node{p.nodes === 1 ? "" : "s"}
+   997→                                  {p.model ? ` · ${p.model}` : ""}
+   998→                                </span>
+   999→                              </span>
+  1000→                            </SelectItem>
+  1001→                          ))}
+  1002→                        </SelectContent>
+  1003→                      </Select>
+  1004→                      <p
+  1005→                        className="text-[10.5px] leading-snug text-muted-foreground/85"
+  1006→                        title={`Detected node groups from this cluster's sinfo — the pick lands the job there (--partition${
+  1007→                          selectedGroup && selectedGroup.hosts?.length === 1
+  1008→                            ? ", plus --nodelist pins the group's single node"
+  1009→                            : ""
+  1010→                        }). Or click a node in the live usage list below to pin that exact node — even one node inside a multi-host group. The pin submits with the node's own partition (--partition + --nodelist), the same composition a group pick writes.`}
+  1011→                      >
+  1012→                        sinfo groups — the pick lands there (<span className="font-mono">--partition</span>);
+  1013→                        click a node below to pin <span className="font-mono">--nodelist</span>.
+  1014→                      </p>
+  1015→                    </div>
+  1016→                  ) : null}
+  1017→
+  1018→                  {/* t327 — live node usage (the user's show_free_gpu.sh,
+  1019→                      promoted into the submit path): per-node GPU/CPU totals
+  1020→                      vs AllocTRES, from scontrol over SSH. Informational —
+  1021→                      it never gates the Send button. Sits under the
+  1022→                      partition picker it informs.
+  1023→                      t332 — the rows are PICKS: clicking one pins the
+  1024→                      submission to that node (--nodelist), the pick this
+  1025→                      dialog's partition dropdown could never express. */}
+  1026→                  {conn ? (
+  1027→                    <ClusterUsagePanel
+  1028→                      connectionId={conn.id}
+  1029→                      partition={partition === PARTITION_AUTO ? null : partition}
+  1030→                      ask={usageAsk}
+  1031→                      pinnedNode={nodePin}
+  1032→                      onPickNode={setPickedNode}
+  1033→                    />
+  1034→                  ) : null}
+  1035→
+  1036→                  {/* t347 — GPU width + Array split share one row when
+  1037→                      both exist (the array-eligible types' width truth is
+  1038→                      a short honesty box, a natural column mate; below sm
+  1039→                      the pair stacks). Alone, the GPU row keeps the full
+  1040→                      width. The rows themselves live in the gpuWidthRow /
+  1041→                      arrayRow variables above — same JSX, one seat each. */}
+  1042→                  {arrayEligible ? (
+  1043→                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+  1044→                      {gpuWidthRow}
+  1045→                      {arrayRow}
+  1046→                    </div>
+  1047→                  ) : (
+  1048→                    gpuWidthRow
+  1049→                  )}
+  1050→                </section>
+  1051→              ) : null}
+  1052→
+  1053→              {/* t326 — the submission preview: the sbatch directives
+  1054→                  these knobs actually produce (every flag shown is one
+  1055→                  the dispatch writes), plus the identity line the old
+  1056→                  footer squeezed into middots. The run-mode dialect line
+  1057→                  keeps its data-run-mode-line hook. */}
+  1058→              {conn ? (
+  1059→                <section className="space-y-1" data-submission-preview="">
+  1060→                  <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5">
+  1061→                    <SectionLabel>Submission</SectionLabel>
+  1062→                    <p className="text-[11px] text-muted-foreground" data-run-mode-line="">
+  1063→                      {mode === "slurm"
+  1064→                        ? `sbatch${conn.slurmPartition ? ` · ${conn.slurmPartition}` : ""}${
+  1065→                            logPick
+  1066→                              ? " · CPU (LoG picker)"
+  1067→                              : widthIsReal
+  1068→                                ? ` · ${gpus} GPU(s)`
+  1069→                                : widthTruth.gpus === 1
+  1070→                                  ? " · 1 GPU/task"
+  1071→                                  : " · CPU"
+  1072→                          }${arrayEligible && shards >= 2 ? ` · array 1-${shards}%4` : ""}`
+  1073→                        : "runs direct (no scheduler)"}
+  1074→                    </p>
+  1075→                  </div>
+  1076→                  <div className="overflow-x-auto rounded-md border bg-muted/40 px-3 py-2 font-mono text-[10.5px] leading-[1.6] text-muted-foreground">
+  1077→                    {mode === "slurm" ? (
+  1078→                      <>
+  1079→                        <p className="text-foreground/85">
+  1080→                          <span className="select-none" aria-hidden="true">$ </span>
+  1081→                          sbatch .cf-sbatch.sh
+  1082→                        </p>
+  1083→                        <p>#SBATCH {sbatchDirectives.join("  ")}</p>
+  1084→                        {!logPick && widthIsReal ? (
+  1085→                          <p>
+  1086→                            mpirun -n {mpiRankCount} …{" "}
+  1087→                            <span className="text-foreground/70">
+  1088→                              {gpus >= 2
+  1089→                                ? `--gpu 0 per rank — 1 CPU master + ${gpus} workers, one worker per card (CUDA_VISIBLE_DEVICES)`
+  1090→                                : "--gpu 0 — one rank on its card, no MPI split"}
+  1091→                            </span>
+  1092→                          </p>
+  1093→                        ) : widthTruth.gpus === 1 ? (
+  1094→                          <p>relion … --gpu 0 — one GPU task, no mpirun</p>
+  1095→                        ) : (
+  1096→                          <p>single CPU task — no mpirun, no --gpu</p>
+  1097→                        )}
+  1098→                      </>
+  1099→                    ) : (
+  1100→                      <p className="text-foreground/85">
+  1101→                        <span className="select-none" aria-hidden="true">$ </span>
+  1102→                        nohup … on the login node — no scheduler
+  1103→                      </p>
+  1104→                    )}
+  1105→                    <p className="mt-1.5 border-t pt-1.5 text-foreground/75">
+  1106→                      {conn.username}@{conn.host}
+  1107→                      {conn.port && conn.port !== 22 ? `:${conn.port}` : ""} ·{" "}
+  1108→                      {effectiveModule ? `module ${effectiveModule}` : "no module"}
+  1109→                    </p>
+  1110→                  </div>
+  1111→                </section>
+  1112→              ) : null}
+  1113→
+  1114→              {/* t326 — the lifecycle strip: what happens after Send, in
+  1115→                  four steps + the sync policy the old intro paragraph
+  1116→                  carried. t347 — ONE line; the sync policy rides the
+  1117→                  strip's title. */}
+  1118→              <div
+  1119→                className="rounded-lg border border-dashed bg-muted/20 px-3 py-2"
+  1120→                data-lifecycle-strip=""
+  1121→                title="STARs, logs and small images sync back automatically; bulky maps and particle stacks stay on the cluster — listed in Results, fetchable on demand."
+  1122→              >
+  1123→                <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+  1124→                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+  1125→                    <Upload className="size-3 shrink-0" aria-hidden="true" />
+  1126→                    Stage inputs
+  1127→                  </span>
+  1128→                  <ChevronRight className="size-3 shrink-0 text-muted-foreground/40" aria-hidden="true" />
+  1129→                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+  1130→                    <Package className="size-3 shrink-0" aria-hidden="true" />
+  1131→                    Load module
+  1132→                  </span>
+  1133→                  <ChevronRight className="size-3 shrink-0 text-muted-foreground/40" aria-hidden="true" />
+  1134→                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+  1135→                    <Play className="size-3 shrink-0" aria-hidden="true" />
+  1136→                    Run
+  1137→                  </span>
+  1138→                  <ChevronRight className="size-3 shrink-0 text-muted-foreground/40" aria-hidden="true" />
+  1139→                  <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+  1140→                    <HardDriveDownload className="size-3 shrink-0" aria-hidden="true" />
+  1141→                    Sync key files back
+  1142→                  </span>
+  1143→                </div>
+  1144→              </div>
+  1145→            </div>
+  1146→
+  1147→            <div className="flex items-center justify-end gap-2">
+  1148→              <Button variant="outline" size="sm" className="h-9 text-sm" onClick={() => setOpen(false)}>
+  1149→                Cancel
+  1150→              </Button>
+  1151→              <Button
+  1152→                size="sm"
+  1153→                className="h-9 gap-1.5 text-sm"
+  1154→                onClick={() => void submit()}
+  1155→                disabled={pending || !conn || (mode === "slurm" && !slurmAvailable)}
+  1156→              >
+  1157→                {pending ? (
+  1158→                  <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+  1159→                ) : (
+  1160→                  <Server className="size-3.5" aria-hidden="true" />
+  1161→                )}
+  1162→                {pending ? "Sending…" : "Send to cluster"}
+  1163→              </Button>
+  1164→            </div>
+  1165→          </>
+  1166→        )}
+  1167→
+  1168→        {/* empty-state deep link: the manager floats on top of this dialog */}
+  1169→        <RemoteClusterDialog
+  1170→          open={clusterOpen}
+  1171→          onOpenChange={(v) => {
+  1172→            setClusterOpen(v);
+  1173→            if (!v) reload(); // a connection may have just been created/probed
+  1174→          }}
+  1175→        />
+  1176→      </DialogContent>
+  1177→    </Dialog>
+  1178→  );
+  1179→}
+  1180→

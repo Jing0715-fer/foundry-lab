@@ -20,6 +20,7 @@ import { ResearchPanel } from "@/components/panels/research-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
 import { EnvironmentPanel } from "@/components/panels/environment-panel";
+import { ClusterPanel } from "@/components/panels/cluster-panel";
 import { PiCopilot } from "@/components/panels/pi-copilot";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
 import { CommandPalette } from "@/components/command-palette";
@@ -114,6 +115,12 @@ export default function Home() {
   // union doesn't include "environment", so the panel floats over the canvas
   // as a Sheet. Toggled from the Sidebar's "Environment" button.
   const [environmentOpen, setEnvironmentOpen] = React.useState(false);
+
+  // Cluster Sheet — same pattern as Environment. Hosts the Cluster Execution
+  // panel (SSH/HPC connections, probe, tool launcher, cluster jobs). Toggled
+  // from the Sidebar's "Cluster" button. Wider than Environment (sm:max-w-2xl)
+  // because the cluster panel shows probe grids + live job logs.
+  const [clusterOpen, setClusterOpen] = React.useState(false);
 
   // Boot sequence — runs once.
   React.useEffect(() => {
@@ -273,6 +280,8 @@ export default function Home() {
           onTogglePiCopilot={() => setPiCopilotOpen((o) => !o)}
           environmentOpen={environmentOpen}
           onToggleEnvironment={() => setEnvironmentOpen((o) => !o)}
+          clusterOpen={clusterOpen}
+          onToggleCluster={() => setClusterOpen((o) => !o)}
         />
         <main className="flex min-h-0 flex-1 flex-col">
           {activePanel === "canvas" && (
@@ -333,6 +342,23 @@ export default function Home() {
             missing ones.
           </SheetDescription>
           <EnvironmentPanel />
+        </SheetContent>
+      </Sheet>
+      {/* Cluster Sheet — left side like Environment, but wider (probe grids +
+      live remote log tails need the room). Hosts the Cluster Execution panel:
+      SSH connections, environment probe, the on-cluster tool launcher, and the
+      cluster job list with live polling. */}
+      <Sheet open={clusterOpen} onOpenChange={setClusterOpen}>
+        <SheetContent
+          side="left"
+          className="w-full gap-0 p-0 sm:max-w-2xl"
+        >
+          <SheetTitle className="sr-only">Cluster</SheetTitle>
+          <SheetDescription className="sr-only">
+            Run external tools on SSH-reachable HPC clusters — direct or via
+            Slurm — with live logs and automatic output sync-back.
+          </SheetDescription>
+          <ClusterPanel />
         </SheetContent>
       </Sheet>
       <CommandPalette />

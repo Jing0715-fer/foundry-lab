@@ -1,5 +1,7 @@
 // Shared TypeScript domain types for Foundry Lab.
 
+import type { ClusterJobInfoDTO } from "./cluster/types";
+
 export type AgentIcon =
   | "bot" | "flask-conical" | "dna" | "microscope" | "brain"
   | "calculator" | "atom" | "bug" | "leaf" | "beaker" | "cpu";
@@ -255,4 +257,7 @@ export interface ToolJobDTO {
   startedAt: string | null;
   finishedAt: string | null;
   createdAt: string;
+  /** Cluster-run projection — present when this job was dispatched to an
+   *  SSH-reachable cluster (connection, mode, phase, tails, synced files). */
+  cluster?: ClusterJobInfoDTO | null;
 }

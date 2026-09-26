@@ -95,8 +95,9 @@ function logExec(cmd: string) {
   log(`exec: ${shown}`);
 }
 
-function commandEnv(): Record<string, string> {
+function commandEnv(): NodeJS.ProcessEnv {
   return {
+    NODE_ENV: "production",
     PATH: MOCK_PATH,
     HOME,
     USER: AUTH_USER,
@@ -847,8 +848,17 @@ function planScheduler(raw: string):
   | { pure: EmuResult }
   | { rewritten: string; inlined: number }
   | null {
-  const cmd = String(raw ?? "").trim();
+  let cmd = String(raw ?? "").trim();
   if (!cmd || hasHeredoc(cmd)) return null;
+  // Existence probes for the emulated scheduler tools (`command -v sbatch`,
+  // `which squeue` …) must SUCCEED like on a real login node — the tools are
+  // JS-intercepted, not files on PATH, so rewrite them to an always-present
+  // binary. With `>/dev/null` this is a pure exit-code check; bare use prints
+  // bash's path (close enough for a test harness).
+  cmd = cmd.replace(
+    /(?:command\s+-v|which)\s+(sbatch|squeue|scancel|sacct|sinfo|nvidia-smi)\b/g,
+    "command -v bash",
+  );
   const pieces = splitPieces(cmd);
   if (!pieces.length) return null;
   let baseDir = FS_ROOT;

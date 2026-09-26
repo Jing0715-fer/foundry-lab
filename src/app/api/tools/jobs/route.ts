@@ -4,6 +4,7 @@
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { reconcileClusterJobs, clusterInfoForJob } from "@/lib/cluster/cluster-run";
 import type { ToolJobDTO, RunStatus } from "@/lib/types";
 
 function parseJsonObject(raw: string | null | undefined): Record<string, unknown> {
@@ -73,13 +74,28 @@ export function toToolJobDTO(j: {
   };
 }
 
+/** Attach the live cluster-run projection (`job.cluster`) when this job was
+ *  dispatched to a cluster. Shared with the [id] and stop routes. */
+export function enrichCluster(dto: ToolJobDTO): ToolJobDTO {
+  const info = clusterInfoForJob(dto.id);
+  return info ? { ...dto, cluster: info } : dto;
+}
+
 export async function GET() {
   try {
+    // Cluster sweep — reconcile remote job state (liveness verdicts, log
+    // tails, output sync-back) before listing. Bounded so a slow SSH round
+    // trip can never stall the poll endpoint; the sweep itself keeps running
+    // in the background either way.
+    await Promise.race([
+      reconcileClusterJobs(),
+      new Promise<void>((r) => setTimeout(r, 1200)),
+    ]).catch(() => {});
     const jobs = await db.toolJob.findMany({
       orderBy: { createdAt: "desc" },
       take: 50,
     });
-    return NextResponse.json(jobs.map(toToolJobDTO));
+    return NextResponse.json(jobs.map(toToolJobDTO).map(enrichCluster));
   } catch (err) {
     return NextResponse.json(
       { error: "Failed to list tool jobs", detail: (err as Error).message },

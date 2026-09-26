@@ -13,6 +13,7 @@ import {
   Flag,
   Box,
   X,
+  Server,
   Loader2,
   Play,
   Trash2,
@@ -291,6 +292,213 @@ function ParamRow({
   );
 }
 
+/** Minimal connection DTO shape used by the cluster target section. */
+interface ClusterConnLite {
+  id: string;
+  name: string;
+  username: string;
+  host: string;
+  useSlurm: boolean;
+  slurmPartition: string | null;
+  lastProbe: {
+    slurm: { partitions: { name: string; gpusPerNode: number }[] };
+  } | null;
+}
+
+/** Cluster dispatch section for tool nodes (comptool legacy + per-tool types).
+ *
+ * Manages the node's `_cluster` param (stored as a JSON STRING so it fits the
+ * string|number|boolean param surface). The workflow engine's
+ * extractClusterTarget parses it back and routes the tool run to the
+ * SSH cluster instead of local execution. */
+function ClusterTargetSection({
+  node,
+  onPatchParam,
+}: {
+  node: NodeDTO;
+  onPatchParam: (key: string, value: string | number | boolean) => void;
+}) {
+  // Lazy-load connections the first time the section is enabled.
+  const [connList, setConnList] = React.useState<ClusterConnLite[]>([]);
+  const [loaded, setLoaded] = React.useState(false);
+  const [connError, setConnError] = React.useState<string | null>(null);
+
+  const raw = (node.params as Record<string, unknown>)._cluster;
+  type ClusterTargetLite = { connectionId?: string; mode?: string; partition?: string };
+  let target: ClusterTargetLite | null = null;
+  if (typeof raw === "string" && raw.trim()) {
+    try { target = JSON.parse(raw) as ClusterTargetLite; } catch { target = null; }
+  } else if (raw && typeof raw === "object") {
+    target = raw as ClusterTargetLite;
+  }
+  const enabled = !!target?.connectionId;
+  const activeConn = connList.find((c) => c.id === target?.connectionId);
+  const partitions = activeConn?.lastProbe?.slurm?.partitions ?? [];
+
+  const loadConns = React.useCallback(async () => {
+    setLoaded(true);
+    try {
+      const res = await fetch("/api/cluster/connections", { cache: "no-store" });
+      const data = await res.json();
+      setConnList(Array.isArray(data.connections) ? data.connections : []);
+    } catch (e) {
+      setConnError(String(e));
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (enabled && !loaded) void loadConns();
+  }, [enabled, loaded, loadConns]);
+
+  const write = (next: { connectionId?: string; mode?: string; partition?: string } | null) => {
+    if (!next || !next.connectionId) {
+      onPatchParam("_cluster", "");
+      return;
+    }
+    onPatchParam("_cluster", JSON.stringify(next));
+  };
+
+  return (
+    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5 text-xs font-semibold">
+          <Server className="size-3.5 text-emerald-600" />
+          Run on cluster
+        </div>
+        <Switch
+          checked={enabled}
+          onCheckedChange={(on) => {
+            if (on) {
+              // Load connections first (async) so the first toggle-on can
+              // immediately persist a REAL connectionId — writing "" would
+              // self-disable the switch on the same frame.
+              void (async () => {
+                let list = connList;
+                if (!loaded || list.length === 0) {
+                  try {
+                    const res = await fetch("/api/cluster/connections", { cache: "no-store" });
+                    const data = await res.json();
+                    list = Array.isArray(data.connections) ? (data.connections as ClusterConnLite[]) : [];
+                    setConnList(list);
+                  } catch { /* connError surfaces in the section */ }
+                  setLoaded(true);
+                }
+                write({
+                  connectionId: list[0]?.id ?? "",
+                  mode: list[0]?.useSlurm ? "slurm" : "direct",
+                  partition: list[0]?.slurmPartition ?? undefined,
+                });
+              })();
+            } else {
+              write(null);
+            }
+          }}
+          aria-label="Run this tool on a cluster"
+        />
+      </div>
+
+      {enabled && (
+        <div className="mt-2.5 space-y-2">
+          {connError ? (
+            <p className="text-[11px] text-rose-600">Failed to load connections: {connError}</p>
+          ) : connList.length === 0 ? (
+            <p className="text-[11px] text-muted-foreground">
+              No cluster connections configured — add one in the Cluster panel
+              (sidebar → Cluster).
+            </p>
+          ) : (
+            <>
+              <div className="grid gap-1.5">
+                <label className="text-[11px] font-medium text-muted-foreground">Connection</label>
+                <Select
+                  value={target?.connectionId ?? ""}
+                  onValueChange={(v) => {
+                    const conn = connList.find((c) => c.id === v);
+                    write({
+                      connectionId: v,
+                      mode: target?.mode ?? (conn?.useSlurm ? "slurm" : "direct"),
+                      partition: target?.partition ?? conn?.slurmPartition ?? undefined,
+                    });
+                  }}
+                >
+                  <SelectTrigger size="sm"><SelectValue placeholder="Pick a connection" /></SelectTrigger>
+                  <SelectContent>
+                    {connList.map((c) => (
+                      <SelectItem key={c.id} value={c.id}>
+                        {c.name} ({c.username}@{c.host})
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => write({ ...target, connectionId: target?.connectionId ?? "", mode: "direct" })}
+                  className={cn(
+                    "rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+                    target?.mode === "direct"
+                      ? "border-emerald-500/60 bg-emerald-500/10 font-medium text-emerald-700 dark:text-emerald-300"
+                      : "border-border text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  Direct
+                  <span className="block text-[10px] font-normal">setsid on login node</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => write({ ...target, connectionId: target?.connectionId ?? "", mode: "slurm" })}
+                  className={cn(
+                    "rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+                    target?.mode === "slurm"
+                      ? "border-emerald-500/60 bg-emerald-500/10 font-medium text-emerald-700 dark:text-emerald-300"
+                      : "border-border text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  Slurm
+                  <span className="block text-[10px] font-normal">submit via sbatch</span>
+                </button>
+              </div>
+              {target?.mode === "slurm" && (
+                <div className="grid gap-1.5">
+                  <label className="text-[11px] font-medium text-muted-foreground">Partition</label>
+                  {partitions.length > 0 ? (
+                    <Select
+                      value={target?.partition ?? ""}
+                      onValueChange={(v) => write({ ...target, connectionId: target?.connectionId ?? "", partition: v })}
+                    >
+                      <SelectTrigger size="sm"><SelectValue placeholder="default" /></SelectTrigger>
+                      <SelectContent>
+                        {partitions.map((p) => (
+                          <SelectItem key={p.name} value={p.name}>
+                            {p.name}{p.gpusPerNode ? ` · ${p.gpusPerNode} GPU/N` : " · CPU"}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  ) : (
+                    <Input
+                      value={target?.partition ?? ""}
+                      onChange={(e) => write({ ...target, connectionId: target?.connectionId ?? "", partition: e.target.value })}
+                      placeholder="gpu"
+                      className="h-7 text-xs"
+                    />
+                  )}
+                </div>
+              )}
+              <p className="text-[10px] leading-relaxed text-muted-foreground">
+                Stored as the node&apos;s <code className="font-mono">_cluster</code> param — the
+                workflow engine stages inputs, submits over SSH, polls until the cluster job
+                finishes, and syncs outputs back here.
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Params tab content. */
 function ParamsTab({
   node,
@@ -306,8 +514,11 @@ function ParamsTab({
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const basic = spec.params.filter((p) => !p.advanced);
   const advanced = spec.params.filter((p) => p.advanced);
+  // Tool nodes (legacy comptool + per-tool types) get the cluster dispatch
+  // section beneath their params — routes the run to an SSH/HPC cluster.
+  const isToolNode = node.type === "comptool" || !!spec.toolKey;
 
-  if (spec.params.length === 0) {
+  if (spec.params.length === 0 && !isToolNode) {
     return (
       <div className="p-4 text-center text-xs text-muted-foreground">
         This node has no configurable parameters.
@@ -326,6 +537,9 @@ function ParamsTab({
           onPatchParam={onPatchParam}
         />
       ))}
+      {isToolNode && (
+        <ClusterTargetSection node={node} onPatchParam={onPatchParam} />
+      )}
       {advanced.length > 0 && (
         <Collapsible open={showAdvanced} onOpenChange={setShowAdvanced}>
           <CollapsibleTrigger asChild>

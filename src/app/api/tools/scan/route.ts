@@ -80,6 +80,7 @@ export async function GET() {
       description: engine.description,
       algorithms: engine.algorithms,
       serves: engine.serves,
+      provenance: engine.provenance ?? null,
       ok: t.ok,
       detail: t.detail,
     };

@@ -1,0 +1,904 @@
+     1→"use client";
+     2→
+     3→/**
+     4→ * Tools → Environment & Toolchain page (complete redesign).
+     5→ *
+     6→ * This panel is now an installation-status page for everything the app needs:
+     7→ *   ① Runtime dependencies  — python3 / numpy / scipy / biopython / git
+     8→ *      (with live version detection + one-click pip install when missing)
+     9→ *   ② Built-in real algorithm engines — the shipped Python science engines,
+    10→ *      each with a live self-test status + algorithm citations
+    11→ *   ③ External tools — the heavyweight upstream packages (RFdiffusion,
+    12→ *      ProteinMPNN, Rosetta…): native install status, one-click install with
+    13→ *      a live-streaming terminal, and which built-in engine serves as the
+    14→ *      real-algorithm fallback while the native tool is missing
+    15→ *   ④ Recent install jobs with their full logs.
+    16→ */
+    17→
+    18→import * as React from "react";
+    19→import {
+    20→  Wrench,
+    21→  RefreshCw,
+    22→  CheckCircle2,
+    23→  XCircle,
+    24→  Download,
+    25→  ExternalLink,
+    26→  Terminal,
+    27→  Loader2,
+    28→  ChevronDown,
+    29→  ChevronRight,
+    30→  Cpu,
+    31→  Boxes,
+    32→  PackageCheck,
+    33→  FlaskConical,
+    34→  Info,
+    35→} from "lucide-react";
+    36→import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+    37→import { Button } from "@/components/ui/button";
+    38→import { Badge } from "@/components/ui/badge";
+    39→import { Progress } from "@/components/ui/progress";
+    40→import {
+    41→  Dialog,
+    42→  DialogContent,
+    43→  DialogDescription,
+    44→  DialogHeader,
+    45→  DialogTitle,
+    46→} from "@/components/ui/dialog";
+    47→import { ScrollArea } from "@/components/ui/scroll-area";
+    48→import { useAppStore } from "@/lib/store";
+    49→import { PanelSkeleton } from "@/components/empty-state";
+    50→
+    51→// ── API types (mirror /api/tools/scan + /api/tools/install) ─────────────────
+    52→
+    53→interface RuntimeRow {
+    54→  key: string;
+    55→  label: string;
+    56→  description: string;
+    57→  installed: boolean;
+    58→  version: string | null;
+    59→  installMethod: string;
+    60→  installCommand: string;
+    61→  installLabel: string;
+    62→  docs: string;
+    63→  oneClick: boolean;
+    64→  sizeHint: string | null;
+    65→  category: string;
+    66→}
+    67→
+    68→interface EngineRow {
+    69→  key: string;
+    70→  label: string;
+    71→  script: string;
+    72→  description: string;
+    73→  algorithms: string[];
+    74→  serves: string[];
+    75→  ok: boolean;
+    76→  detail: string;
+    77→}
+    78→
+    79→interface ToolRow {
+    80→  key: string;
+    81→  label: string;
+    82→  category: string;
+    83→  description: string;
+    84→  installed: boolean;
+    85→  installMethod: string;
+    86→  installCommand: string;
+    87→  installLabel: string;
+    88→  docs: string;
+    89→  oneClick: boolean;
+    90→  sizeHint?: string;
+    91→  builtinEngine?: string;
+    92→  executorReady: boolean;
+    93→}
+    94→
+    95→interface ScanResponse {
+    96→  scannedAt: string;
+    97→  runtime: RuntimeRow[];
+    98→  engines: EngineRow[];
+    99→  tools: ToolRow[];
+   100→  summary: {
+   101→    runtime: { installed: number; total: number; coreReady: boolean; allReady: boolean };
+   102→    engines: { ok: number; total: number };
+   103→    tools: { nativeInstalled: number; total: number; withEngineFallback: number };
+   104→  };
+   105→  activeInstall: InstallJobDTO | null;
+   106→  recentInstalls: InstallJobDTO[];
+   107→}
+   108→
+   109→interface InstallJobDTO {
+   110→  id: string;
+   111→  key: string;
+   112→  label: string;
+   113→  command: string;
+   114→  status: "running" | "completed" | "failed";
+   115→  startedAt: string;
+   116→  finishedAt: string | null;
+   117→  exitCode: number | null;
+   118→  logs: string[];
+   119→}
+   120→
+   121→// ── Constants ────────────────────────────────────────────────────────────────
+   122→
+   123→const TOOL_CATEGORY_LABELS: Record<string, string> = {
+   124→  design: "De-novo Design",
+   125→  "inverse-folding": "Inverse Folding",
+   126→  "structure-prediction": "Structure Prediction",
+   127→  scoring: "Scoring & Analysis",
+   128→};
+   129→const TOOL_CATEGORY_ORDER = [
+   130→  "design",
+   131→  "inverse-folding",
+   132→  "structure-prediction",
+   133→  "scoring",
+   134→];
+   135→
+   136→const ENGINE_LABELS: Record<string, string> = {
+   137→  "engine-diffusion": "Backbone Diffusion",
+   138→  "engine-fold": "Structure Prediction",
+   139→  "engine-mpnn": "Inverse Folding",
+   140→  "engine-score": "Knowledge-Based Scoring",
+   141→  "engine-antibody": "Antibody Design",
+   142→};
+   143→
+   144→function timeAgo(iso: string): string {
+   145→  const then = new Date(iso).getTime();
+   146→  const s = Math.max(1, Math.round((Date.now() - then) / 1000));
+   147→  if (s < 60) return `${s}s ago`;
+   148→  const m = Math.round(s / 60);
+   149→  if (m < 60) return `${m}m ago`;
+   150→  const h = Math.round(m / 60);
+   151→  return `${h}h ago`;
+   152→}
+   153→
+   154→// ── Component ────────────────────────────────────────────────────────────────
+   155→
+   156→export function ToolsPanel() {
+   157→  const toast = useAppStore((s) => s.toast);
+   158→  const [scan, setScan] = React.useState<ScanResponse | null>(null);
+   159→  const [loading, setLoading] = React.useState(true);
+   160→  const [scanning, setScanning] = React.useState(false);
+   161→  const [scanError, setScanError] = React.useState<string | null>(null);
+   162→
+   163→  // Install dialog state.
+   164→  const [installJob, setInstallJob] = React.useState<InstallJobDTO | null>(null);
+   165→  const [installOpen, setInstallOpen] = React.useState(false);
+   166→  const [startingInstall, setStartingInstall] = React.useState<string | null>(null);
+   167→  const pollRef = React.useRef<ReturnType<typeof setInterval> | null>(null);
+   168→  const logBoxRef = React.useRef<HTMLDivElement>(null);
+   169→
+   170→  const runScan = React.useCallback(
+   171→    async (silent = false) => {
+   172→      if (!silent) setScanning(true);
+   173→      try {
+   174→        const res = await fetch("/api/tools/scan", { cache: "no-store" });
+   175→        if (!res.ok) throw new Error(`Scan failed (${res.status})`);
+   176→        const data = (await res.json()) as ScanResponse;
+   177→        setScan(data);
+   178→        setScanError(null);
+   179→      } catch (e) {
+   180→        setScanError((e as Error).message);
+   181→      } finally {
+   182→        setScanning(false);
+   183→        setLoading(false);
+   184→      }
+   185→    },
+   186→    [],
+   187→  );
+   188→
+   189→  React.useEffect(() => {
+   190→    void runScan();
+   191→  }, [runScan]);
+   192→
+   193→  // If a scan arrives with an active install job, surface it in the dialog.
+   194→  React.useEffect(() => {
+   195→    if (scan?.activeInstall && !installOpen) {
+   196→      setInstallJob(scan.activeInstall);
+   197→      setInstallOpen(true);
+   198→    }
+   199→  }, [scan?.activeInstall, installOpen]);
+   200→
+   201→  // Poll the open install job until it finishes.
+   202→  React.useEffect(() => {
+   203→    if (!installOpen || !installJob) {
+   204→      if (pollRef.current) clearInterval(pollRef.current);
+   205→      return;
+   206→    }
+   207→    if (installJob.status !== "running") {
+   208→      if (pollRef.current) clearInterval(pollRef.current);
+   209→      // One final scan to refresh statuses when an install finishes.
+   210→      if (pollRef.current || installJob.status === "completed") void runScan(true);
+   211→      return;
+   212→    }
+   213→    pollRef.current = setInterval(async () => {
+   214→      try {
+   215→        const res = await fetch(`/api/tools/install/${installJob.id}`, {
+   216→          cache: "no-store",
+   217→        });
+   218→        if (!res.ok) return;
+   219→        const job = (await res.json()) as InstallJobDTO;
+   220→        setInstallJob(job);
+   221→        if (job.status !== "running") {
+   222→          if (job.status === "completed") {
+   223→            toast({
+   224→              title: `${job.label} installed`,
+   225→              description: "Re-scanning environment…",
+   226→            });
+   227→          }
+   228→          void runScan(true);
+   229→        }
+   230→      } catch {
+   231→        /* transient poll failure — keep trying */
+   232→      }
+   233→    }, 1000);
+   234→    return () => {
+   235→      if (pollRef.current) clearInterval(pollRef.current);
+   236→    };
+   237→  }, [installOpen, installJob, runScan, toast]);
+   238→
+   239→  // Auto-scroll the install log.
+   240→  React.useEffect(() => {
+   241→    if (logBoxRef.current) {
+   242→      logBoxRef.current.scrollTop = logBoxRef.current.scrollHeight;
+   243→    }
+   244→  }, [installJob?.logs.length]);
+   245→
+   246→  const startInstall = React.useCallback(
+   247→    async (key: string, label: string) => {
+   248→      setStartingInstall(key);
+   249→      try {
+   250→        const res = await fetch("/api/tools/install", {
+   251→          method: "POST",
+   252→          headers: { "Content-Type": "application/json" },
+   253→          body: JSON.stringify({ key }),
+   254→        });
+   255→        const data = await res.json();
+   256→        if (!res.ok) {
+   257→          toast({
+   258→            title: "Cannot start install",
+   259→            description: data.error ?? "Unknown error",
+   260→            variant: "destructive",
+   261→          });
+   262→          return;
+   263→        }
+   264→        setInstallJob(data as InstallJobDTO);
+   265→        setInstallOpen(true);
+   266→      } catch (e) {
+   267→        toast({
+   268→          title: "Install request failed",
+   269→          description: (e as Error).message,
+   270→          variant: "destructive",
+   271→        });
+   272→      } finally {
+   273→        setStartingInstall(null);
+   274→      }
+   275→    },
+   276→    [toast],
+   277→  );
+   278→
+   279→  if (loading) {
+   280→    return (
+   281→      <div className="p-6">
+   282→        <PanelSkeleton count={4} />
+   283→      </div>
+   284→    );
+   285→  }
+   286→
+   287→  const summary = scan?.summary;
+   288→
+   289→  return (
+   290→    <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
+   291→      {/* ── Header ───────────────────────────────────────────────────────── */}
+   292→      <div className="flex flex-wrap items-start justify-between gap-3">
+   293→        <div className="space-y-1">
+   294→          <div className="flex items-center gap-2">
+   295→            <Wrench className="size-5 text-primary" />
+   296→            <h2 className="text-lg font-semibold tracking-tight">
+   297→              Environment &amp; Toolchain
+   298→            </h2>
+   299→          </div>
+   300→          <p className="text-sm text-muted-foreground">
+   301→            Installation status for every dependency the studio uses — runtime,
+   302→            built-in real algorithm engines, and external research tools.
+   303→            Uninstalled items with a{" "}
+   304→            <span className="font-medium text-foreground">Install</span> button
+   305→            support one-click installation.
+   306→          </p>
+   307→        </div>
+   308→        <Button
+   309→          variant="outline"
+   310→          size="sm"
+   311→          onClick={() => void runScan()}
+   312→          disabled={scanning}
+   313→        >
+   314→          {scanning ? (
+   315→            <Loader2 className="size-3.5 animate-spin" />
+   316→          ) : (
+   317→            <RefreshCw className="size-3.5" />
+   318→          )}
+   319→          Re-scan
+   320→        </Button>
+   321→      </div>
+   322→
+   323→      {scanError && (
+   324→        <Card className="border-destructive/40">
+   325→          <CardContent className="flex items-center gap-3 p-4 text-sm">
+   326→            <XCircle className="size-4 shrink-0 text-destructive" />
+   327→            <div className="flex-1">
+   328→              <p className="font-medium">Environment scan failed</p>
+   329→              <p className="text-muted-foreground">{scanError}</p>
+   330→            </div>
+   331→            <Button size="sm" variant="outline" onClick={() => void runScan()}>
+   332→              Retry
+   333→            </Button>
+   334→          </CardContent>
+   335→        </Card>
+   336→      )}
+   337→
+   338→      {/* ── Summary cards ────────────────────────────────────────────────── */}
+   339→      {scan && summary && (
+   340→        <div className="grid gap-3 sm:grid-cols-3">
+   341→          <SummaryCard
+   342→            icon={<Cpu className="size-4" />}
+   343→            title="Runtime"
+   344→            value={`${summary.runtime.installed}/${summary.runtime.total}`}
+   345→            caption={summary.runtime.coreReady ? "core ready" : "python3 + numpy required"}
+   346→            ok={summary.runtime.coreReady}
+   347→          />
+   348→          <SummaryCard
+   349→            icon={<Boxes className="size-4" />}
+   350→            title="Real algorithm engines"
+   351→            value={`${summary.engines.ok}/${summary.engines.total}`}
+   352→            caption={summary.engines.ok === summary.engines.total ? "all self-tests pass" : "self-test failures"}
+   353→            ok={summary.engines.ok === summary.engines.total}
+   354→          />
+   355→          <SummaryCard
+   356→            icon={<PackageCheck className="size-4" />}
+   357→            title="External tools (native)"
+   358→            value={`${summary.tools.nativeInstalled}/${summary.tools.total}`}
+   359→            caption={`${summary.tools.withEngineFallback} covered by built-in engines`}
+   360→            ok={summary.tools.withEngineFallback === summary.tools.total}
+   361→          />
+   362→        </div>
+   363→      )}
+   364→
+   365→      {/* ── ① Runtime dependencies ───────────────────────────────────────── */}
+   366→      {scan && (
+   367→        <section className="space-y-3" aria-labelledby="runtime-heading">
+   368→          <SectionHeader
+   369→            id="runtime-heading"
+   370→            icon={<Cpu className="size-4" />}
+   371→            title="Runtime Dependencies"
+   372→            count={scan.runtime.length}
+   373→            hint="Required by the built-in engines. Missing items can be installed with one click."
+   374→          />
+   375→          <div className="grid gap-3 md:grid-cols-2">
+   376→            {scan.runtime.map((r) => (
+   377→              <RuntimeCard
+   378→                key={r.key}
+   379→                row={r}
+   380→                onInstall={() => void startInstall(r.key, r.label)}
+   381→                installing={startingInstall === r.key}
+   382→              />
+   383→            ))}
+   384→          </div>
+   385→        </section>
+   386→      )}
+   387→
+   388→      {/* ── ② Built-in engines ──────────────────────────────────────────── */}
+   389→      {scan && (
+   390→        <section className="space-y-3" aria-labelledby="engines-heading">
+   391→          <SectionHeader
+   392→            id="engines-heading"
+   393→            icon={<FlaskConical className="size-4" />}
+   394→            title="Built-in Real Algorithm Engines"
+   395→            count={scan.engines.length}
+   396→            hint="Shipped Python science engines — every run is a real algorithm (Chou-Fasman, Miyazawa-Jernigan, Shrake-Rupley, NeRF, Metropolis MC). No neural-network weights needed."
+   397→          />
+   398→          <div className="space-y-3">
+   399→            {scan.engines.map((e) => (
+   400→              <EngineCard key={e.key} engine={e} />
+   401→            ))}
+   402→          </div>
+   403→        </section>
+   404→      )}
+   405→
+   406→      {/* ── ③ External tools ────────────────────────────────────────────── */}
+   407→      {scan && (
+   408→        <section className="space-y-3" aria-labelledby="external-heading">
+   409→          <SectionHeader
+   410→            id="external-heading"
+   411→            icon={<Wrench className="size-4" />}
+   412→            title="External Tools"
+   413→            count={scan.tools.length}
+   414→            hint="Heavyweight upstream packages. When the native tool is missing, the mapped built-in engine executes the same job with real algorithms — installs upgrade you to the native implementation."
+   415→          />
+   416→          {TOOL_CATEGORY_ORDER.map((cat) => {
+   417→            const rows = scan.tools.filter((t) => t.category === cat);
+   418→            if (!rows.length) return null;
+   419→            return (
+   420→              <div key={cat} className="space-y-2">
+   421→                <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+   422→                  {TOOL_CATEGORY_LABELS[cat] ?? cat}
+   423→                </h4>
+   424→                <div className="grid gap-3 md:grid-cols-2">
+   425→                  {rows.map((t) => (
+   426→                    <ToolCard
+   427→                      key={t.key}
+   428→                      row={t}
+   429→                      engines={scan.engines}
+   430→                      onInstall={() => void startInstall(t.key, t.label)}
+   431→                      installing={startingInstall === t.key}
+   432→                    />
+   433→                  ))}
+   434→                </div>
+   435→              </div>
+   436→            );
+   437→          })}
+   438→        </section>
+   439→      )}
+   440→
+   441→      {/* ── ④ Recent installs ───────────────────────────────────────────── */}
+   442→      {scan && scan.recentInstalls.length > 0 && (
+   443→        <RecentInstalls
+   444→          jobs={scan.recentInstalls}
+   445→          onOpen={(job) => {
+   446→            setInstallJob(job);
+   447→            setInstallOpen(true);
+   448→          }}
+   449→        />
+   450→      )}
+   451→
+   452→      {/* ── Install dialog (live terminal) ──────────────────────────────── */}
+   453→      <Dialog open={installOpen} onOpenChange={setInstallOpen}>
+   454→        <DialogContent className="max-w-2xl">
+   455→          <DialogHeader>
+   456→            <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
+   457→              <Terminal className="size-4" />
+   458→              Installing {installJob?.label ?? ""}
+   459→              {installJob && (
+   460→                <Badge
+   461→                  variant="outline"
+   462→                  className={
+   463→                    installJob.status === "running"
+   464→                      ? "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400"
+   465→                      : installJob.status === "completed"
+   466→                        ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+   467→                        : "border-rose-500/40 bg-rose-500/10 text-rose-700 dark:text-rose-400"
+   468→                  }
+   469→                >
+   470→                  {installJob.status}
+   471→                </Badge>
+   472→              )}
+   473→            </DialogTitle>
+   474→            <DialogDescription className="font-mono text-[11px] break-all">
+   475→              {installJob?.command}
+   476→            </DialogDescription>
+   477→          </DialogHeader>
+   478→          {installJob && (
+   479→            <div className="space-y-3">
+   480→              {installJob.status === "running" && (
+   481→                <Progress value={100} className="h-1 animate-pulse" />
+   482→              )}
+   483→              <div
+   484→                ref={logBoxRef}
+   485→                className="max-h-[50vh] overflow-y-auto rounded-md border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
+   486→                aria-live="polite"
+   487→              >
+   488→                {installJob.logs.map((line, i) => (
+   489→                  <div
+   490→                    key={i}
+   491→                    className={
+   492→                      line.includes("✔")
+   493→                        ? "text-emerald-400"
+   494→                        : line.includes("✘") || line.toLowerCase().includes("error")
+   495→                          ? "text-rose-400"
+   496→                          : undefined
+   497→                    }
+   498→                  >
+   499→                    {line}
+   500→                  </div>
+   501→                ))}
+   502→                {installJob.status === "running" && (
+   503→                  <div className="text-zinc-500">
+   504→                    <Loader2 className="mr-1 inline size-3 animate-spin" />
+   505→                    running…
+   506→                  </div>
+   507→                )}
+   508→              </div>
+   509→              <div className="flex justify-between text-[11px] text-muted-foreground">
+   510→                <span>
+   511→                  started {timeAgo(installJob.startedAt)}
+   512→                  {installJob.finishedAt && installJob.exitCode != null
+   513→                    ? ` · exit ${installJob.exitCode}`
+   514→                    : ""}
+   515→                </span>
+   516→                {installJob.status === "completed" && (
+   517→                  <span className="text-emerald-600 dark:text-emerald-400">
+   518→                    statuses refresh automatically after install
+   519→                  </span>
+   520→                )}
+   521→              </div>
+   522→            </div>
+   523→          )}
+   524→        </DialogContent>
+   525→      </Dialog>
+   526→    </div>
+   527→  );
+   528→}
+   529→
+   530→// ── Sub-components ──────────────────────────────────────────────────────────
+   531→
+   532→function SummaryCard({
+   533→  icon,
+   534→  title,
+   535→  value,
+   536→  caption,
+   537→  ok,
+   538→}: {
+   539→  icon: React.ReactNode;
+   540→  title: string;
+   541→  value: string;
+   542→  caption: string;
+   543→  ok: boolean;
+   544→}) {
+   545→  return (
+   546→    <Card>
+   547→      <CardContent className="flex items-center gap-3 p-4">
+   548→        <div
+   549→          className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${
+   550→            ok
+   551→              ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+   552→              : "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+   553→          }`}
+   554→        >
+   555→          {icon}
+   556→        </div>
+   557→        <div className="min-w-0 flex-1">
+   558→          <p className="text-xs text-muted-foreground">{title}</p>
+   559→          <p className="text-lg font-semibold leading-tight">{value}</p>
+   560→          <p className="truncate text-[11px] text-muted-foreground">{caption}</p>
+   561→        </div>
+   562→      </CardContent>
+   563→    </Card>
+   564→  );
+   565→}
+   566→
+   567→function SectionHeader({
+   568→  id,
+   569→  icon,
+   570→  title,
+   571→  count,
+   572→  hint,
+   573→}: {
+   574→  id: string;
+   575→  icon: React.ReactNode;
+   576→  title: string;
+   577→  count: number;
+   578→  hint: string;
+   579→}) {
+   580→  return (
+   581→    <div className="flex items-center gap-2">
+   582→      <span className="flex size-7 items-center justify-center rounded-md bg-muted text-muted-foreground">
+   583→        {icon}
+   584→      </span>
+   585→      <h3 id={id} className="text-sm font-semibold tracking-tight">
+   586→        {title}
+   587→        <span className="ml-2 text-xs font-normal text-muted-foreground">
+   588→          ({count})
+   589→        </span>
+   590→      </h3>
+   591→      <p className="hidden flex-1 truncate text-xs text-muted-foreground lg:block">
+   592→        — {hint}
+   593→      </p>
+   594→    </div>
+   595→  );
+   596→}
+   597→
+   598→function RuntimeCard({
+   599→  row,
+   600→  onInstall,
+   601→  installing,
+   602→}: {
+   603→  row: RuntimeRow;
+   604→  onInstall: () => void;
+   605→  installing: boolean;
+   606→}) {
+   607→  return (
+   608→    <Card className="overflow-hidden">
+   609→      <CardContent className="flex items-start gap-3 p-4">
+   610→        <div className="min-w-0 flex-1 space-y-1">
+   611→          <div className="flex flex-wrap items-center gap-2">
+   612→            <p className="text-sm font-medium">{row.label}</p>
+   613→            <StatusBadge installed={row.installed} />
+   614→            {row.installed && row.version && (
+   615→              <Badge variant="secondary" className="font-mono text-[10px]">
+   616→                {row.version}
+   617→              </Badge>
+   618→            )}
+   619→          </div>
+   620→          <p className="line-clamp-2 text-xs text-muted-foreground">
+   621→            {row.description}
+   622→          </p>
+   623→        </div>
+   624→        <div className="shrink-0">
+   625→          {!row.installed && row.oneClick ? (
+   626→            <Button size="sm" onClick={onInstall} disabled={installing}>
+   627→              {installing ? (
+   628→                <Loader2 className="size-3.5 animate-spin" />
+   629→              ) : (
+   630→                <Download className="size-3.5" />
+   631→              )}
+   632→              Install
+   633→            </Button>
+   634→          ) : !row.installed ? (
+   635→            <Button size="sm" variant="ghost" asChild>
+   636→              <a href={row.docs} target="_blank" rel="noreferrer">
+   637→                <ExternalLink className="size-3.5" />
+   638→                Docs
+   639→              </a>
+   640→            </Button>
+   641→          ) : null}
+   642→        </div>
+   643→      </CardContent>
+   644→    </Card>
+   645→  );
+   646→}
+   647→
+   648→function StatusBadge({ installed }: { installed: boolean }) {
+   649→  return installed ? (
+   650→    <Badge
+   651→      variant="outline"
+   652→      className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+   653→    >
+   654→      <CheckCircle2 className="size-3" />
+   655→      installed
+   656→    </Badge>
+   657→  ) : (
+   658→    <Badge
+   659→      variant="outline"
+   660→      className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+   661→    >
+   662→      <XCircle className="size-3" />
+   663→      missing
+   664→    </Badge>
+   665→  );
+   666→}
+   667→
+   668→function EngineCard({ engine }: { engine: EngineRow }) {
+   669→  const [open, setOpen] = React.useState(false);
+   670→  return (
+   671→    <Card className="overflow-hidden">
+   672→      <CardHeader
+   673→        className="cursor-pointer select-none py-3"
+   674→        onClick={() => setOpen((v) => !v)}
+   675→        role="button"
+   676→        tabIndex={0}
+   677→        onKeyDown={(e) => {
+   678→          if (e.key === "Enter" || e.key === " ") {
+   679→            e.preventDefault();
+   680→            setOpen((v) => !v);
+   681→          }
+   682→        }}
+   683→        aria-expanded={open}
+   684→      >
+   685→        <div className="flex flex-wrap items-center gap-2">
+   686→          {open ? (
+   687→            <ChevronDown className="size-3.5 text-muted-foreground" />
+   688→          ) : (
+   689→            <ChevronRight className="size-3.5 text-muted-foreground" />
+   690→          )}
+   691→          <CardTitle className="text-sm">{engine.label}</CardTitle>
+   692→          <Badge
+   693→            variant="outline"
+   694→            className={
+   695→              engine.ok
+   696→                ? "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+   697→                : "border-rose-500/40 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-400"
+   698→            }
+   699→          >
+   700→            {engine.ok ? "self-test PASS" : "self-test FAIL"}
+   701→          </Badge>
+   702→          <Badge variant="secondary" className="font-mono text-[10px]">
+   703→            {engine.script}
+   704→          </Badge>
+   705→          <div className="ml-auto flex flex-wrap gap-1">
+   706→            {engine.serves.map((s) => (
+   707→              <Badge key={s} variant="outline" className="text-[10px]">
+   708→                {s}
+   709→              </Badge>
+   710→            ))}
+   711→          </div>
+   712→        </div>
+   713→        {!open && (
+   714→          <CardDescription className="mt-1 line-clamp-1 text-xs">
+   715→            {engine.description}
+   716→          </CardDescription>
+   717→        )}
+   718→      </CardHeader>
+   719→      {open && (
+   720→        <CardContent className="space-y-3 border-t pt-3">
+   721→          <p className="text-xs text-muted-foreground">{engine.description}</p>
+   722→          <div>
+   723→            <p className="mb-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+   724→              Real algorithms &amp; published data
+   725→            </p>
+   726→            <ul className="space-y-1">
+   727→              {engine.algorithms.map((a) => (
+   728→                <li key={a} className="flex items-start gap-2 text-xs">
+   729→                  <span className="mt-1 size-1 shrink-0 rounded-full bg-primary" />
+   730→                  {a}
+   731→                </li>
+   732→              ))}
+   733→            </ul>
+   734→          </div>
+   735→          <p className="break-all rounded bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
+   736→            {engine.detail.slice(0, 160)}
+   737→            {engine.detail.length > 160 ? "…" : ""}
+   738→          </p>
+   739→        </CardContent>
+   740→      )}
+   741→    </Card>
+   742→  );
+   743→}
+   744→
+   745→function ToolCard({
+   746→  row,
+   747→  engines,
+   748→  onInstall,
+   749→  installing,
+   750→}: {
+   751→  row: ToolRow;
+   752→  engines: EngineRow[];
+   753→  onInstall: () => void;
+   754→  installing: boolean;
+   755→}) {
+   756→  const engine = engines.find((e) => e.key === row.builtinEngine);
+   757→  return (
+   758→    <Card className="overflow-hidden">
+   759→      <CardContent className="space-y-2 p-4">
+   760→        <div className="flex flex-wrap items-center gap-2">
+   761→          <p className="text-sm font-medium">{row.label}</p>
+   762→          {row.installed ? (
+   763→            <Badge
+   764→              variant="outline"
+   765→              className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+   766→            >
+   767→              <CheckCircle2 className="size-3" />
+   768→              native
+   769→            </Badge>
+   770→          ) : (
+   771→            <Badge
+   772→              variant="outline"
+   773→              className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+   774→            >
+   775→              <XCircle className="size-3" />
+   776→              not installed
+   777→            </Badge>
+   778→          )}
+   779→        </div>
+   780→        <p className="line-clamp-2 text-xs text-muted-foreground">
+   781→          {row.description}
+   782→        </p>
+   783→
+   784→        {/* Fallback engine row */}
+   785→        {engine && (
+   786→          <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-dashed px-2 py-1.5">
+   787→            <Info className="size-3 text-muted-foreground" />
+   788→            <span className="text-[11px] text-muted-foreground">
+   789→              Fallback:
+   790→            </span>
+   791→            <Badge
+   792→              variant="outline"
+   793→              className={
+   794→                engine.ok
+   795→                  ? "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+   796→                  : "border-rose-500/40 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-400"
+   797→              }
+   798→            >
+   799→              {ENGINE_LABELS[engine.key] ?? engine.key} · real algorithms
+   800→            </Badge>
+   801→          </div>
+   802→        )}
+   803→
+   804→        <div className="flex flex-wrap items-center gap-2 pt-1">
+   805→          {row.oneClick && !row.installed && (
+   806→            <Button size="sm" onClick={onInstall} disabled={installing}>
+   807→              {installing ? (
+   808→                <Loader2 className="size-3.5 animate-spin" />
+   809→              ) : (
+   810→                <Download className="size-3.5" />
+   811→              )}
+   812→              Install
+   813→              {row.sizeHint && (
+   814→                <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">
+   815→                  {row.sizeHint}
+   816→                </span>
+   817→              )}
+   818→            </Button>
+   819→          )}
+   820→          {row.installed && (
+   821→            <Badge variant="secondary" className="text-[10px]">
+   822→              native execution active
+   823→            </Badge>
+   824→          )}
+   825→          <Button size="sm" variant="ghost" asChild>
+   826→            <a href={row.docs} target="_blank" rel="noreferrer">
+   827→              <ExternalLink className="size-3.5" />
+   828→              Docs
+   829→            </a>
+   830→          </Button>
+   831→        </div>
+   832→      </CardContent>
+   833→    </Card>
+   834→  );
+   835→}
+   836→
+   837→function RecentInstalls({
+   838→  jobs,
+   839→  onOpen,
+   840→}: {
+   841→  jobs: InstallJobDTO[];
+   842→  onOpen: (job: InstallJobDTO) => void;
+   843→}) {
+   844→  const [open, setOpen] = React.useState(true);
+   845→  return (
+   846→    <section className="space-y-2" aria-labelledby="installs-heading">
+   847→      <div className="flex items-center gap-2">
+   848→        <button
+   849→          className="flex items-center gap-1 text-sm font-semibold tracking-tight"
+   850→          onClick={() => setOpen((v) => !v)}
+   851→        >
+   852→          {open ? (
+   853→            <ChevronDown className="size-3.5 text-muted-foreground" />
+   854→          ) : (
+   855→            <ChevronRight className="size-3.5 text-muted-foreground" />
+   856→          )}
+   857→          <span id="installs-heading">Recent Installs</span>
+   858→          <span className="text-xs font-normal text-muted-foreground">
+   859→            ({jobs.length})
+   860→          </span>
+   861→        </button>
+   862→      </div>
+   863→      {open && (
+   864→        <div className="max-h-72 overflow-y-auto">
+   865→          <div className="space-y-2">
+   866→            {jobs.map((job) => (
+   867→              <button
+   868→                key={job.id}
+   869→                className="flex w-full items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-muted/50"
+   870→                onClick={() => onOpen(job)}
+   871→              >
+   872→                <Terminal className="size-4 shrink-0 text-muted-foreground" />
+   873→                <div className="min-w-0 flex-1">
+   874→                  <p className="truncate text-sm font-medium">{job.label}</p>
+   875→                  <p className="truncate font-mono text-[11px] text-muted-foreground">
+   876→                    {job.command}
+   877→                  </p>
+   878→                </div>
+   879→                <div className="flex shrink-0 items-center gap-2">
+   880→                  <span className="text-[11px] text-muted-foreground">
+   881→                    {timeAgo(job.startedAt)}
+   882→                  </span>
+   883→                  <Badge
+   884→                    variant="outline"
+   885→                    className={
+   886→                      job.status === "running"
+   887→                        ? "border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+   888→                        : job.status === "completed"
+   889→                          ? "border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+   890→                          : "border-rose-500/40 bg-rose-500/10 text-[10px] text-rose-700 dark:text-rose-400"
+   891→                    }
+   892→                  >
+   893→                    {job.status}
+   894→                  </Badge>
+   895→                </div>
+   896→              </button>
+   897→            ))}
+   898→          </div>
+   899→        </div>
+   900→      )}
+   901→    </section>
+   902→  );
+   903→}
+   904→

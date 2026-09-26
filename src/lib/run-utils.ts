@@ -8,8 +8,11 @@ import {
   roundPrompt,
   summaryPrompt,
 } from "./agents";
-import { getCompTool, buildCommand, extractToolCalls } from "./tools";
+import { getCompTool, buildCommand, extractToolCalls, type CompToolDef } from "./tools";
 import { executeCompToolReal } from "./real-executor";
+import { db } from "@/lib/db";
+import { startClusterToolRun, reconcileClusterJobs, getRun } from "./cluster/cluster-run";
+import type { ClusterRunTarget } from "./cluster/types";
 import { resolve } from "path";
 import { runBio } from "./bio-tools";
 import type {
@@ -385,15 +388,65 @@ export async function runResearch(
   return { messages, report };
 }
 
+/** Validate a cluster run target from untrusted input (POST /api/tools/run
+ *  body.cluster, or a workflow node's `_cluster` param — string or object).
+ *  Returns null when the raw value carries no usable connectionId. */
+export function extractClusterTarget(raw: unknown): ClusterRunTarget | null {
+  if (raw == null) return null;
+  let obj: unknown = raw;
+  if (typeof raw === "string") {
+    if (!raw.trim()) return null;
+    try {
+      obj = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof obj !== "object" || Array.isArray(obj)) return null;
+  const o = obj as Record<string, unknown>;
+  const connectionId = typeof o.connectionId === "string" ? o.connectionId.trim() : "";
+  if (!connectionId) return null;
+
+  const target: ClusterRunTarget = {
+    connectionId,
+    mode: o.mode === "slurm" ? "slurm" : "direct",
+  };
+  if (typeof o.partition === "string" && o.partition.trim()) {
+    target.partition = o.partition.trim();
+  }
+  const int = (v: unknown, min: number): number | undefined => {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.max(min, Math.floor(n)) : undefined;
+  };
+  const gpus = int(o.gpus, 0);
+  if (gpus !== undefined) target.gpus = gpus;
+  const ntasks = int(o.ntasks, 1);
+  if (ntasks !== undefined) target.ntasks = ntasks;
+  const cpusPerTask = int(o.cpusPerTask, 1);
+  if (cpusPerTask !== undefined) target.cpusPerTask = cpusPerTask;
+  if (o.timeLimitMin === null) target.timeLimitMin = null;
+  else {
+    const timeLimitMin = int(o.timeLimitMin, 1);
+    if (timeLimitMin !== undefined) target.timeLimitMin = timeLimitMin;
+  }
+  return target;
+}
+
 /** Run a comp tool via the REAL execution engine (native → built-in real
- *  algorithm). Returns {summary, stdout, files, command}. */
+ *  algorithm). With opts.cluster, dispatch to the HPC cluster instead and
+ *  poll to completion — the workflow engine's canvas node stays "running"
+ *  until the remote job finishes. Returns {summary, stdout, files, command}. */
 export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
+  opts: { cluster?: ClusterRunTarget } = {},
 ): Promise<{ summary: string; stdout: string; files: string[]; command: string }> {
   const def = getCompTool(toolKey);
   if (!def) {
     return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "" };
+  }
+  if (opts.cluster) {
+    return executeCompToolOnCluster(def, toolKey, params, opts.cluster);
   }
   const workDir = resolve(process.cwd(), "outputs", toolKey, `wf-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
   const res = await executeCompToolReal(toolKey, params, workDir);
@@ -403,5 +456,125 @@ export async function executeCompTool(
     stdout: `$ ${res.command}\n${res.executor === "builtin-engine" ? "\n[built-in real algorithm engine]\n" : ""}${res.stdout}`,
     files: res.outputFiles.map((f) => f),
     command: res.command,
+  };
+}
+
+/** Cluster lane for workflow comptool nodes: create the ToolJob row, dispatch
+ *  fire-and-forget, then poll (sweep + row read) until the job settles —
+ *  synchronous completion from the caller's point of view. 30-minute ceiling. */
+async function executeCompToolOnCluster(
+  def: CompToolDef,
+  toolKey: string,
+  params: Record<string, unknown>,
+  target: ClusterRunTarget,
+): Promise<{ summary: string; stdout: string; files: string[]; command: string }> {
+  // (a) Job row first — its id keys the workDir, run record, and poll target.
+  let jobId: string;
+  try {
+    const job = await db.toolJob.create({
+      data: {
+        tool: toolKey,
+        params: JSON.stringify({
+          ...params,
+          _meta: {
+            executor: "cluster",
+            realToolUsed: true,
+            cluster: true,
+            connectionId: target.connectionId,
+            mode: target.mode,
+          },
+        }),
+        status: "running",
+        stdout: "",
+        stderr: "",
+        outputFiles: JSON.stringify([]),
+        triggeredBy: "workflow",
+        startedAt: new Date(),
+      },
+    });
+    jobId = job.id;
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return {
+      summary: `Cluster run failed: could not create job row (${msg})`,
+      stdout: `Cluster dispatch failed: ${msg}\n`,
+      files: [],
+      command: "",
+    };
+  }
+  const workDir = resolve(process.cwd(), "outputs", toolKey, jobId);
+
+  // (b) Dispatch (startClusterToolRun never throws; failures mark the row).
+  const started = await startClusterToolRun({ jobId, toolKey, params, workDir, target });
+  if (!started.ok) {
+    return {
+      summary: `Cluster run failed: ${started.error}`,
+      stdout: `Cluster dispatch failed: ${started.error}\n`,
+      files: [],
+      command: "",
+    };
+  }
+
+  // (c) Poll loop: sweep the cluster + read the row every 3s.
+  const deadline = Date.now() + 30 * 60 * 1000;
+  let lastTail = "";
+  while (Date.now() < deadline) {
+    await new Promise<void>((r) => setTimeout(r, 3000));
+    await reconcileClusterJobs().catch(() => {});
+
+    const row = await db.toolJob.findUnique({ where: { id: jobId } }).catch(() => null);
+    if (row) {
+      lastTail = row.stdout;
+      if (row.status === "completed" || row.status === "failed" || row.status === "cancelled") {
+        let files: string[] = [];
+        try {
+          const parsed = row.outputFiles ? JSON.parse(row.outputFiles) : [];
+          if (Array.isArray(parsed)) files = parsed.map(String);
+        } catch {
+          files = [];
+        }
+        const commandPrefix = row.command ? `$ ${row.command}\n` : "";
+        const stdout =
+          `${commandPrefix}[cluster run · job ${jobId}]\n${row.stdout}` +
+          (row.stderr ? `\n\n[stderr]\n${row.stderr}` : "");
+        const summary =
+          row.status === "completed"
+            ? def.resultSummary(params, row.stdout)
+            : row.status === "cancelled"
+              ? `Cluster run cancelled (job ${jobId}).`
+              : `Cluster run failed${row.exitCode != null ? ` (exit ${row.exitCode})` : ""} — see logs.`;
+        return { summary, stdout, files, command: row.command ?? "" };
+      }
+    } else {
+      // Row vanished (db reset) — fall back to the run record.
+      const run = getRun(jobId);
+      if (run) {
+        lastTail = run.logTailOut || lastTail;
+        if (run.phase === "done" || run.phase === "failed" || run.phase === "cancelled") {
+          return {
+            summary:
+              run.phase === "done"
+                ? def.resultSummary(params, run.logTailOut)
+                : `Cluster run ${run.phase} (job ${jobId}).`,
+            stdout: `$ ${run.command}\n[cluster run · job ${jobId}]\n${run.logTailOut}`,
+            files: run.syncedFiles,
+            command: run.command,
+          };
+        }
+      }
+    }
+  }
+
+  // Timeout — the remote job may genuinely still be running; report honestly
+  // instead of failing it (the user can watch/stop it from the Jobs panel).
+  const run = getRun(jobId);
+  const tail = lastTail || run?.logTailOut || "";
+  return {
+    summary:
+      `Cluster run still in progress after 30 minutes (job ${jobId}) — ` +
+      "watch it on the Tools → Jobs page.",
+    stdout: `$ ${run?.command ?? ""}\n[cluster run · job ${jobId} — poll timeout]\n${tail}`,
+    files: [],
+    command: run?.command ?? "",
   };
 }

@@ -1,0 +1,442 @@
+  2621→      L.push("fi");
+  2622→      // "none"/empty is CUDA's own word for NO device — count it as such
+  2623→      L.push('case "$CF_DEVICE_SET" in ""|none|NONE) CF_DEVICE_SET="" ;; esac');
+  2624→      L.push("CF_VISIBLE=0");
+  2625→      L.push('[ -n "$CF_DEVICE_SET" ] && CF_VISIBLE=$(echo "$CF_DEVICE_SET" | tr "," "\n" | grep -c .)');
+  2626→      L.push('if [ "$CF_VISIBLE" -ge 1 ] && [ "$CF_VISIBLE" -lt "$((CF_RANKS - 1))" ]; then');
+  2627→      L.push('  echo "CRYOFLOW_NOTE: this job asked for $((CF_RANKS - 1)) GPU worker(s) plus 1 CPU master but only $CF_VISIBLE GPU(s) are visible to it${CUDA_VISIBLE_DEVICES:+ (CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES)} — clamping to $CF_VISIBLE worker(s) + the master (two workers on one card exhaust its memory and hang the first Expectation step)"');
+  2628→      L.push("  CF_RANKS=$((CF_VISIBLE + 1))");
+  2629→      L.push("fi");
+  2630→      L.push('if [ "$CF_VISIBLE" -eq 0 ]; then');
+  2631→      L.push('  echo "CRYOFLOW_NOTE: this job cannot see any GPU from inside the allocation (no CUDA_VISIBLE_DEVICES, and nvidia-smi answered nothing) — running ONE rank instead of $CF_RANKS (1 master + $((CF_RANKS - 1)) workers): a pile-up needs two workers on one card, and that is the exact OOM this guard exists for. Give the compute image nvidia-smi (or a CUDA_VISIBLE_DEVICES grant) to use the full width (t345)"');
+  2632→      L.push("  CF_RANKS=1");
+  2633→      L.push("fi");
+  2634→      // the runtime truth the ranks read (post-clamp rank count + device
+  2635→      // set), written NEXT TO the launcher — a rank never depends on
+  2636→      // mpirun's environment forwarding (OpenMPI/MPICH forward by
+  2637→      // default, but a site wrapper with an env allowlist would silently
+  2638→      // strip CF_* and every rank would see every card again).
+  2639→      //
+  2640→      // t346 — the file now also carries the batch shell's FULL exported
+  2641→      // environment (`export -p`): PRRTE (OpenMPI 5 — the user's cluster
+  2642→      // runs prterun) does NOT guarantee environment forwarding to a
+  2643→      // non-MPI app like this launcher. A stripped rank used to lose
+  2644→      // PATH/RELION_*/LD_LIBRARY_PATH from `module load`, and `exec
+  2645→      // relion_refine …` died "command not found" before the first banner
+  2646→      // — the field shape: log silent, then failed, cards idle. The dump
+  2647→      // is taken AFTER module load + the t341 pin, and the launcher's own
+  2648→      // per-rank CUDA_VISIBLE_DEVICES override lands AFTER the source, so
+  2649→      // last-write-wins is the rank's own card. bash's `export -p` emits
+  2650→      // `declare -x` lines — valid bash, and the launcher IS bash.
+  2651→      L.push(`export -p > ${shQuote(remoteWorkdir + "/.cf-rank-env")}`);
+  2652→      L.push(`{ echo "CF_RANKS_NOW=$CF_RANKS"; echo "CF_DEVICE_SET=$CF_DEVICE_SET"; } >> ${shQuote(remoteWorkdir + "/.cf-rank-env")}`);
+  2653→      L.push("");
+  2654→      // the launcher itself — static content, regenerated every dispatch
+  2655→      // (the t333 wipe sweeps the old copy; a re-run rewrites it)
+  2656→      L.push(`cat > ${shQuote(remoteWorkdir + "/.cf-rank-launch.sh")} <<'CF_LAUNCH_EOF'`);
+  2657→      L.push("#!/bin/bash");
+  2658→      L.push('# t345 — the per-rank card pin. RELION\'s --gpu colon grammar did not');
+  2659→      L.push("# split ranks in the field (every rank landed on device 0); this");
+  2660→      L.push("# launcher hands each MPI rank its OWN CUDA_VISIBLE_DEVICES — one");
+  2661→      L.push("# entry of the job's device set, by rank index — and the relion argv");
+  2662→      L.push("# runs \"--gpu 0\" inside a world with exactly one visible card.");
+  2663→      // t346 — ${0%/*} is PURE BASH: under a stripped environment (PRRTE's
+  2664→      // non-forwarding world, the mpi-strip-env mock) there is no PATH and
+  2665→      // `dirname` would die before the env dump restores the world. mpirun
+  2666→      // launches the absolute path from our argv, so $0 always carries its
+  2667→      // directory.
+  2668→      L.push('case "$0" in */*) CF_LAUNCH_DIR="${0%/*}" ;; *) CF_LAUNCH_DIR="." ;; esac');
+  2669→      L.push('if [ -f "$CF_LAUNCH_DIR/.cf-rank-env" ]; then');
+  2670→      L.push('  . "$CF_LAUNCH_DIR/.cf-rank-env"');
+  2671→      L.push("fi");
+  2672→      L.push('R="${OMPI_COMM_WORLD_RANK:-${PMIX_RANK:-${PMI_RANK:-${SLURM_PROCID:-}}}}"');
+  2673→      L.push('RANKS_NOW="${CF_RANKS_NOW:-1}"');
+  2674→      L.push('if [ -z "$R" ] && [ "$RANKS_NOW" -ge 2 ]; then');
+  2675→      L.push('  echo "CRYOFLOW_ERR: the rank launcher could not read its MPI rank index (tried OMPI_COMM_WORLD_RANK, PMIX_RANK, PMI_RANK, SLURM_PROCID) — refusing to guess: every rank guessing 0 is exactly how they pile onto one card (t345)" >&2');
+  2676→      L.push("  exit 97");
+  2677→      L.push("fi");
+  2678→      L.push('if [ "$RANKS_NOW" -ge 2 ] && [ "${R:-0}" -ge 1 ]; then');
+  2679→      // t349 — worker ranks are 1..N-1 (rank 0 is RELION's CPU master,
+  2680→      // which never touches a card: data I/O, batch dispatch, the
+  2681→      // Maximization step). Worker r pins to the (r-1)-th entry of the
+  2682→      // quietest-first device set — one worker per card, every card
+  2683→      // earns a worker (the old n = width lane left the master's card
+  2684→      // idle: a 4-card job computed with 3).
+  2685→      L.push('  DEV="$(echo "${CF_DEVICE_SET:-}" | tr -d " " | cut -d, -f${R})"');
+  2686→      L.push('  if [ -z "$DEV" ]; then');
+  2687→      L.push('    echo "CRYOFLOW_ERR: the device set \"${CF_DEVICE_SET:-}\" names no card for worker rank ${R:-0} — refusing to run unpinned (unpinned ranks pile onto card 0, t345)" >&2');
+  2688→      L.push("    exit 96");
+  2689→      L.push("  fi");
+  2690→      L.push('  export CUDA_VISIBLE_DEVICES="$DEV"');
+  2691→      L.push('  echo "CRYOFLOW_RANK_BIND: rank ${R:-0} -> CUDA_VISIBLE_DEVICES=$DEV (worker — one worker per card, t349)"');
+  2692→      L.push('elif [ "$RANKS_NOW" -ge 2 ]; then');
+  2693→      L.push('  echo "CRYOFLOW_RANK_BIND: rank 0 (RELION master — CPU-only: batch dispatch + class reconstruction) -> no card pin; the workers own the cards (t349)"');
+  2694→      L.push("else");
+  2695→      L.push('  echo "CRYOFLOW_RANK_BIND: rank ${R:-0} -> CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-<as the node left it>} (single rank, t345)"');
+  2696→      L.push("fi");
+  2697→      // t346 — resolve the binary through the RESTORED environment: a
+  2698→      // rank whose PATH was stripped (PRRTE non-forwarding) still finds
+  2699→      // relion via the .cf-rank-env dump; an already-absolute $1 passes
+  2700→      // through command -v verbatim; a genuinely missing binary keeps its
+  2701→      // original name in the exec's own error (the honest verdict).
+  2702→      L.push('if [ "$#" -gt 0 ]; then');
+  2703→      L.push('  __cfbin="$(command -v -- "$1" 2>/dev/null || true)"');
+  2704→      L.push('  [ -n "$__cfbin" ] && set -- "$__cfbin" "${@:2}"');
+  2705→      L.push("fi");
+  2706→      L.push('exec "$@"');
+  2707→      L.push("CF_LAUNCH_EOF");
+  2708→      L.push(`chmod +x ${shQuote(remoteWorkdir + "/.cf-rank-launch.sh")}`);
+  2709→      L.push("");
+  2710→    } else {
+  2711→      // ---- t349 — single-rank GPU jobs: the quietest card, and array
+  2712→      // shards ROTATE. The t345 launcher owns the multi-rank case; the
+  2713→      // single-rank case used to run `--gpu 0` against whatever the node
+  2714→      // looked like — physical device 0 on clusters that grant --gres
+  2715→      // without device cgroups (exactly the field shape: concurrent array
+  2716→      // shards of one motioncorr all landing on card 0 while five cards
+  2717→      // idle). Two honest pins, both UNDER an unset-CVD guard so a
+  2718→      // cgroup-isolated cluster (or the t341 grant pin above, which runs
+  2719→      // FIRST) is never fought:
+  2720→      //   · an ARRAY task rotates: CUDA_VISIBLE_DEVICES = task_id % visible
+  2721→      //     cards — the %M concurrency cap spreads shards across cards
+  2722→      //     instead of stacking them;
+  2723→      //   · a lone single-GPU job takes the QUIETEST card (free memory
+  2724→      //     descending) — device 0 is everyone's default and the starved
+  2725→      //     one on a shared node.
+  2726→      // nvidia-smi absent → numbers fail their guards → no pin (t313
+  2727→      // fail-open: the job runs as the node left it, exactly as before).
+  2728→      L.push("# ---- t349: single-rank GPU pin — array shards rotate, loners take the quietest card ----");
+  2729→      L.push('if [ -z "${CUDA_VISIBLE_DEVICES:-}" ]; then');
+  2730→      L.push('  if [ -n "${SLURM_ARRAY_TASK_ID:-}" ]; then');
+  2731→      L.push('    CF_NGPU="$(nvidia-smi -L 2>/dev/null | grep -c "^GPU ")"');
+  2732→      L.push('    case "$CF_NGPU" in ""|*[!0-9]*) CF_NGPU=0 ;; esac');
+  2733→      L.push('    if [ "$CF_NGPU" -ge 2 ]; then');
+  2734→      L.push('      export CUDA_VISIBLE_DEVICES="$(( 10#${SLURM_ARRAY_TASK_ID} % CF_NGPU ))"');
+  2735→      L.push('      echo "CRYOFLOW_NOTE: array task ${SLURM_ARRAY_TASK_ID} pinned to GPU $CUDA_VISIBLE_DEVICES of $CF_NGPU visible — rotating concurrent shards across cards so they do not pile onto device 0 (t349)"');
+  2736→      L.push("    fi");
+  2737→      L.push("  else");
+  2738→      L.push('    CF_QUIET="$(nvidia-smi --query-gpu=index,memory.free --format=csv,noheader,nounits 2>/dev/null | sort -s -t, -k2 -nr | head -1 | cut -d, -f1 | tr -d " ")"');
+  2739→      L.push('    case "$CF_QUIET" in');
+  2740→      L.push('      ""|*[!0-9]*)');
+  2741→      L.push("        ;;");
+  2742→      L.push("      *)");
+  2743→      L.push('        export CUDA_VISIBLE_DEVICES="$CF_QUIET"');
+  2744→      L.push('        echo "CRYOFLOW_NOTE: single-GPU job with no CUDA_VISIBLE_DEVICES grant — pinned to GPU $CF_QUIET, the quietest card by free memory (device 0 is everyone\'s default and the first to starve, t349)"');
+  2745→      L.push("        ;;");
+  2746→      L.push("    esac");
+  2747→      L.push("  fi");
+  2748→      L.push("fi");
+  2749→      L.push("");
+  2750→    }
+  2751→    L.push("# ---- t342/t345: the starved-card refusal (fail in one second, not an hour) ----");
+  2752→    L.push("if command -v nvidia-smi >/dev/null 2>&1; then");
+  2753→    // t349 — the cards that matter are the WORKERS' (the first
+  2754→    // CF_RANKS-1 entries of the device set; the master is unpinned).
+  2755→    // A single-rank job keeps checking its one card.
+  2756→    // t387 — the VDAM single-rank lane's ONE process touches EVERY
+  2757→    // granted card (the comma device list), so the refusal checks them
+  2758→    // all, not just the first.
+  2759→    if (vdamSingle && gpus > 1) {
+  2760→      L.push(`  CF_WORKERS=${gpus}`);
+  2761→    } else {
+  2762→      L.push('  CF_WORKERS=$(( ${CF_RANKS:-1} - 1 )); [ "$CF_WORKERS" -lt 1 ] && CF_WORKERS=1');
+  2763→    }
+  2764→    L.push('  CF_CHECK_IDS=""');
+  2765→    L.push('  if [ -n "${CF_DEVICE_SET:-}" ]; then');
+  2766→    L.push('    CF_CHECK_IDS="$(echo "$CF_DEVICE_SET" | cut -d, -f1-$CF_WORKERS)"');
+  2767→    L.push('  elif [ -n "${CUDA_VISIBLE_DEVICES:-}" ]; then');
+  2768→    L.push('    CF_CHECK_IDS="$(echo "$CUDA_VISIBLE_DEVICES" | tr -d " " | cut -d, -f1-$CF_WORKERS)"');
+  2769→    L.push("  else");
+  2770→    L.push('    CF_CHECK_IDS="$(seq -s, 0 $(( CF_WORKERS - 1 )) )"');
+  2771→    L.push("  fi");
+  2772→    L.push('  CF_FREE_MB="$(nvidia-smi --id="$CF_CHECK_IDS" --query-gpu=memory.free --format=csv,noheader,nounits 2>/dev/null | sort -n | head -1 | tr -d " ")"');
+  2773→    L.push('  case "$CF_FREE_MB" in');
+  2774→    L.push('    ""|*[!0-9]*)');
+  2775→    L.push("      ;;");
+  2776→    L.push("    *)");
+  2777→    L.push('      if [ "$CF_FREE_MB" -lt 1000 ]; then');
+  2778→    L.push('        echo "CRYOFLOW_ERR: only ${CF_FREE_MB} MB free on the GPU(s) this job would use (${CF_CHECK_IDS}) — another process is holding the card(s):"');
+  2779→    L.push('        nvidia-smi --query-compute-apps=pid,process_name,used_memory --format=csv 2>/dev/null || true');
+  2780→    L.push('        echo "CRYOFLOW_ERR: refusing to launch — RELION would print \\"WARNING: Ignoring required free GPU memory\\" and stall at its first Expectation step. Kill or scancel the holder PIDs above (squeue -u $USER finds Slurm-owned ones), or pick a quieter partition, then re-run (t342)"');
+  2781→    L.push(`        mkdir -p ${shQuote(remoteWorkdir)} 2>/dev/null || true`);
+  2782→    L.push(`        echo 98 > ${shQuote(remoteWorkdir + "/.cf-exit")}`);
+  2783→    L.push("        exit 98");
+  2784→    L.push('      elif [ "$CF_FREE_MB" -lt 2000 ]; then');
+  2785→    L.push('        echo "CRYOFLOW_NOTE: only ${CF_FREE_MB} MB free on the GPU(s) this job will use (${CF_CHECK_IDS}) — the card is shared; RELION may run slow (the dispatch refuses below 1000 MB)"');
+  2786→    L.push("      fi");
+  2787→    L.push("      ;;");
+  2788→    L.push("  esac");
+  2789→    L.push("fi");
+  2790→    L.push("");
+  2791→    // t348 — the multi-rank log, explained AT the confusion. The field
+  2792→    // report: a healthy 6-rank 2D classification's run.out read as 「几个
+  2793→    // GPU 重复执行了同一个任务」 — six copies of every banner interleaved
+  2794→    // into one file. That is the MPI shape, not duplication: N independent
+  2795→    // processes each print their OWN copy of every RELION banner/report
+  2796→    // (noise spectra, accuracy estimates, "Expectation iteration 1 of 20"),
+  2797→    // while the WORK is split — the Expectation step divides the particles
+  2798→    // across ranks, the Maximization step divides the classes. The per-rank
+  2799→    // "mapped to device 0" is equally normal since t345: each rank's
+  2800→    // private CUDA_VISIBLE_DEVICES world holds exactly one card, so 0 IS
+  2801→    // its own card (the RANK_BIND receipts above name the physical truth).
+  2802→    // One echo, printed only when ≥2 ranks are really starting (after the
+  2803→    // starved-card gate, with the post-clamp count) — every future run
+  2804→    // self-documents instead of earning a ticket.
+  2805→    if (mpiRanks && mpiRanks > 1) {
+  2806→      L.push('if [ "${CF_RANKS:-1}" -ge 2 ]; then');
+  2807→      L.push(
+  2808→        `  echo "CRYOFLOW_NOTE: starting $CF_RANKS MPI ranks — 1 CPU master (data I/O, particle-batch dispatch, class reconstruction) plus $((CF_RANKS - 1)) workers, ONE WORKER PER CARD (RELION's own np = nGPU + 1 layout, t349). Every rank prints its OWN copy of the RELION banners and reports into this log; the work is SPLIT across the workers (particles in the Expectation step, classes in the Maximization step), NOT repeated. Each worker's 'device 0' is that worker's own card inside its private CUDA_VISIBLE_DEVICES world — the CRYOFLOW_RANK_BIND receipts name the physical cards (t348)"`
+  2809→      );
+  2810→      L.push("fi");
+  2811→      L.push("");
+  2812→    }
+  2813→  }
+  2814→  // t387 — the VDAM single-rank receipt: one process, every granted card
+  2815→  // (the tutorial's own recipe — "Number of MPI procs: 1" + "Which GPUs to
+  2816→  // use: 0,1,2,3" + threads). RELION's own banners that follow ("Will
+  2817→  // distribute threads over devices …" / "Thread i mapped to device j")
+  2818→  // are the live evidence the mapping took.
+  2819→  if (vdamSingle && gpus > 1) {
+  2820→    L.push(
+  2821→      `echo ${shQuote(
+  2822→        `CRYOFLOW_NOTE: this is a VDAM (gradient) refinement — ONE process over all ${gpus} granted card(s) (RELION 5 refuses --grad under MPI: \"Gradient refinement is not supported together with MPI. Please rerun with Number of MPI processes: 1\"; the tutorial's own recipe is 1 MPI proc + all GPUs + threads). The thread→device round-robin below (RELION's own \"mapped to device\" banners) is what puts the cards to work (t387)`
+  2823→      )}`
+  2824→    );
+  2825→    L.push("");
+  2826→  }
+  2827→  L.push("# ---- run ----");
+  2828→  // t313 — the CTF gate's receipt lands at the TOP of run.out (SBATCH
+  2829→  // --output captures the whole script's stdout)
+  2830→  if (note) L.push(`echo ${shQuote("CRYOFLOW_NOTE: " + note)}`);
+  2831→  // t367 — the walltime receipt, the same way: run.out's first lines tell
+  2832→  // the user what the clock allows BEFORE two hours of silence end in a
+  2833→  // kill. The absent-limit wording names the risk explicitly — a
+  2834→  // multi-hour refinement under an unknown default is the field report's
+  2835→  // exact death.
+  2836→  if (timeLimitMin && timeLimitMin > 0) {
+  2837→    L.push(
+  2838→      `echo ${shQuote(
+  2839→        `CRYOFLOW_WALLTIME: this submission requested --time=${slurmHms(timeLimitMin)} (t367) — the scheduler kills the job when it expires; compare it against the run's expected duration before worrying about a stall`
+  2840→      )}`
+  2841→    );
+  2842→  } else if (timeLimitWarn) {
+  2843→    // t369 — name the actual default when the probe read it: an unnamed
+  2844→    // clock the user cannot see is the t367 landmine all over again.
+  2845→    L.push(
+  2846→      `echo ${shQuote(
+  2847→        timeLimitDefaultMin && timeLimitDefaultMin > 0
+  2848→          ? `CRYOFLOW_WALLTIME: this submission requested NO explicit time limit — this partition's DEFAULT is ${slurmHms(timeLimitDefaultMin)} (sinfo), and the scheduler kills the job the moment it expires. A multi-hour run needs a longer limit: set one in the connection's Slurm settings (t367)`
+  2849→          : "CRYOFLOW_WALLTIME: this submission requested NO explicit time limit — the partition's DEFAULT walltime applies. If this run is multi-hour, a short default can kill it before its final outputs are written (set a time limit in the connection's Slurm settings, t367)"
+  2850→      )}`
+  2851→    );
+  2852→  }
+  2853→  L.push(`mkdir -p ${shQuote(remoteProjectRoot)}`);
+  2854→  // t316 — the RELION process runs from the PROJECT ROOT, exactly like the
+  2855→  // direct-mode wrapper above and the LOCAL engine (projectDirFor). The old
+  2856→  // `cd remoteWorkdir` made cwd == the --o directory, and RELION's runners
+  2857→  // build their scratch symlinks as `cwd + star-row` → `fn_out + star-row`
+  2858→  // — with cwd == fn_out both concatenations are the SAME string, a
+  2859→  // self-referencing symlink (the user's ticket: "Failed to make a symlink
+  2860→  // from X to X", filename.cpp:610, from == to verbatim). From the project
+  2861→  // root the two sides diverge (cwd row resolves through
+  2862→  // <projectRoot>/micrographs re-links; fn_out row lands in the workdir's
+  2863→  // mirror tree) — the pipeliner dialect, everywhere.
+  2864→  L.push(`cd ${shQuote(remoteProjectRoot)} || exit 111`);
+  2865→  L.push(`rm -f ${shQuote(remoteWorkdir + "/.cf-exit")}`);
+  2866→  // Exit-status contract (the poll's completion truth):
+  2867→  //   - natural completion: the explicit capture below writes the TRUE
+  2868→  //     status (0 included) — the last word;
+  2869→  //   - scancel's SIGTERM: the TERM/INT trap writes 143 (cancelled), and
+  2870→  //     the EXIT trap only speaks when rc != 0 — a TERM'ed bash otherwise
+  2871→  //     runs its EXIT trap with a stale $? == 0, which would forge a
+  2872→  //     success line for a job the user just killed (observed on GNU bash:
+  2873→  //     `bash -c 'trap "echo $?" EXIT; sleep N'` + kill → writes 0);
+  2874→  //   - SIGKILL / node loss: nothing is written → VANISHED → the honest
+  2875→  //     "interrupted remotely" path.
+  2876→  //   t306 — array tasks: the EXIT trap STANDS DOWN (one shard's failure
+  2877→  //     must not speak the verdict while its siblings still run — the
+  2878→  //     count gate below owns the word); the TERM/INT trap keeps writing
+  2879→  //     143 (a scancel hits ALL tasks; first writer wins, same word).
+  2880→  L.push(`trap 'echo 143 > ${shQuote(remoteWorkdir + "/.cf-exit")} 2>/dev/null; exit 143' TERM INT`);
+  2881→  L.push(
+  2882→    `trap '__rc=$?; [ "$__rc" -eq 0 ] || [ -n "${"${"}SLURM_ARRAY_TASK_ID:-}" ] || echo "$__rc" > ${shQuote(remoteWorkdir + "/.cf-exit")} 2>/dev/null' EXIT`
+  2883→  );
+  2884→  L.push(`set +e`);
+  2885→  // t306 — the array branch: each task slices its shard out of the input
+  2886→  // star (round-robin over the data-block rows — the optics block and the
+  2887→  // comments pass through untouched), runs the command with $SHARD as the
+  2888→  // input and $OSHARD as its own output subdir, appends its rc, and the
+  2889→  // LAST task home (the rc-file count gate) merges the shard output stars
+  2890→  // into the canonical one before writing .cf-exit. The RCF's name carries
+  2891→  // SLURM_ARRAY_JOB_ID so a re-run never reads a previous submission's
+  2892→  // tally, and the merge is tolerated-missing (a failed shard's star is
+  2893→  // simply absent — the verdict says FAILED anyway).
+  2894→  if (array) {
+  2895→    const N = array.total;
+  2896→    const W = remoteWorkdir;
+  2897→    L.push(`if [ -n "${"${"}SLURM_ARRAY_TASK_ID:-}" ]; then`);
+  2898→    L.push(`  SHARD="${W}/.cf-shard-$SLURM_ARRAY_TASK_ID.star"`);
+  2899→    L.push(`  RCF="${W}/.cf-array-rc-$SLURM_ARRAY_JOB_ID"`);
+  2900→    L.push(`  OSHARD="${W}/shard_$SLURM_ARRAY_TASK_ID"`);
+  2901→    L.push(`  mkdir -p "$OSHARD" || exit 111`);
+  2902→    L.push(`  awk -v s="$SLURM_ARRAY_TASK_ID" -v n=${N} '`);
+  2903→    L.push(`    /^data_/{block++; print; next}`);
+  2904→    L.push(`    /^loop_/{print; next}`);
+  2905→    L.push(`    /^_/{print; next}`);
+  2906→    L.push(`    block>=2 && NF>0 && $1 !~ /^#/{ if(idx % n == s-1) print; idx++; next }`);
+  2907→    L.push(`    { if(block<2) print }`);
+  2908→    // t334 — the slice failure is no longer a silent whole-STAR copy: the
+  2909→    // old `|| cp` fallback handed EVERY row to EVERY shard whenever the awk
+  2910→    // could not read its input, and N shards then wrote the same per-mic
+  2911→    // outputs into the shared tree at the same moment — the concurrent-
+  2912→    // writer collision behind image.h:1534. An unreadable star is a task
+  2913→    // failure that SPEAKS: the rc lands in the tally file (the count gate
+  2914→    // turns it into .cf-exit=111) and the reason lands in run.err.
+  2915→    L.push(
+  2916→      `  ' ${shQuote(array.inputStar)} > "$SHARD" 2>/dev/null || { echo "CRYOFLOW_ERR: could not slice the input STAR for shard $SLURM_ARRAY_TASK_ID — ${shQuote(array.inputStar)} unreadable on this node" >&2; echo "$SLURM_ARRAY_TASK_ID 111" >> "$RCF"; exit 111; }`
+  2917→    );
+  2918→    // t382 — the cluster-side extraction pre-flight: every task scans the
+  2919→    // FULL input star for colliding rows (duplicates / extension twins
+  2920→    // composing the same particle stack) before relion_preprocess starts —
+  2921→    // on the compute node, over the exact bytes the binary reads.
+  2922→    if (preflightStar) {
+  2923→      for (const line of extractPreflightLines(preflightStar, `'"$RCF"'`)) {
+  2924→        L.push(`  ${line}`);
+  2925→      }
+  2926→    }
+  2927→    L.push(`  ${command}`);
+  2928→    L.push(`  __rc=$?`);
+  2929→    L.push(`  echo "$SLURM_ARRAY_TASK_ID $__rc" >> "$RCF"`);
+  2930→    L.push(`  __done="$(wc -l < "$RCF" 2>/dev/null || true)"`);
+  2931→    L.push(`  if [ "${"${__done:-0}"}" -ge ${N} ]; then`);
+  2932→    // t307 — the count gate can fire in MORE THAN ONE task: two shards can
+  2933→    // append their rc and read the tally within the same breath, and two
+  2934→    // concurrent merges interleave their cp/append/mv until the canonical
+  2935→    // star lands TORN (observed live: a headerless 4-row fragment). Serialize
+  2936→    // the merge with flock — auto-released if a merger dies — and the loser
+  2937→    // finds .cf-exit already spoken and stands down. A login node without
+  2938→    // flock degrades to the old race (honest best effort, not a deadlock).
+  2939→    L.push(`    __locked=0`);
+  2940→    L.push(`    if command -v flock >/dev/null 2>&1; then`);
+  2941→    L.push(`      exec 9>>${shQuote(W + "/.cf-merge.lock")}`);
+  2942→    L.push(`      flock 9`);
+  2943→    L.push(`      __locked=1`);
+  2944→    L.push(`    fi`);
+  2945→    L.push(`    if [ "$__locked" = "0" ] || [ -z "$(cat ${shQuote(W + "/.cf-exit")} 2>/dev/null)" ]; then`);
+  2946→    if (array.merge === "coords") {
+  2947→      // t307 — autopick's canonical output is the micrographs/ COORD DIR,
+  2948→      // not a star: every shard's per-micrograph coordinate stars move home
+  2949→      // (names are per-micrograph, shards are disjoint, so nothing can
+  2950→      // overwrite anything). collectOutputs globs exactly these.
+  2951→      L.push(`    mkdir -p ${shQuote(W + "/micrographs")}`);
+  2952→      L.push(`    for __k in $(seq 1 ${N}); do`);
+  2953→      L.push(`      [ -d "${W}/shard_$__k/micrographs" ] && cp "${W}/shard_$__k"/micrographs/*_autopick.star "${W}/micrographs/" 2>/dev/null || true`);
+  2954→      L.push(`    done`);
+  2955→    } else {
+  2956→      // star (t306) / rows (t307): concatenate the shard stars into the
+  2957→      // canonical one. rows differs twice — the FIRST donor contributes its
+  2958→      // structure plus its own rewritten rows (its rows carry ../ paths
+  2959→      // too), and every appended donor contributes ONLY block>=2 rows (the
+  2960→      // optics block must never duplicate). The rewrite itself: ImageName =
+  2961→      // <idx>@<path>; when <path> starts with ../, drop it (the shared
+  2962→      // --part_dir put every stack in the canonical extra/ tree, so
+  2963→      // extra/… is the honest path relative to the merged star's dir).
+  2964→      // FS=OFS=tab: touching $1 makes awk rebuild $0 — without it the
+  2965→      // STAR's tab-separated columns would come back space-separated.
+  2966→      const rowsRewrite = `i=index($1,"@"); if(i>0 && substr($1,i+1,3)=="../") $1=substr($1,1,i) substr($1,i+4)`;
+  2967→      if (array.merge === "rows") {
+  2968→        L.push(`    __merged="${W}/${array.outStar}"`);
+  2969→        L.push(`    __have=0`);
+  2970→        L.push(`    for __k in $(seq 1 ${N}); do`);
+  2971→        L.push(`      __f="${W}/shard_$__k/${array.outStar}"`);
+  2972→        L.push(`      [ -f "$__f" ] || continue`);
+  2973→        L.push(`      if [ "$__have" = "0" ]; then`);
+  2974→        L.push(`        awk 'BEGIN{FS=OFS="\\t"}`);
+  2975→        L.push(`          /^data_/{block++; print; next}`);
+  2976→        L.push(`          /^loop_/{print; next}`);
+  2977→        L.push(`          /^_/{print; next}`);
+  2978→        L.push(`          /^#/{print; next}`);
+  2979→        L.push(`          block>=2 && NF>0{ ${rowsRewrite}; print; next }`);
+  2980→        L.push(`          {print}' "$__f" > "$__merged.cf-merge"`);
+  2981→        L.push(`        __have=1`);
+  2982→        L.push(`      else`);
+  2983→        L.push(`        awk 'BEGIN{FS=OFS="\\t"}`);
+  2984→        L.push(`          /^data_/{block++; next}`);
+  2985→        L.push(`          /^loop_/{next}`);
+  2986→        L.push(`          /^_/{next}`);
+  2987→        L.push(`          /^#/{next}`);
+  2988→        L.push(`          block>=2 && NF>0{ ${rowsRewrite}; print; next }`);
+  2989→        L.push(`          {next}' "$__f" >> "$__merged.cf-merge" 2>/dev/null || true`);
+  2990→        L.push(`      fi`);
+  2991→        L.push(`    done`);
+  2992→        L.push(`    [ "$__have" = "1" ] && mv "$__merged.cf-merge" "$__merged"`);
+  2993→      } else {
+  2994→        L.push(`    __merged="${W}/${array.outStar}"`);
+  2995→        L.push(`    __have=0`);
+  2996→        L.push(`    for __k in $(seq 1 ${N}); do`);
+  2997→        L.push(`      __f="${W}/shard_$__k/${array.outStar}"`);
+  2998→        L.push(`      [ -f "$__f" ] || continue`);
+  2999→        L.push(`      if [ "$__have" = "0" ]; then`);
+  3000→        L.push(`        cp "$__f" "$__merged.cf-merge"`);
+  3001→        L.push(`        __have=1`);
+  3002→        L.push(`      else`);
+  3003→        L.push(`        awk '!/^data_/ && !/^loop_/ && !/^_/ && !/^#/ && NF>0' "$__f" >> "$__merged.cf-merge" 2>/dev/null || true`);
+  3004→        L.push(`      fi`);
+  3005→        L.push(`    done`);
+  3006→        L.push(`    [ "$__have" = "1" ] && mv "$__merged.cf-merge" "$__merged"`);
+  3007→      }
+  3008→    }
+  3009→    L.push(`      __bad="$(awk '$2!=0{print $2; exit}' "$RCF" 2>/dev/null || true)"`);
+  3010→    L.push(`      echo "${"${__bad:-0}"}" > ${shQuote(W + "/.cf-exit")}`);
+  3011→    L.push(`    fi`);
+  3012→    L.push(`    rm -f "$RCF" "${W}"/.cf-shard-*.star "${W}/.cf-merge.lock"`);
+  3013→    L.push(`    [ "$__locked" = "1" ] && exec 9>&-`);
+  3014→    L.push(`  fi`);
+  3015→    L.push(`  exit "$__rc"`);
+  3016→    L.push(`fi`);
+  3017→  }
+  3018→  // t382 — the single-lane extraction pre-flight (same check the array
+  3019→  // tasks run): a duplicate row still duplicates the particles in the
+  3020→  // output star even without the race — the check pays for itself in
+  3021→  // both lanes. The EXIT trap writes the 111 verdict to .cf-exit.
+  3022→  if (preflightStar) {
+  3023→    for (const line of extractPreflightLines(preflightStar, null)) L.push(line);
+  3024→  }
+  3025→  L.push(command);
+  3026→  L.push(`__rc=$?`);
+  3027→  L.push(`echo "$__rc" > ${shQuote(remoteWorkdir + "/.cf-exit")}`);
+  3028→  L.push(`exit $__rc`);
+  3029→  return L.join("\n") + "\n";
+  3030→}
+  3031→
+  3032→/** A staging heartbeat older than this means the upload task is gone. */
+  3033→const STAGING_BEAT_STALE_MS = 120_000;
+  3034→
+  3035→/**
+  3036→ * Staging beat interval. 10s suits a real cluster (staging minutes, stale
+  3037→ * window 2min); a fast LOCAL rig stages in under one interval, so the beat
+  3038→ * would never land (t268's first run) — deployments and test rigs tune it
+  3039→ * with CF_STAGING_BEAT_MS without touching the ledger's stale math (any
+  3040→ * interval well under STAGING_BEAT_STALE_MS is safe).
+  3041→ */
+  3042→const STAGING_BEAT_MS = Math.max(500, Number(process.env.CF_STAGING_BEAT_MS) || 10_000);
+  3043→
+  3044→/**
+  3045→ * Staging heartbeat — the background staging task has no supervisor (it is
+  3046→ * void-spawned), so it touches the ledger every STAGING_BEAT_MS while alive.
+  3047→ * The poll sweep reads the beat to distinguish "still uploading" from "the
+  3048→ * task vanished without a trace" (a hung SSH exec used to strand the row in
+  3049→ * pending until the 30min fallback). Returns a stop() that is idempotent.
+  3050→ */
+  3051→function startStagingBeat(jobId: string): () => void {
+  3052→  const beat = setInterval(() => {
+  3053→    updateRun(jobId, (rec) =>
+  3054→      rec.remote && rec.remote.phase === "staging" && !rec.done
+  3055→        ? { ...rec, remote: { ...rec.remote, stagingBeat: Date.now() } }
+  3056→        : null
+  3057→    );
+  3058→  }, STAGING_BEAT_MS);
+  3059→  beat.unref?.();
+  3060→  let stopped = false;
+
+[showing lines 2621-3060 of 8193; use offset=3061 with limit to continue reading]

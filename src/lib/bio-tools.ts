@@ -163,7 +163,7 @@ async function blastGetHits(
     `${BLAST_BASE}?CMD=Get&FORMAT_TYPE=JSON2_S&RID=${encodeURIComponent(rid)}`,
     20000,
   )) as
-    | { BlastJSON2Output?: { report?: { results?: { search?: { hits?: BlastJson2Hit[] }[] }[] } }[] }
+    | { BlastJSON2Output?: { report?: { results?: { search?: { hits?: BlastJson2Hit[] } }[] }[] } }
     | null;
   if (!data) return null;
   const hitsRaw =

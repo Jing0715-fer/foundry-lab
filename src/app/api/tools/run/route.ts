@@ -19,6 +19,13 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { COMP_TOOLS, getCompTool } from "@/lib/tools";
 import { executeCompToolReal } from "@/lib/real-executor";
+import { extractClusterTarget } from "@/lib/run-utils";
+import { listConnections, getConnection } from "@/lib/cluster/connections";
+import {
+  startClusterToolRun,
+  clusterInfoForJob,
+  pendingClusterInfo,
+} from "@/lib/cluster/cluster-run";
 import { promises as fs } from "fs";
 import { join, resolve } from "path";
 import type { ToolJobDTO } from "@/lib/types";
@@ -83,6 +90,102 @@ export async function POST(request: Request) {
     typeof body.triggeredBy === "string" && body.triggeredBy ? body.triggeredBy : "user";
   const agentId =
     typeof body.agentId === "string" && body.agentId ? body.agentId : null;
+
+  // ── CLUSTER lane ────────────────────────────────────────────────────────
+  // body.cluster = { connectionId, mode, partition?, gpus?, … } → dispatch
+  // to an SSH-reachable HPC cluster. Fire-and-forget: the row is created in
+  // `running` state, startClusterToolRun stages + submits in the background,
+  // and the async reconcile sweep (triggered by the jobs poll endpoints)
+  // drives it to completed/failed. We answer 202 immediately.
+  const clusterTarget = extractClusterTarget(body.cluster);
+  if (body.cluster != null && !clusterTarget) {
+    return NextResponse.json(
+      { error: "Invalid cluster target — connectionId is required" },
+      { status: 400 },
+    );
+  }
+  if (clusterTarget) {
+    const conn = getConnection(clusterTarget.connectionId);
+    if (!conn) {
+      const available =
+        listConnections().map((c) => `${c.name} (${c.id})`).join(", ") ||
+        "none configured yet";
+      return NextResponse.json(
+        {
+          error:
+            `Cluster connection not found: ${clusterTarget.connectionId}. ` +
+            `Available connections: ${available}`,
+        },
+        { status: 400 },
+      );
+    }
+
+    let clusterJob;
+    try {
+      clusterJob = await db.toolJob.create({
+        data: {
+          tool,
+          params: JSON.stringify({
+            ...userParams,
+            _meta: {
+              executor: "cluster",
+              realToolUsed: true,
+              cluster: true,
+              connectionId: clusterTarget.connectionId,
+              mode: clusterTarget.mode,
+            },
+          }),
+          status: "running",
+          stdout: "",
+          stderr: "",
+          outputFiles: JSON.stringify([]),
+          triggeredBy,
+          agentId,
+          startedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      return NextResponse.json(
+        { error: "Failed to create tool job", detail: (err as Error).message },
+        { status: 500 },
+      );
+    }
+
+    const clusterWorkDir = join(OUTPUTS_ROOT, tool, clusterJob.id);
+    await fs.mkdir(clusterWorkDir, { recursive: true }).catch(() => {});
+
+    // Fire-and-forget dispatch — startClusterToolRun itself never throws and
+    // marks the row failed on any staging/submit error; this catch is a
+    // last-resort belt for truly unexpected crashes.
+    void startClusterToolRun({
+      jobId: clusterJob.id,
+      toolKey: tool,
+      params: userParams,
+      workDir: clusterWorkDir,
+      target: clusterTarget,
+    }).catch(async (e: unknown) => {
+      const msg = e instanceof Error ? e.message : String(e);
+      await db.toolJob
+        .update({
+          where: { id: clusterJob.id },
+          data: {
+            status: "failed",
+            stderr: `Cluster dispatch crashed: ${msg}`,
+            exitCode: 1,
+            finishedAt: new Date(),
+          },
+        })
+        .catch(() => {});
+    });
+
+    return NextResponse.json(
+      {
+        ...toToolJobDTO(clusterJob),
+        cluster: clusterInfoForJob(clusterJob.id) ?? pendingClusterInfo(conn, clusterTarget),
+      },
+      { status: 202 },
+    );
+  }
 
   // Phase 1 — create the row in `running` state so we have a stable jobId to
   // use for the workDir. If execution fails catastrophically, we still have a

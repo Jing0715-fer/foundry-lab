@@ -56,3 +56,13 @@ server.log
 /outputs/
 /external-tools/
 dev.log
+
+# cluster connection secrets + run-state (never commit)
+/data/
+
+# python bytecode
+__pycache__/
+*.pyc
+
+# cluster run-state / secrets
+data/cluster-*.json
