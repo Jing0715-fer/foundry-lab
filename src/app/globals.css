@@ -1,0 +1,656 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+/* --- Cryo Ice (light) ---------------------------------------------------- */
+:root {
+  --radius: 0.625rem;
+
+  --background: oklch(0.979 0.004 214);
+  --foreground: oklch(0.21 0.02 230);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.02 230);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.02 230);
+
+  --primary: oklch(0.615 0.108 186);
+  --primary-foreground: oklch(0.985 0.004 214);
+
+  --secondary: oklch(0.96 0.008 230);
+  --secondary-foreground: oklch(0.21 0.02 230);
+
+  --muted: oklch(0.96 0.006 230);
+  --muted-foreground: oklch(0.55 0.015 230);
+
+  --accent: oklch(0.95 0.025 186);
+  --accent-foreground: oklch(0.30 0.06 186);
+
+  --destructive: oklch(0.577 0.245 27.325);
+
+  --border: oklch(0.92 0.005 230);
+  --input: oklch(0.92 0.005 230);
+  --ring: oklch(0.615 0.108 186);
+
+  --chart-1: oklch(0.615 0.108 186);
+  --chart-2: oklch(0.55 0.13 260);
+  --chart-3: oklch(0.7 0.13 60);
+  --chart-4: oklch(0.65 0.18 350);
+  --chart-5: oklch(0.7 0.14 145);
+
+  --sidebar: oklch(0.985 0.004 230);
+  --sidebar-foreground: oklch(0.21 0.02 230);
+  --sidebar-primary: oklch(0.615 0.108 186);
+  --sidebar-primary-foreground: oklch(0.985 0.004 214);
+  --sidebar-accent: oklch(0.95 0.025 186);
+  --sidebar-accent-foreground: oklch(0.30 0.06 186);
+  --sidebar-border: oklch(0.92 0.005 230);
+  --sidebar-ring: oklch(0.615 0.108 186);
+}
+
+/* --- Deep Ice (dark) ----------------------------------------------------- */
+.dark {
+  --background: oklch(0.18 0.02 230);
+  --foreground: oklch(0.96 0.005 230);
+
+  --card: oklch(0.215 0.022 230);
+  --card-foreground: oklch(0.96 0.005 230);
+
+  --popover: oklch(0.215 0.022 230);
+  --popover-foreground: oklch(0.96 0.005 230);
+
+  --primary: oklch(0.72 0.13 186);
+  --primary-foreground: oklch(0.16 0.02 230);
+
+  --secondary: oklch(0.26 0.025 230);
+  --secondary-foreground: oklch(0.96 0.005 230);
+
+  --muted: oklch(0.26 0.02 230);
+  --muted-foreground: oklch(0.68 0.02 230);
+
+  --accent: oklch(0.30 0.06 186);
+  --accent-foreground: oklch(0.95 0.02 186);
+
+  --destructive: oklch(0.704 0.191 22.216);
+
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 15%);
+  --ring: oklch(0.72 0.13 186);
+
+  --chart-1: oklch(0.72 0.13 186);
+  --chart-2: oklch(0.66 0.14 260);
+  --chart-3: oklch(0.78 0.14 60);
+  --chart-4: oklch(0.7 0.19 350);
+  --chart-5: oklch(0.72 0.14 145);
+
+  --sidebar: oklch(0.215 0.022 230);
+  --sidebar-foreground: oklch(0.96 0.005 230);
+  --sidebar-primary: oklch(0.72 0.13 186);
+  --sidebar-primary-foreground: oklch(0.16 0.02 230);
+  --sidebar-accent: oklch(0.30 0.06 186);
+  --sidebar-accent-foreground: oklch(0.95 0.02 186);
+  --sidebar-border: oklch(1 0 0 / 10%);
+  --sidebar-ring: oklch(0.72 0.13 186);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* --- Canvas utility classes ---------------------------------------------- */
+
+/* Dot-grid background for the workflow canvas. */
+.canvas-grid {
+  background-image: radial-gradient(
+    color-mix(in oklch, var(--foreground) 16%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+}
+
+/* Marching-dash flow animation for live edges. */
+.edge-flow {
+  stroke-dasharray: 6 5;
+  animation: edge-dash-flow 0.7s linear infinite;
+}
+@keyframes edge-dash-flow {
+  to {
+    stroke-dashoffset: -11;
+  }
+}
+
+/* Rubber-band marching ants for in-progress edge draws. */
+.band-ants {
+  stroke-dasharray: 7 5;
+  animation: ants-march 0.6s linear infinite;
+}
+@keyframes ants-march {
+  to {
+    stroke-dashoffset: -12;
+  }
+}
+
+/* Soft card elevation used by node cards + panels. */
+.card-lift {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 6px 16px -4px rgba(0, 0, 0, 0.08);
+}
+
+/* Breathing halo for running job nodes. */
+.job-running {
+  animation: run-glow 2.1s ease-in-out infinite;
+}
+@keyframes run-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 0 oklch(0.72 0.13 186 / 0),
+      0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+  50% {
+    box-shadow:
+      0 0 0 4px oklch(0.72 0.13 186 / 0.12),
+      0 1px 2px rgba(0, 0, 0, 0.04);
+  }
+}
+
+/* Diagonal shimmer sweep for in-progress progress bars. */
+.progress-shimmer {
+  background-size: 200% 100%;
+  background-image: linear-gradient(
+    100deg,
+    transparent 20%,
+    color-mix(in oklch, var(--primary) 35%, transparent) 50%,
+    transparent 80%
+  );
+  animation: progress-sweep 1.4s linear infinite;
+}
+@keyframes progress-sweep {
+  to {
+    background-position: -200% 0;
+  }
+}
+
+/* --- Canvas polish utilities (Task 9-a) ----------------------------------- */
+
+/* Edge shadow filter for hover depth */
+.edge-glow { filter: drop-shadow(0 0 4px hsl(var(--primary) / 0.3)); }
+
+/* Node card hover transition */
+.card-hover { transition: box-shadow 200ms ease, border-color 200ms ease; }
+.card-hover:hover { box-shadow: 0 4px 12px -2px rgb(0 0 0 / 0.1); }
+
+/* Empty state animation */
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+.empty-state-icon { animation: float 3s ease-in-out infinite; }
+
+/* Inspector header accent */
+.inspector-accent { background: linear-gradient(180deg, hsl(var(--primary) / 0.05), transparent); }
+
+/* --- Reduced motion ------------------------------------------------------ */
+@media (prefers-reduced-motion: reduce) {
+  .edge-flow,
+  .band-ants,
+  .job-running,
+  .progress-shimmer,
+  .empty-state-icon {
+    animation: none !important;
+  }
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* --- Thin custom scrollbar for .overflow-y-auto -------------------------- */
+.overflow-y-auto {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--muted-foreground) 35%, transparent)
+    transparent;
+}
+.overflow-y-auto::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.overflow-y-auto::-webkit-scrollbar-track {
+  background: transparent;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb {
+  background-color: color-mix(
+    in oklch,
+    var(--muted-foreground) 35%,
+    transparent
+  );
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.overflow-y-auto::-webkit-scrollbar-thumb:hover {
+  background-color: color-mix(
+    in oklch,
+    var(--muted-foreground) 55%,
+    transparent
+  );
+}
+
+/* --- Task 13-b: polish + chart utilities --------------------------------- */
+
+/* Subtle pulse for running nodes (complements job-running halo) */
+@keyframes node-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 12%, transparent); }
+}
+.node-pulse-running { animation: node-pulse 2s ease-in-out infinite; }
+
+/* Fade-in for panel content */
+@keyframes fade-in-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.fade-in-up { animation: fade-in-up 0.3s ease-out; }
+
+/* Slide-in for toasts */
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(20px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+.slide-in-right { animation: slide-in-right 0.25s ease-out; }
+
+/* Shimmer for loading states.
+   Uses background-image (not the background shorthand) so it overlays any
+   existing background-color without replacing it — this lets the class be
+   reused on a tinted progress bar fill, a skeleton block, etc. */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.shimmer {
+  background-image: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--muted) 80%, transparent) 25%,
+    color-mix(in oklch, var(--accent) 70%, transparent) 50%,
+    color-mix(in oklch, var(--muted) 80%, transparent) 75%
+  );
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.5s infinite;
+}
+
+/* Card hover lift */
+.card-lift-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-lift-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 24px -4px rgb(0 0 0 / 0.12);
+}
+
+/* Gradient text for headers */
+.gradient-text {
+  background: linear-gradient(
+    135deg,
+    var(--primary),
+    var(--chart-2)
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+/* Gradient underline for header bottom border */
+.header-gradient-border {
+  position: relative;
+}
+.header-gradient-border::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in oklch, var(--primary) 35%, transparent) 30%,
+    color-mix(in oklch, var(--chart-2) 35%, transparent) 70%,
+    transparent 100%
+  );
+  pointer-events: none;
+}
+
+/* Subtle pulse for action buttons when a workflow is running */
+@keyframes btn-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in oklch, var(--primary) 0%, transparent); }
+  50% { box-shadow: 0 0 0 4px color-mix(in oklch, var(--primary) 18%, transparent); }
+}
+.btn-pulse-running { animation: btn-pulse 1.8s ease-in-out infinite; }
+
+/* Consistent keyboard-key styling for the footer shortcut hints.
+   Applied alongside utility classes — defines the shape + feel so
+   every kbd chip across the app renders identically. */
+kbd,
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: color-mix(in oklch, var(--muted) 80%, transparent);
+  border: 1px solid color-mix(in oklch, var(--muted-foreground) 25%, transparent);
+  box-shadow: 0 1px 0 color-mix(in oklch, var(--muted-foreground) 18%, transparent);
+  color: var(--foreground);
+}
+
+/* Extend reduced-motion to disable the new animations explicitly.
+   The generic block above already covers them defensively, but
+   we list them here so the intent is self-documenting. */
+@media (prefers-reduced-motion: reduce) {
+  .node-pulse-running,
+  .fade-in-up,
+  .slide-in-right,
+  .shimmer,
+  .card-lift-hover:hover,
+  .btn-pulse-running,
+  .edge-selected {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
+
+/* --- Task 15-b: edge animation polish ----------------------------------- */
+
+/* Edge selected pulse */
+@keyframes edge-selected-pulse {
+  0%, 100% { stroke-opacity: 1; }
+  50% { stroke-opacity: 0.6; }
+}
+.edge-selected { animation: edge-selected-pulse 1.5s ease-in-out infinite; }
+
+/* Edge label background */
+.edge-label-bg {
+  fill: var(--background);
+  stroke: var(--border);
+  stroke-width: 1;
+  rx: 4;
+}
+.edge-label-text {
+  fill: var(--muted-foreground);
+  font-size: 9px;
+  font-family: var(--font-mono);
+  text-anchor: middle;
+  dominant-baseline: middle;
+  pointer-events: none;
+}
+
+/* --- Task 16-a: node grouping + canvas polish --------------------------- */
+
+/* Subtle grid lines (in addition to the dot grid). Apply on top of
+   .canvas-grid by also adding .canvas-grid-lines to the same element. */
+.canvas-grid-lines {
+  background-image:
+    linear-gradient(
+      to right,
+      color-mix(in oklab, var(--foreground) 4%, transparent) 1px,
+      transparent 1px
+    ),
+    linear-gradient(
+      to bottom,
+      color-mix(in oklab, var(--foreground) 4%, transparent) 1px,
+      transparent 1px
+    );
+  background-size: 100px 100px;
+}
+
+/* Node card depth shadow — a layered, soft elevation that gives cards
+   a more professional, elevated appearance. The :hover variant adds a
+   subtle primary-tinted ring + a deeper shadow for affordance. */
+.node-shadow {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.04),
+    0 4px 12px -2px rgba(0, 0, 0, 0.08),
+    0 0 0 1px rgba(0, 0, 0, 0.02);
+}
+
+.node-shadow:hover {
+  box-shadow:
+    0 2px 4px rgba(0, 0, 0, 0.06),
+    0 8px 24px -4px rgba(0, 0, 0, 0.12),
+    0 0 0 1px color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+/* Group label pulse when active (applied to the small label chip on a
+   selected group overlay). */
+@keyframes group-active-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.7;
+  }
+}
+.group-active {
+  animation: group-active-pulse 2s ease-in-out infinite;
+}
+
+/* Disable the new animation under reduced-motion. The generic
+   reduced-motion block above already covers it defensively, but we
+   list it explicitly here for self-documentation. */
+@media (prefers-reduced-motion: reduce) {
+  .group-active {
+    animation: none !important;
+  }
+}
+
+/* --- Task 17-b: workflow scheduling + styling polish --------------------- */
+
+/* Node card hover glow — a primary-tinted ring + soft elevation that
+   complements the existing .node-shadow depth. Apply alongside .node-shadow
+   on the card body. */
+.node-glow-hover {
+  transition: box-shadow 0.3s ease, transform 0.2s ease;
+}
+.node-glow-hover:hover {
+  box-shadow:
+    0 0 0 1px color-mix(in oklab, var(--primary) 30%, transparent),
+    0 8px 24px -4px color-mix(in oklab, var(--primary) 15%, transparent);
+}
+
+/* Entrance animation for panels (e.g. inspector popovers, dialog sections). */
+@keyframes panel-enter {
+  from { opacity: 0; transform: translateY(12px) scale(0.99); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+.panel-enter { animation: panel-enter 0.35s cubic-bezier(0.16, 1, 0.3, 1); }
+
+/* Stagger animation for list items — pair with
+   `style={{ animationDelay: `${i * 30}ms` }}` on each <li>. */
+@keyframes stagger-in {
+  from { opacity: 0; transform: translateX(-8px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.stagger-in { animation: stagger-in 0.3s ease-out backwards; }
+
+/* Glass effect for floating elements (tooltips, popovers, command palette). */
+.glass {
+  background: color-mix(in oklab, var(--card) 80%, transparent);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+/* Smooth focus ring — apply alongside other focus styles for a consistent
+   primary-tinted focus halo on custom interactive elements. */
+.focus-ring {
+  transition: box-shadow 0.2s ease;
+}
+.focus-ring:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in oklab, var(--primary) 40%, transparent);
+  outline: none;
+}
+
+/* Disable the new animations under reduced-motion. The generic block at the
+   top of the file already covers them defensively, but we list them here so
+   the intent is self-documenting. */
+@media (prefers-reduced-motion: reduce) {
+  .node-glow-hover,
+  .node-glow-hover:hover,
+  .panel-enter,
+  .stagger-in,
+  .focus-ring,
+  .focus-ring:focus-visible {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+    box-shadow: none !important;
+  }
+}
+
+/* --- Task 18-b: marketplace + styling polish ----------------------------- */
+
+/* Card hover lift with a primary-tinted glow. Pairs nicely with .node-shadow
+   and .node-glow-hover on node cards, and gives marketplace tiles a tactile
+   "lift" affordance on hover. */
+.card-lift-glow {
+  transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 0.25s ease;
+}
+.card-lift-glow:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 12px 32px -8px
+    color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+/* Gradient border wrapper — a 1px ring rendered via the mask-composite trick
+   so the element's background stays clean (var(--card)) while the border
+   gradient fades primary → transparent across the diagonal. */
+.gradient-border {
+  position: relative;
+  background: var(--card);
+  border-radius: 12px;
+}
+.gradient-border::before {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, var(--primary), transparent 50%);
+  -webkit-mask: linear-gradient(#fff 0 0) content-box,
+    linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Shine sweep on hover — a translucent primary-tinted sheen that wipes
+   across the element once when the user hovers it. Used on marketplace
+   tiles to draw the eye toward the "Install" affordance. */
+@keyframes shine {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+.shine-on-hover {
+  position: relative;
+  overflow: hidden;
+}
+.shine-on-hover::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklab, var(--primary) 15%, transparent),
+    transparent
+  );
+  transform: translateX(-100%);
+  transition: none;
+  pointer-events: none;
+}
+.shine-on-hover:hover::after {
+  animation: shine 0.8s ease;
+}
+
+/* Badge pulse for "new" indicators (e.g. the Marketplace button's accent dot).
+   A gentle opacity + scale breath that catches the eye without being noisy. */
+@keyframes badge-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.05); }
+}
+.badge-pulse { animation: badge-pulse 2s ease-in-out infinite; }
+
+/* Disable the new Task 18-b animations under reduced-motion. The generic
+   block above covers them defensively, but we list them explicitly for
+   self-documentation. */
+@media (prefers-reduced-motion: reduce) {
+  .card-lift-glow,
+  .card-lift-glow:hover,
+  .shine-on-hover::after,
+  .shine-on-hover:hover::after,
+  .badge-pulse {
+    animation: none !important;
+    transition: none !important;
+    transform: none !important;
+  }
+}
