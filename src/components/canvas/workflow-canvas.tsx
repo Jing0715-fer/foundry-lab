@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import type { NodeDTO, NodeType, NodeSpec } from "@/lib/types";
 import { useAppStore, clampDrop } from "@/lib/store";
+import { useHistoryStore } from "@/lib/history-store";
 import {
   NODE_SPECS,
   CARD_W,
@@ -73,6 +74,9 @@ export function WorkflowCanvas() {
   const panState = React.useRef<{ startX: number; startY: number; vx: number; vy: number } | null>(null);
   const fetchedRef = React.useRef(false);
 
+  // Guard ref so undo/redo (which mutates the store) doesn't itself push history.
+  const isApplyingHistoryRef = React.useRef(false);
+
   const [createMenu, setCreateMenu] = React.useState<CreateMenuState | null>(null);
 
   // Group specs for the create menu (constant; safe to memoize once).
@@ -101,6 +105,92 @@ export function WorkflowCanvas() {
       }
     })();
   }, [workflow, setWorkflow]);
+
+  // --- History: subscribe to workflow changes — push the PREVIOUS state
+  // whenever an edge is removed (covers edges-layer delete chip, which is
+  // not in our owned file list). Node delete / edge connect / auto-arrange
+  // are handled by direct inline pushes in node-card.tsx and
+  // canvas-toolbar.tsx (the files that own those operations).
+  React.useEffect(() => {
+    const unsub = useAppStore.subscribe((state, prevState) => {
+      if (isApplyingHistoryRef.current) return;
+      const prevWf = prevState.workflow;
+      const curWf = state.workflow;
+      if (!prevWf || !curWf) return;
+      // Edge removed? (covers edges-layer delete chip)
+      if (curWf.edges.length < prevWf.edges.length) {
+        useHistoryStore.getState().push({
+          nodes: prevWf.nodes,
+          edges: prevWf.edges,
+          viewport: prevState.viewport,
+        });
+      }
+      // Node removed? (covers inspector/node-card delete)
+      if (curWf.nodes.length < prevWf.nodes.length) {
+        useHistoryStore.getState().push({
+          nodes: prevWf.nodes,
+          edges: prevWf.edges,
+          viewport: prevState.viewport,
+        });
+      }
+      // Node added? (covers palette click / empty-state chips / double-click create)
+      if (curWf.nodes.length > prevWf.nodes.length) {
+        useHistoryStore.getState().push({
+          nodes: prevWf.nodes,
+          edges: prevWf.edges,
+          viewport: prevState.viewport,
+        });
+      }
+      // Edge added? (covers port-connect)
+      if (curWf.edges.length > prevWf.edges.length) {
+        useHistoryStore.getState().push({
+          nodes: prevWf.nodes,
+          edges: prevWf.edges,
+          viewport: prevState.viewport,
+        });
+      }
+    });
+    return unsub;
+  }, []);
+
+  // --- Apply an undo/redo snapshot to the app store. --------------------
+  const applySnapshot = React.useCallback((snap: {
+    nodes: NodeDTO[];
+    edges: import("@/lib/types").EdgeDTO[];
+    viewport: { x: number; y: number; zoom: number };
+  }) => {
+    isApplyingHistoryRef.current = true;
+    const s = useAppStore.getState();
+    if (s.workflow) {
+      s.setWorkflow({ ...s.workflow, nodes: snap.nodes, edges: snap.edges });
+    }
+    s.setViewport(snap.viewport);
+    // Re-enable history tracking on the next macrotask so the synchronous
+    // store updates above don't themselves push history.
+    window.setTimeout(() => {
+      isApplyingHistoryRef.current = false;
+    }, 0);
+  }, []);
+
+  // --- Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z (or Ctrl+Y) redo. ---
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        const snap = useHistoryStore.getState().undo();
+        if (snap) applySnapshot(snap);
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        const snap = useHistoryStore.getState().redo();
+        if (snap) applySnapshot(snap);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [applySnapshot]);
 
   // --- Wheel: zoom-to-cursor (passive:false so we can preventDefault). -----
   React.useEffect(() => {

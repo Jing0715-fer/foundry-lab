@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTheme } from "next-themes";
-import { FlaskConical, Moon, Play, Sun, Github, Loader2 } from "lucide-react";
+import { FlaskConical, Moon, Play, Sun, Github, Loader2, CircleHelp } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/tooltip";
 import { WorkflowSwitcher } from "@/components/workflow-switcher";
 import { useAppStore } from "@/lib/store";
+import { useTourStore } from "@/components/onboarding-tour";
 
 /**
  * Top application bar.
@@ -112,6 +113,20 @@ export function Header() {
           )}
           <span className="hidden sm:inline">Run Workflow</span>
         </Button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => useTourStore.getState().start()}
+              aria-label="Restart onboarding tour"
+            >
+              <CircleHelp className="size-4" />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Restart onboarding tour</TooltipContent>
+        </Tooltip>
 
         <Tooltip>
           <TooltipTrigger asChild>

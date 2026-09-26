@@ -29,7 +29,9 @@ import {
   portsCompatible,
 } from "@/lib/workflow-catalog";
 import { canConnect, useAppStore, type PendingFrom } from "@/lib/store";
+import { useHistoryStore } from "@/lib/history-store";
 import { cn } from "@/lib/utils";
+import { motion } from "framer-motion";
 import {
   ContextMenu,
   ContextMenuContent,
@@ -208,6 +210,15 @@ function NodeCardImpl({ node }: NodeCardProps) {
         setPendingFrom(null);
         return;
       }
+      // Push history before creating the edge.
+      const s = useAppStore.getState();
+      if (s.workflow) {
+        useHistoryStore.getState().push({
+          nodes: s.workflow.nodes,
+          edges: s.workflow.edges,
+          viewport: s.viewport,
+        });
+      }
       const tempId = `tmp_${Math.random().toString(36).slice(2, 10)}`;
       const optimistic: EdgeDTO = {
         id: tempId,
@@ -329,6 +340,15 @@ function NodeCardImpl({ node }: NodeCardProps) {
   }, [node, upsertNode, toast]);
 
   const handleDelete = React.useCallback(async () => {
+    // Push history before removing the node.
+    const s = useAppStore.getState();
+    if (s.workflow) {
+      useHistoryStore.getState().push({
+        nodes: s.workflow.nodes,
+        edges: s.workflow.edges,
+        viewport: s.viewport,
+      });
+    }
     removeNode(node.id);
     try {
       const res = await fetch(`/api/workflow/nodes/${node.id}`, { method: "DELETE" });
@@ -370,13 +390,20 @@ function NodeCardImpl({ node }: NodeCardProps) {
             }}
           >
             {/* Card body */}
-            <div
+            <motion.div
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              transition={{ duration: 0.2 }}
               className={cn(
-                "card-hover relative h-full w-full overflow-hidden rounded-xl border bg-card shadow-sm hover:shadow-md",
+                "card-hover relative h-full w-full overflow-hidden rounded-xl border bg-card shadow-sm transition-all duration-200 hover:shadow-md hover:ring-2 hover:ring-primary/20",
                 isSelected ? "border-primary ring-2 ring-primary/40" : "border-border",
                 // Running pulse: border color pulses in addition to job-running glow.
                 status === "running" &&
                   "border-teal-500/60 animate-pulse",
+                // Subtle green glow for completed nodes.
+                status === "completed" && "ring-1 ring-emerald-500/30",
+                // Subtle red glow for failed nodes.
+                status === "failed" && "ring-1 ring-rose-500/30",
               )}
             >
               {/* Left color bar */}
@@ -385,15 +412,15 @@ function NodeCardImpl({ node }: NodeCardProps) {
               {/* Status badge (top-right corner) */}
               {status === "completed" && (
                 <span
-                  className="absolute right-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm"
+                  className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-emerald-500 text-white shadow-sm"
                   title="Completed"
                 >
-                  <Check className="size-3" />
+                  <Check className="size-3.5" />
                 </span>
               )}
               {status === "failed" && (
                 <span
-                  className="absolute right-1.5 top-1.5 flex size-4 items-center justify-center rounded-full bg-rose-500 text-white font-bold shadow-sm"
+                  className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-rose-500 text-white font-bold shadow-sm"
                   title="Failed"
                 >
                   !
@@ -426,7 +453,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
               <div className="flex min-w-0 items-center gap-1.5 px-3 pt-1">
                 <span
                   className={cn(
-                    "shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-medium uppercase tracking-wide",
+                    "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide",
                     STATUS_PILL[status] ?? STATUS_PILL.idle,
                   )}
                 >
@@ -479,7 +506,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   STATUS_STRIP[status] ?? STATUS_STRIP.idle,
                 )}
               />
-            </div>
+            </motion.div>
 
             {/* Input ports */}
             {inputs.map((port, i) => {

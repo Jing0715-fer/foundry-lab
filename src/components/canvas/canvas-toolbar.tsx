@@ -9,12 +9,16 @@ import {
   Play,
   Loader2,
   Crosshair,
+  Undo2,
+  Redo2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
+import { useHistoryStore } from "@/lib/history-store";
 import { ZOOM_MIN, ZOOM_MAX, CARD_W, CARD_H } from "@/lib/workflow-catalog";
 import { autoLayout } from "@/lib/canvas-utils";
+import type { NodeDTO, EdgeDTO } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -75,7 +79,7 @@ function ToolButton({
   );
 }
 
-/** Floating canvas toolbar: zoom, reset view, fit, auto-arrange, run-all. */
+/** Floating canvas toolbar: undo/redo, zoom, reset view, fit, auto-arrange, run-all. */
 export function CanvasToolbar() {
   const viewport = useAppStore((s) => s.viewport);
   const setViewport = useAppStore((s) => s.setViewport);
@@ -83,6 +87,12 @@ export function CanvasToolbar() {
   const workflow = useAppStore((s) => s.workflow);
   const upsertNode = useAppStore((s) => s.upsertNode);
   const toast = useAppStore((s) => s.toast);
+
+  // Reactive subscriptions for undo/redo availability.
+  const pastCount = useHistoryStore((s) => s.past.length);
+  const futureCount = useHistoryStore((s) => s.future.length);
+  const canUndo = pastCount > 0;
+  const canRedo = futureCount > 0;
 
   const ref = React.useRef<HTMLDivElement>(null);
   const [arranging, setArranging] = React.useState(false);
@@ -113,6 +123,33 @@ export function CanvasToolbar() {
   const onResetZoom = () => setViewport({ zoom: 1 });
   const onResetView = () => setViewport({ x: 120, y: 80, zoom: 1 });
 
+  // --- Undo / Redo --------------------------------------------------------
+  const applySnapshot = (snap: {
+    nodes: NodeDTO[];
+    edges: EdgeDTO[];
+    viewport: { x: number; y: number; zoom: number };
+  }) => {
+    const s = useAppStore.getState();
+    if (s.workflow) {
+      s.setWorkflow({ ...s.workflow, nodes: snap.nodes, edges: snap.edges });
+    }
+    s.setViewport(snap.viewport);
+  };
+
+  const onUndo = () => {
+    const snap = useHistoryStore.getState().undo();
+    if (!snap) return;
+    applySnapshot(snap);
+    toast({ title: "Undo" });
+  };
+
+  const onRedo = () => {
+    const snap = useHistoryStore.getState().redo();
+    if (!snap) return;
+    applySnapshot(snap);
+    toast({ title: "Redo" });
+  };
+
   const onFit = () => {
     if (nodes.length === 0) {
       onResetView();
@@ -125,6 +162,15 @@ export function CanvasToolbar() {
 
   const onAutoArrange = async () => {
     if (nodes.length === 0 || arranging) return;
+    // Push history before reflowing nodes.
+    const s = useAppStore.getState();
+    if (s.workflow) {
+      useHistoryStore.getState().push({
+        nodes: s.workflow.nodes,
+        edges: s.workflow.edges,
+        viewport: s.viewport,
+      });
+    }
     setArranging(true);
     try {
       const positions = autoLayout(nodes, edges);
@@ -201,6 +247,32 @@ export function CanvasToolbar() {
           "flex items-center gap-1 rounded-lg border bg-card p-1 shadow-sm",
         )}
       >
+        {/* Undo */}
+        <ToolButton
+          label="Undo (Ctrl+Z)"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onUndo}
+          disabled={!canUndo}
+        >
+          <Undo2 className="size-4" />
+        </ToolButton>
+
+        {/* Redo */}
+        <ToolButton
+          label="Redo (Ctrl+Shift+Z)"
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          onClick={onRedo}
+          disabled={!canRedo}
+        >
+          <Redo2 className="size-4" />
+        </ToolButton>
+
+        <Separator orientation="vertical" className="mx-1 h-6 bg-border/70" />
+
         {/* Zoom-out */}
         <ToolButton
           label="Zoom out"

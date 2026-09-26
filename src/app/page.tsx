@@ -247,7 +247,7 @@ export default function Home() {
   useKeyboardShortcuts(shortcuts);
 
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex h-dvh flex-col overflow-hidden">
       <Header />
       <div className="flex min-h-0 flex-1">
         <Sidebar />

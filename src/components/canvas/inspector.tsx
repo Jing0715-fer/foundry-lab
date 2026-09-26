@@ -22,6 +22,7 @@ import {
 
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
+import { useHistoryStore } from "@/lib/history-store";
 import { NODE_COLORS, nodeSpec } from "@/lib/workflow-catalog";
 import type { NodeDTO, NodeSpec, ParamSchema, AgentDTO } from "@/lib/types";
 import { Input } from "@/components/ui/input";
@@ -549,6 +550,15 @@ function NodeInspectorImpl() {
   };
 
   const onDelete = async () => {
+    // Push history before removing the node.
+    const s = useAppStore.getState();
+    if (s.workflow) {
+      useHistoryStore.getState().push({
+        nodes: s.workflow.nodes,
+        edges: s.workflow.edges,
+        viewport: s.viewport,
+      });
+    }
     try {
       await fetch(`/api/workflow/nodes/${node.id}`, { method: "DELETE" });
     } catch {

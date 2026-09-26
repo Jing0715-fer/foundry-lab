@@ -27,9 +27,13 @@ export function AgentChatDrawer({
   const [messages, setMessages] = React.useState<ChatMessageDTO[]>([]);
   const [input, setInput] = React.useState("");
   const [loading, setLoading] = React.useState(false);
+  const [streamingStarted, setStreamingStarted] = React.useState(false);
   const [agent, setAgent] = React.useState<AgentDTO | null>(null);
   const [atTop, setAtTop] = React.useState(true);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
+  // Tracks the id of the in-flight assistant placeholder message that we
+  // stream deltas into. Cleared once the server returns the real id.
+  const streamingPlaceholderIdRef = React.useRef<string | null>(null);
   const agents = useAppStore((s) => s.agents);
   const toast = useAppStore((s) => s.toast);
   const MAX_CHARS = 2000;
@@ -79,36 +83,131 @@ export function AgentChatDrawer({
       content: text,
       createdAt: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, optimisticUser]);
+    const placeholderId = `stream-${Date.now()}`;
+    streamingPlaceholderIdRef.current = placeholderId;
+    setMessages((prev) => [
+      ...prev,
+      optimisticUser,
+      {
+        id: placeholderId,
+        agentId,
+        role: "assistant",
+        content: "",
+        createdAt: new Date().toISOString(),
+      },
+    ]);
     setInput("");
     setLoading(true);
+    setStreamingStarted(false);
+
+    let accumulated = "";
+    let firstDeltaArrived = false;
+
+    const patchPlaceholder = (patch: Partial<ChatMessageDTO>) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === placeholderId ? { ...m, ...patch } : m,
+        ),
+      );
+    };
+
     try {
-      const res = await fetch(`/api/agents/${agentId}/chat`, {
+      const res = await fetch(`/api/agents/${agentId}/chat/stream`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ message: text }),
       });
-      if (!res.ok) {
+      if (!res.ok || !res.body) {
         const err = await res.json().catch(() => ({}));
-        throw new Error(err?.error ?? `HTTP ${res.status}`);
+        throw new Error(
+          (err as { error?: string })?.error ?? `HTTP ${res.status}`,
+        );
       }
-      const assistant: ChatMessageDTO = await res.json();
-      setMessages((prev) => [...prev, assistant]);
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let currentEvent = "message";
+
+      // Parse SSE frames. Events are separated by a blank line ("\n\n").
+      // Within a frame, "event: X" sets the event name and "data: Y" carries
+      // the JSON payload.
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let sep: number;
+        while ((sep = buffer.indexOf("\n\n")) !== -1) {
+          const rawEvent = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          for (const line of rawEvent.split("\n")) {
+            if (line.startsWith("event: ")) {
+              currentEvent = line.slice("event: ".length).trim();
+            } else if (line.startsWith("data: ")) {
+              const dataStr = line.slice("data: ".length);
+              let data: Record<string, unknown> = {};
+              try {
+                data = JSON.parse(dataStr) as Record<string, unknown>;
+              } catch {
+                data = { raw: dataStr };
+              }
+
+              if (currentEvent === "delta" && typeof data.delta === "string") {
+                if (!firstDeltaArrived) {
+                  firstDeltaArrived = true;
+                  setStreamingStarted(true);
+                }
+                accumulated += data.delta;
+                patchPlaceholder({ content: accumulated });
+              } else if (currentEvent === "done") {
+                if (typeof data.content === "string") {
+                  accumulated = data.content;
+                  patchPlaceholder({ content: accumulated });
+                }
+                if (typeof data.messageId === "string") {
+                  patchPlaceholder({ id: data.messageId });
+                  streamingPlaceholderIdRef.current = null;
+                }
+              } else if (currentEvent === "error") {
+                throw new Error(
+                  typeof data.error === "string" ? data.error : "Streaming error",
+                );
+              }
+            }
+          }
+        }
+      }
+
+      // If the stream ended without a "done" event (e.g. connection drop),
+      // surface whatever partial text we accumulated so the user's turn isn't lost.
+      if (streamingPlaceholderIdRef.current !== null) {
+        if (accumulated.trim()) {
+          patchPlaceholder({ content: accumulated });
+        } else {
+          patchPlaceholder({
+            content: "> Stream ended unexpectedly. Please try again.",
+          });
+        }
+        streamingPlaceholderIdRef.current = null;
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       toast({ title: "Chat error", description: msg, variant: "destructive" });
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: `err-${Date.now()}`,
-          agentId,
-          role: "assistant",
-          content: `> Error: ${msg}`,
-          createdAt: new Date().toISOString(),
-        },
-      ]);
+      if (streamingPlaceholderIdRef.current !== null) {
+        if (accumulated.trim()) {
+          // Keep partial text + append an error footnote.
+          patchPlaceholder({
+            content: `${accumulated}\n\n> Error: ${msg}`,
+          });
+        } else {
+          patchPlaceholder({ content: `> Error: ${msg}` });
+        }
+        streamingPlaceholderIdRef.current = null;
+      }
     } finally {
       setLoading(false);
+      setStreamingStarted(false);
     }
   };
 
@@ -189,10 +288,21 @@ export function AgentChatDrawer({
               </div>
             ) : (
               <div className="space-y-4">
-                {messages.map((m) => (
-                  <MessageBubble key={m.id} message={m} />
-                ))}
-                {loading && <TypingIndicator />}
+                {messages.map((m) => {
+                  // While streaming, the assistant placeholder bubble stays empty
+                  // until the first token arrives. We hide the empty bubble and
+                  // let the TypingIndicator cover the "agent is thinking" state.
+                  if (
+                    loading &&
+                    m.role === "assistant" &&
+                    m.content === "" &&
+                    m.id === streamingPlaceholderIdRef.current
+                  ) {
+                    return null;
+                  }
+                  return <MessageBubble key={m.id} message={m} />;
+                })}
+                {loading && !streamingStarted && <TypingIndicator />}
               </div>
             )}
           </div>
