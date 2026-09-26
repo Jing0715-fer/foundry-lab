@@ -786,11 +786,23 @@ const SCHEDULER_TOOLS = new Set([
   "sbatch", "squeue", "sacct", "scancel", "sinfo", "nvidia-smi",
 ]);
 
-/** One scheduler segment, emulated in JS. Returns null when not schedulery. */
+/** One scheduler segment, emulated in JS. Returns null when not schedulery.
+ * Also answers the identity one-liners (`whoami`, `id -un`) the app's probe
+ * speaks — the emulated login node's user is "foundry" (the OS uid cannot
+ * change without root; HOME/USER env already say foundry). */
 function emulateSegment(seg: string, baseDir: string): EmuResult | null {
   const tokens = tokenize(seg);
   if (!tokens.length) return { out: "", err: "", code: 0 };
   const tool = tokens[0];
+  if (tool === "whoami" && tokens.length === 1) {
+    return { out: `${AUTH_USER}\n`, err: "", code: 0 };
+  }
+  if (tool === "id" && (tokens.length === 2 && tokens[1] === "-un")) {
+    return { out: `${AUTH_USER}\n`, err: "", code: 0 };
+  }
+  if (tool === "id" && tokens.length === 3 && tokens[1] === "-u" && tokens[2] === "-n") {
+    return { out: `${AUTH_USER}\n`, err: "", code: 0 };
+  }
   if (!SCHEDULER_TOOLS.has(tool)) return null;
   const rest = tokens.slice(1);
   switch (tool) {
@@ -822,8 +834,8 @@ function inlineEmu(emu: EmuResult): string {
 }
 
 /** Scheduler plan for one exec:
- *   - { pure }      — EVERY segment is a scheduler call → answered entirely
- *                     in JS (no bash at all; exact bytes + exit code).
+ *   - { pure }      — EVERY segment is a scheduler/identity call → answered
+ *                     entirely in JS (no bash at all; exact bytes + exit code).
  *   - { rewritten } — a MIXED compound (e.g. `echo x; sbatch --version`,
  *                     `cd W && sbatch run.sh`) → scheduler segments are
  *                     computed now and inlined as bash subshells; everything
