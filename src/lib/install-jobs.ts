@@ -63,11 +63,20 @@ export function startInstall(key: string): InstallJob | { error: string } {
   }
 
   const id = randomUUID();
-  // Run pip through the resolved engine python so installs land in the same
-  // environment the engines use (avoids PEP-668 system-pip rejections).
+  // Run pip AND python3 through the resolved engine python so installs and
+  // post-install patch steps land in the same environment the engines use
+  // (avoids PEP-668 system-pip rejections AND patches targeting the wrong
+  // interpreter's site-packages).
   const py = resolveEnginePython();
   let command = entry.install.command;
-  if (py && /(^|\s)pip install/.test(command)) {
+  if (py && py !== "python3") {
+    // Rewrites at command/chain boundaries only — never inside URLs or paths.
+    const boundary = /(^|&&\s*|\|\|\s*|;\s*)python3(?=\s)/g;
+    if (/(^|\s)pip install/.test(command) || boundary.test(command)) {
+      command = command.replace(boundary, `$1${py}`);
+      command = command.replace(/(^|&&\s*)pip install/g, `$1${py} -m pip install`);
+    }
+  } else if (py && /(^|\s)pip install/.test(command)) {
     command = command.replace(/(^|&&\s*)pip install/g, `$1${py} -m pip install`);
   }
   const job: InstallJob = {

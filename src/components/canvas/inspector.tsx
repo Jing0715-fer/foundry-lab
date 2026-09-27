@@ -769,18 +769,28 @@ function NodeInspectorImpl() {
   }, [compToolKey, node?.logs]);
   const viewerJob: ToolJobDTO | null = React.useMemo(() => {
     if (!compToolKey || !node || outputFiles.length === 0) return null;
+    // Executor provenance for the badge: the workflow's engine path stamps a
+    // "[built-in real algorithm engine]" banner into the logs; its absence
+    // on a successful run means the native upstream tool executed.
+    const logs = node.logs ?? "";
+    const viaEngine = /\[built-in real algorithm engine\]/i.test(logs);
     return {
       id: `node-${node.id}`,
       tool: compToolKey,
       presetName: null,
-      params: {},
+      params: {
+        _meta: {
+          executor: viaEngine ? "builtin-engine" : "native",
+          realToolUsed: true,
+        },
+      },
       status: node.status === "failed" ? "failed" : "completed",
       pid: null,
-      stdout: node.logs ?? "",
+      stdout: logs,
       stderr: "",
       outputFiles,
       exitCode: node.status === "failed" ? 1 : 0,
-      command: node.logs?.split("\n")[0] ?? "",
+      command: logs.split("\n")[0] ?? "",
       triggeredBy: "workflow",
       agentId: null,
       environmentId: null,

@@ -25,7 +25,7 @@ import {
   BUILTIN_ENGINES,
   TOOL_REGISTRY,
 } from "./tool-registry";
-import { getCompTool, buildCommand } from "./tools";
+import { getCompTool, buildCommand, buildArgs } from "./tools";
 
 export interface ExecutionResult {
   stdout: string;
@@ -190,6 +190,31 @@ export function selfTestEngines(): EngineTestResult[] {
 // ── Execution ────────────────────────────────────────────────────────────────
 
 /**
+ * Resolve path-type params against the PROJECT ROOT. The spawned native
+ * process / engine runs with cwd = <job workDir>, so a relative path like
+ * `outputs/rfdiffusion/<id>/design_0.pdb` (what the UI and agents pass after
+ * picking up a previous job's artifact) would resolve against the workDir
+ * and vanish. Absolute values pass through untouched.
+ */
+function normalizePathParams(
+  def: ReturnType<typeof getCompTool>,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (!def) return params;
+  const out: Record<string, unknown> = { ...params };
+  for (const f of def.paramFields) {
+    if (f.type !== "path") continue;
+    const v = out[f.key];
+    if (typeof v !== "string" || !v.trim()) continue;
+    const s = v.trim();
+    if (s.startsWith("/")) continue; // already absolute
+    const abs = join(process.cwd(), s);
+    if (existsSync(abs)) out[f.key] = abs;
+  }
+  return out;
+}
+
+/**
  * Execute a comp tool — native upstream tool if installed, otherwise the
  * built-in real algorithm engine. NEVER simulates.
  */
@@ -210,6 +235,8 @@ export async function executeCompToolReal(
       realToolUsed: false,
     };
   }
+  // Relative input paths → project-root absolute (see normalizePathParams).
+  params = normalizePathParams(def, params);
 
   const entry = getToolRegistryEntry(toolKey);
   const installed = isToolInstalled(toolKey);
@@ -264,10 +291,15 @@ export async function executeCompToolReal(
 
 /** Run the native upstream tool via child_process, honoring the registry's
  *  nativeExecution mode:
- *    - binary:         spawn parts[0] of buildCommand directly.
+ *    - binary:         spawn parts[0] of buildArgs directly.
  *    - script:         spawn `<python> <script> <rest…>` (repo-cloned CLIs).
  *    - python-module:  spawn `<python> -m <module> <rest…>`.
- *  Entries without nativeExecution never land here (engine-only tools). */
+ *  Entries without nativeExecution never land here (engine-only tools).
+ *  Arg construction uses the structured buildArgs (no whitespace splitting —
+ *  values may legitimately contain spaces), plus the registry's fixedArgs
+ *  and the output-routing flag:
+ *    - dotted (hydra) outputPrefixFlag  → one token `inference.output_prefix=<dir>`
+ *    - dashed (argparse) outFolderFlag  → two tokens `--out_folder <dir>` */
 async function runNativeTool(
   toolKey: string,
   params: Record<string, unknown>,
@@ -275,9 +307,6 @@ async function runNativeTool(
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey)!;
   const entry = getToolRegistryEntry(toolKey)!;
-  const displayCommand = buildCommand(def, params);
-  const parts = displayCommand.split(/\s+/).filter(Boolean);
-  const rest = parts.slice(1);
   const py = resolveEnginePython();
 
   const mode = entry.nativeExecution;
@@ -285,20 +314,79 @@ async function runNativeTool(
     // Should not happen (executeCompToolReal checks), but be safe.
     return runBuiltinEngine(toolKey, params, workDir, Date.now());
   }
+
+  // Structured arg tokens (values with spaces survive intact).
+  const argTokens = buildArgs(def, params).slice(1); // drop cliCommand head
+  // Registry-pinned flags the param surface doesn't model (e.g. hydra
+  // `inference.write_trajectory=False`).
+  const fixed = mode.fixedArgs ?? [];
+  // Output routing. Two semantics:
+  //   PREFIX flags (RFdiffusion's inference.output_prefix, RFantibody's -o)
+  //     → base <workDir>/design so `<base>_0.pdb`… land INSIDE the workDir.
+  //   FOLDER flags (ProteinMPNN's --out_folder) → the workDir itself; the
+  //     tool writes its subfolders (seqs/…) one level deep, inside the scan.
+  // Hydra dotted flags are single `key=value` tokens; dashed flags are two.
+  const prefixBase = join(workDir, "design");
+  const outTokens: string[] = [];
+  if (mode.outputPrefixFlag) {
+    if (mode.outputPrefixFlag.includes(".")) {
+      outTokens.push(`${mode.outputPrefixFlag}=${prefixBase}`);
+    } else {
+      outTokens.push(mode.outputPrefixFlag, prefixBase);
+    }
+  } else if (mode.outFolderFlag) {
+    const target = mode.outFolderIsPrefix ? prefixBase : workDir;
+    outTokens.push(mode.outFolderFlag, target);
+  }
+  const displayCommand = buildCommand(def, params);
+
   if (mode.mode === "binary") {
-    const res = await runProcess(parts[0], rest, workDir, displayCommand, Date.now());
+    const head = def.cliCommand.split(/\s+/).filter(Boolean);
+    const res = await runProcess(
+      head[0],
+      [...head.slice(1), ...argTokens, ...fixed, ...outTokens],
+      workDir,
+      displayCommand,
+      Date.now(),
+      mode.timeoutMs,
+    );
+    return { ...res, executor: "native", realToolUsed: true };
+  }
+  if (mode.mode === "executable") {
+    const exePath = join(process.cwd(), mode.path);
+    const res = await runProcess(
+      exePath,
+      [...argTokens, ...fixed, ...outTokens],
+      workDir,
+      displayCommand,
+      Date.now(),
+      mode.timeoutMs,
+    );
     return { ...res, executor: "native", realToolUsed: true };
   }
   if (mode.mode === "script") {
     if (!py) throw new Error("engine python not available for script execution");
     const scriptPath = join(process.cwd(), mode.script);
-    const extra = mode.outFolderFlag ? [mode.outFolderFlag, workDir] : [];
-    const res = await runProcess(py, [scriptPath, ...rest, ...extra], workDir, displayCommand, Date.now());
+    const res = await runProcess(
+      py,
+      [scriptPath, ...argTokens, ...fixed, ...outTokens],
+      workDir,
+      displayCommand,
+      Date.now(),
+      mode.timeoutMs,
+    );
     return { ...res, executor: "native", realToolUsed: true };
   }
   // python-module
   if (!py) throw new Error("engine python not available for module execution");
-  const res = await runProcess(py, ["-m", mode.module, ...rest], workDir, displayCommand, Date.now());
+  const res = await runProcess(
+    py,
+    ["-m", mode.module, ...argTokens, ...fixed, ...outTokens],
+    workDir,
+    displayCommand,
+    Date.now(),
+    mode.timeoutMs,
+  );
   return { ...res, executor: "native", realToolUsed: true };
 }
 

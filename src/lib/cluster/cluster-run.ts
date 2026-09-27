@@ -22,7 +22,7 @@
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { basename, join, resolve } from "path";
 import { db } from "@/lib/db";
-import { getCompTool, buildCommand, type CompToolDef } from "@/lib/tools";
+import { getCompTool, buildCommand, buildArgs, type CompToolDef } from "@/lib/tools";
 import { getToolRegistryEntry, type ToolRegistryEntry } from "@/lib/tool-registry";
 import { getConnection } from "./connections";
 import {
@@ -123,12 +123,15 @@ async function updateJobRow(jobId: string, data: JobRowPatch): Promise<void> {
 
 /**
  * Build the remote shell command for a tool run. Mirrors real-executor's
- * runNativeTool arg construction (script → `python3 <script> …+outFolder`,
- * python-module → `python3 -m <module> …`, binary → cliCommand …) with three
- * token rewrites:
+ * runNativeTool arg construction (script → `python3 <script> …`, python-module
+ * → `python3 -m <module> …`, binary/executable → cliCommand …) using the SAME
+ * structured buildArgs (hydra list grammar, engineOnly skips) with three
+ * per-token rewrites:
  *   (a) staged local input paths → <remoteWorkdir>/input/<basename>
  *   (b) `external-tools/<X>/…` tokens → <remoteToolsDir>/<X>/…
  *   (c) local workDir prefix → remoteWorkdir prefix
+ * Registry fixedArgs + output routing (prefix vs folder semantics, hydra
+ * dotted single-token) are appended exactly like the local executor.
  * The LOCAL (unrewritten) buildCommand output is kept for display.
  */
 function buildRemoteCommand(
@@ -161,30 +164,40 @@ function buildRemoteCommand(
   } else if (mode?.mode === "python-module") {
     tokens.push("python3", "-m", mode.module);
   } else {
-    // binary mode (and engine-only tools): the CLI command, which may itself
-    // be multi-word ("rf3 fold", "python -m pyrosetta.score").
+    // binary / executable / engine-only tools: the CLI command, which may
+    // itself be multi-word ("rf3 fold", "python -m pyrosetta.score").
     tokens.push(...def.cliCommand.split(/\s+/).filter(Boolean));
   }
 
-  // Same flag logic as buildCommand, with per-token rewrites.
-  for (const f of def.paramFields) {
-    const v = params[f.key] ?? f.default;
-    if (v === "" || v == null) continue;
-    if (f.type === "bool") {
-      if (v === true) tokens.push(f.flag!);
-      continue;
-    }
-    if (def.cliStyle === "hydra") {
-      tokens.push(`${f.flag}=${rewrite(String(v))}`);
+  // Structured param tokens (hydra list grammar + engineOnly skips), each
+  // value token path-rewritten for the remote host.
+  for (const t of buildArgs(def, params).slice(1)) {
+    if (t.includes("=")) {
+      const eq = t.indexOf("=");
+      tokens.push(`${t.slice(0, eq)}=${rewrite(t.slice(eq + 1))}`);
+    } else if (t.startsWith("-")) {
+      tokens.push(t);
     } else {
-      tokens.push(f.flag!, rewrite(String(v)));
+      tokens.push(rewrite(t));
     }
   }
 
-  // Script-mode tools get the outFolder flag pinned to the remote workdir,
-  // exactly like real-executor.runNativeTool does locally.
-  if (mode?.mode === "script" && mode.outFolderFlag) {
-    tokens.push(mode.outFolderFlag, remoteWorkdir);
+  // Registry-pinned flags + output routing — same semantics as the local
+  // executor (prefix flags → <W>/design so suffixed files land inside W;
+  // folder flags → W itself; hydra dotted → single key=value token).
+  if (mode) {
+    tokens.push(...(mode.fixedArgs ?? []));
+    const prefixBase = `${remoteWorkdir}/design`;
+    if (mode.outputPrefixFlag) {
+      if (mode.outputPrefixFlag.includes(".")) {
+        tokens.push(`${mode.outputPrefixFlag}=${prefixBase}`);
+      } else {
+        tokens.push(mode.outputPrefixFlag, prefixBase);
+      }
+    } else if (mode.outFolderFlag) {
+      const target = mode.outFolderIsPrefix ? prefixBase : remoteWorkdir;
+      tokens.push(mode.outFolderFlag, target);
+    }
   }
 
   return {

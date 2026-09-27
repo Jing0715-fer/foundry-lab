@@ -299,12 +299,18 @@ export async function executeNode(
           // Pass upstream context as an "inputs" hint — executeCompTool ignores unknown keys.
           (filtered as Record<string, unknown>).__inputs = inputs;
         }
-        const { summary, stdout } = await executeCompTool(
+        const { summary, stdout, files } = await executeCompTool(
           toolKey,
           filtered,
           clusterTarget ? { cluster: clusterTarget } : {},
         );
-        return { result: summary, logs: stdout, status: "completed" };
+        // ##OUTPUTS## trailer: the built-in engines print it themselves, native
+        // upstream tools do not — append it from the executor's file list so
+        // the inspector's Outputs button works for BOTH executors.
+        const logs = files.length
+          ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
+          : stdout;
+        return { result: summary, logs, status: "completed" };
       }
 
       // Per-tool node types — dispatch on node.type which IS the toolKey.
@@ -327,12 +333,16 @@ export async function executeNode(
         const filtered: Record<string, unknown> = { ...node.params };
         delete filtered._cluster;
         if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
-        const { summary, stdout } = await executeCompTool(
+        const { summary, stdout, files } = await executeCompTool(
           toolKey,
           filtered,
           clusterTarget ? { cluster: clusterTarget } : {},
         );
-        return { result: summary, logs: stdout, status: "completed" };
+        // Same ##OUTPUTS## trailer as the comptool branch above.
+        const logs = files.length
+          ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
+          : stdout;
+        return { result: summary, logs, status: "completed" };
       }
 
       case "biotool": {
