@@ -28,6 +28,27 @@ export type InstallMethod = "pip" | "github" | "binary" | "runtime";
 export type NativeExecution =
   | { mode: "binary" }                        // spawn parts[0] of buildCommand
   | { mode: "script"; script: string; outFolderFlag?: string } // spawn `<python> <script> <rest…>`
+  | {
+      /** Hydra-style output flag: appends `<flag>=<workDir>/design` so the
+       * upstream tool writes its artifacts straight into the job workDir
+       * (RFdiffusion's `inference.output_prefix`). */
+      outputPrefixFlag?: string;
+      /** Fixed args appended verbatim after the built command (e.g.
+       * `inference.write_trajectory=False` to keep job outputs clean). */
+      fixedArgs?: string[];
+      /** Per-tool execution timeout; default 5 min. Heavy CPU tools raise it. */
+      timeoutMs?: number;
+    } & { mode: "script"; script: string; outFolderFlag?: string }
+  | {
+      /** Spawn an executable file directly (shebang scripts installed in a
+       * tool-owned venv, e.g. RFantibody's uv-managed `rfdiffusion` CLI). */
+      mode: "executable";
+      path: string;
+      /** Output flag taking a path PREFIX (`-o <workDir>/design`). */
+      outFolderFlag?: string;
+      fixedArgs?: string[];
+      timeoutMs?: number;
+    }
   | { mode: "python-module"; module: string } // spawn `<python> -m <module> <rest…>`;
 
 export interface ToolRegistryEntry {
@@ -300,16 +321,44 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     category: "design",
     description:
       "De novo protein structure design via diffusion (scaffolds, binders, symmetric assemblies).",
-    detect: { type: "binary", binary: "RFdiffusion" },
-    nativeExecution: { mode: "binary" },
+    // pip-installable package (import check) — fast, no torch import cost.
+    detect: { type: "python", pythonModule: "rfdiffusion" },
+    nativeExecution: {
+      mode: "script",
+      script: "external-tools/RFdiffusion/scripts/run_inference.py",
+      // RFdiffusion writes to `inference.output_prefix`; route it into the
+      // job workDir so output collection picks the designed PDBs up.
+      outputPrefixFlag: "inference.output_prefix",
+      // Keep per-step trajectory dumps out of the job artifacts.
+      fixedArgs: ["inference.write_trajectory=False"],
+      // Real diffusion on CPU is slow (≈1.5 min per 50-res design) — allow
+      // long runs instead of killing them at the default 5-minute mark.
+      timeoutMs: 20 * 60 * 1000,
+    },
     install: {
       method: "github",
       command:
-        "git clone --depth 1 https://github.com/RosettaCommons/RFdiffusion.git external-tools/RFdiffusion && cd external-tools/RFdiffusion && pip install -e .",
-      label: "Clone repo + pip install",
+        "if [ ! -d external-tools/RFdiffusion/.git ]; then git clone --depth 1 https://github.com/RosettaCommons/RFdiffusion.git external-tools/RFdiffusion; fi && cd external-tools/RFdiffusion && " +
+        "pip install ./env/SE3Transformer && " +
+        "pip install -e . && " +
+        // setup.py under-declares the real runtime deps (their conda env has
+        // them all) — install what the inference path actually imports:
+        "pip install hydra-core opt_einsum pyrsistent e3nn dgl && " +
+        // dgl 2.1 needs the classic datapipes API (0.7.1); newer torchdata
+        // dropped it and breaks `import dgl`:
+        'pip install "torchdata==0.7.1" && ' +
+        // CPU-compat patches (nvtx no-op on CPU, best-effort dgl GraphBolt):
+        "python3 ../../scripts/patches/rfdiffusion_cpu.py && " +
+        // Default + PPI checkpoints (the two the app's param surface uses):
+        "mkdir -p models && " +
+        "wget -q -c -O models/Base_ckpt.pt http://files.ipd.uw.edu/pub/RFdiffusion/6f5902ac237024bdd0c176cb93063dc4/Base_ckpt.pt && echo 'checkpoint: Base_ckpt.pt (484 MB)' && " +
+        "wget -q -c -O models/Complex_base_ckpt.pt http://files.ipd.uw.edu/pub/RFdiffusion/e29311f6f1bf1af907f9ef9f44b8328b/Complex_base_ckpt.pt && echo 'checkpoint: Complex_base_ckpt.pt (484 MB)' && " +
+        "echo 'RFdiffusion ready: package + SE3Transformer + CPU patches + Base/Complex checkpoints.'",
+      label:
+        "Clone repo + pip install (vendored SE3Transformer + deps) + CPU patches + Base/Complex checkpoints",
       docs: "https://github.com/RosettaCommons/RFdiffusion",
       oneClick: true,
-      sizeHint: "~1 GB (checkpoints not included)",
+      sizeHint: "~1.1 GB (repo + deps + 2 checkpoints)",
     },
     builtinEngine: "engine-diffusion",
   },
@@ -318,16 +367,23 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     label: "RFantibody",
     category: "design",
     description: "Antibody structure design & CDR grafting against target epitopes.",
-    detect: { type: "binary", binary: "RFantibody" },
-    nativeExecution: { mode: "binary" },
+    // Official install = `uv sync` → own Python 3.10 venv with the CLI entry:
+    detect: { type: "path", path: "external-tools/rfantibody/.venv/bin/rfdiffusion" },
+    nativeExecution: {
+      mode: "executable",
+      path: "external-tools/rfantibody/.venv/bin/rfdiffusion",
+      outFolderFlag: "-o",
+      fixedArgs: ["--no-trajectory"],
+      timeoutMs: 20 * 60 * 1000,
+    },
     install: {
       method: "github",
       command:
-        "git clone --depth 1 https://github.com/RosettaCommons/rfantibody.git external-tools/rfantibody && cd external-tools/rfantibody && pip install -e .",
-      label: "Clone repo + pip install",
+        "if [ ! -d external-tools/rfantibody/.git ]; then git clone --depth 1 https://github.com/RosettaCommons/rfantibody.git external-tools/rfantibody; fi && cd external-tools/rfantibody && uv sync",
+      label: "Clone repo + uv sync (official installer — own Python 3.10 venv)",
       docs: "https://github.com/RosettaCommons/rfantibody",
       oneClick: true,
-      sizeHint: "large",
+      sizeHint: "~4 GB (CUDA torch + DGL in its own venv; NVIDIA GPU required to run designs)",
     },
     builtinEngine: "engine-antibody",
   },
