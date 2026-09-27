@@ -66,3 +66,6 @@ __pycache__/
 
 # cluster run-state / secrets
 data/cluster-*.json
+
+# transient tool outputs
+tool-results/

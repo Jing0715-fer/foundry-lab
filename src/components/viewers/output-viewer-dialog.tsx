@@ -82,6 +82,8 @@ function statusPillClass(status: string): string {
 function jobExecutor(job: ToolJobDTO): "native" | "builtin-engine" | "legacy-simulated" {
   const meta = job.params?._meta as { executor?: string } | undefined;
   if (meta?.executor === "native") return "native";
+  // Cluster runs execute the real native tool on a remote host.
+  if (meta?.executor === "cluster") return "native";
   if (meta?.executor === "builtin-engine") return "builtin-engine";
   const out = job.stdout ?? "";
   if (/^\[SIMULATED/i.test(out)) return "legacy-simulated";

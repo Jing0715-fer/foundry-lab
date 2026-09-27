@@ -23,6 +23,7 @@ Engine I/O: every engine receives a single JSON argv payload:
 import json
 import math
 import os
+import re
 import sys
 
 import numpy as np
@@ -677,27 +678,49 @@ def read_fasta(path):
     return out
 
 
+def _contig_token_to_length(tok, rng):
+    """One contig token → sampled length (or None when it adds none).
+
+    Grammar (matches upstream RFdiffusion ContigMap conventions):
+      '150'      → fixed 150           '100-150'   → sampled in [100, 150]
+      '100/0'    → 100 (+'/0' = grow a receptor chain after it)
+      'A30-60/0' → chain-A fragment, sampled in [30, 60]
+      '0' / 'A/0' → receptor-only token → no inpainted length → None
+    """
+    t = tok.strip()
+    if not t:
+        return None
+    m = re.match(r"^(?:([A-Za-z])\s*)?(\d+)(?:\s*-\s*(\d+))?(?:\s*/.*)?$", t)
+    if not m:
+        return None
+    a = int(m.group(2))
+    b = int(m.group(3)) if m.group(3) is not None else a
+    if b < a:
+        a, b = b, a
+    if b <= 0:
+        return None
+    return int(rng.integers(a, b + 1)) if b > a else a
+
+
 def parse_contigmap(cm, rng):
-    """Parse RFdiffusion-style contigmap tokens into a length list.
-    Supported: '150', '100/0', '[100-150]', comma-separated mixes."""
-    tokens = [t.strip() for t in str(cm).split(",") if t.strip()]
+    """Parse RFdiffusion-style contigmap strings into a length list.
+
+    Accepts the full surface users (and the native CLI) produce:
+      '150' · '100/0' · 'A30-60/0' · '100-150' · '[100-150]' ·
+      "['100-150', 'A30/0']" (hydra list-of-strings syntax) · comma/space mixes.
+    """
+    s = str(cm).strip()
+    # Hydra list wrapping: ['a', 'b'] / ["a", "b"] → a, b
+    if s.startswith("[") and s.endswith("]"):
+        s = s[1:-1]
+    s = s.replace("'", "").replace('"', "")
+    raw = [t for t in re.split(r"[,\s]+", s) if t.strip()]
     lengths = []
-    for t in tokens:
+    for t in raw:
         t = t.replace("X", "")
-        if not t:
-            continue
-        if t.startswith("[") and t.endswith("]"):
-            a, b = t[1:-1].split("-")
-            lengths.append(int(rng.integers(int(a), int(b) + 1)))
-        elif "/" in t:
-            head = t.split("/")[0]
-            if head:
-                lengths.append(int(head))
-        else:
-            try:
-                lengths.append(int(t))
-            except ValueError:
-                continue
+        n = _contig_token_to_length(t, rng)
+        if n is not None and n > 0:
+            lengths.append(n)
     return lengths or [100]
 
 

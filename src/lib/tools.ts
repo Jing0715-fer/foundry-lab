@@ -31,6 +31,13 @@ export interface CompParamField {
   group?: string;
   required?: boolean;
   advanced?: boolean;
+  /** Engine-only concept with no upstream CLI flag — never emitted to a
+   *  native/cluster command (e.g. RFdiffusion has no `inference.total_length`). */
+  engineOnly?: boolean;
+  /** Text field whose native value is a hydra LIST of strings — the builder
+   *  emits `flag=['<value>']` so hydra keeps it a string list (RFdiffusion's
+   *  ContigMap requires contigs[0].strip() to exist). */
+  hydraList?: boolean;
 }
 
 export const COMP_TOOLS: CompToolDef[] = [
@@ -45,11 +52,17 @@ export const COMP_TOOLS: CompToolDef[] = [
     defaultParams: {},
     paramFields: [
       { key: "num_designs", label: "Number of designs", type: "number", default: 8, min: 1, max: 100, step: 1, flag: "inference.num_designs", group: "Inference", required: true },
-      { key: "total_length", label: "Total length (residues)", type: "number", default: 150, min: 30, max: 1000, step: 10, flag: "inference.total_length", group: "Inference" },
-      { key: "contigmap", label: "Contig map", type: "text", default: "150", flag: "contigmap.contigmap", group: "Contigs", hint: "e.g. 100/0 or [100-150]" },
+      // RFdiffusion's real CLI has no --total-length: length comes from the
+      // contig string. Kept for the built-in engine only (native runs must
+      // not pass a nonexistent hydra key — hydra rejects unknown overrides).
+      { key: "total_length", label: "Total length (residues)", type: "number", default: 150, min: 30, max: 1000, step: 10, group: "Contigs", engineOnly: true, hint: "Built-in engine default length when no contig map is given." },
+      { key: "contigmap", label: "Contig map", type: "text", default: "150", flag: "contigmap.contigs", hydraList: true, group: "Contigs", hint: "e.g. 150 · 100/0 · A30-60/0 · 100-150 (multiple: comma-separated)" },
       { key: "hotspot", label: "Hotspot residues", type: "text", default: "", flag: "ppi.hotspot_res", group: "PPI", hint: "Target residues to bind (e.g. A30,A45)" },
       { key: "symmetry", label: "Symmetry", type: "select", default: "none", options: ["none", "C2", "C3", "C4", "C5", "D2", "icos"], flag: "inference.symmetry", group: "Symmetry" },
-      { key: "seed", label: "Random seed", type: "number", default: 314, min: 0, max: 99999, step: 1, flag: "inference.seed", group: "Inference", advanced: true },
+      // No `inference.seed` in RFdiffusion's hydra struct (upstream seeds via
+      // `inference.deterministic`); the built-in engine uses this for
+      // reproducible sampling. Never emitted to the native CLI.
+      { key: "seed", label: "Random seed", type: "number", default: 314, min: 0, max: 99999, step: 1, group: "Inference", advanced: true, engineOnly: true },
       { key: "diffuser_partial_T", label: "Partial diffusion steps", type: "number", default: 0, min: 0, max: 100, step: 1, flag: "diffuser.partial_T", group: "Diffuser", advanced: true, hint: "Non-zero = noise + denoise an input structure (motif scaffolding / partial diffusion)." },
       { key: "ckpt_override_path", label: "Checkpoint override path", type: "path", default: "", flag: "inference.ckpt_override_path", group: "Inference", advanced: true, hint: "Custom .pt checkpoint (e.g. finetuned binder model)." },
     ],
@@ -233,21 +246,56 @@ export function getCompTool(key: string): CompToolDef | undefined {
   return COMP_TOOLS.find((t) => t.key === key);
 }
 
-/** Build a CLI string from a tool def + params. */
-export function buildCommand(
+/** Normalize a contig value into a single space/comma-joined contig string.
+ *  Accepts what users type — `150`, `100/0`, `A30-60/0`, `[100-150]`,
+ *  `['100-150', 'A30/0']` (hydra list syntax) — and yields one plain string
+ *  (e.g. `100-150 A30/0`). */
+export function normalizeContigValue(raw: string): string {
+  let s = String(raw).trim();
+  // Strip hydra list wrapping: ['a', 'b'] / ["a", "b"] / [a,b]
+  if (s.startsWith("[") && s.endsWith("]")) {
+    s = s.slice(1, -1);
+    s = s.replace(/['\"]/g, "");
+  }
+  // Comma-separated pieces → space-joined (ContigMap splits on whitespace).
+  return s
+    .split(",")
+    .map((piece) => piece.trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+/** Build the structured argv for a tool invocation. Tokens keep values
+ *  intact (no shell quoting) — callers either spawn directly or shQuote each
+ *  token for remote execution. */
+export function buildArgs(
   tool: CompToolDef,
   params: Record<string, unknown>,
-): string {
+): string[] {
   const parts: string[] = [tool.cliCommand];
   for (const f of tool.paramFields) {
     const v = params[f.key] ?? f.default;
     if (v === "" || v == null) continue;
+    // Engine-only params never reach a native CLI.
+    if (f.engineOnly) continue;
+    // "none"/"null" symmetry → upstream default (no symmetric generation).
+    if (f.key === "symmetry" && /^(none|null|)$/i.test(String(v))) continue;
     if (f.type === "bool") {
       if (v === true) parts.push(f.flag!);
       continue;
     }
     if (tool.cliStyle === "hydra") {
-      parts.push(`${f.flag}=${String(v)}`);
+      if (f.hydraList) {
+        // List-of-strings grammar: contigmap.contigs=['100/0 A10-30']
+        // (single quotes force string typing — bare [100] parses as an int
+        // list and crashes ContigMap.get_sampled_mask). Values with quotes
+        // are stripped by the hydra grammar before we re-emit one string.
+        const inner = normalizeContigValue(String(v)).replace(/'/g, "");
+        parts.push(`${f.flag}=['${inner}']`);
+      } else {
+        parts.push(`${f.flag}=${String(v)}`);
+      }
     } else if (tool.cliStyle === "argparse") {
       parts.push(f.flag!, String(v));
     } else if (tool.cliStyle === "rosetta") {
@@ -256,7 +304,15 @@ export function buildCommand(
       parts.push(f.flag!, String(v));
     }
   }
-  return parts.join(" ");
+  return parts;
+}
+
+/** Build a CLI string from a tool def + params. */
+export function buildCommand(
+  tool: CompToolDef,
+  params: Record<string, unknown>,
+): string {
+  return buildArgs(tool, params).join(" ");
 }
 
 /** Extract tool/bio calls from LLM fenced blocks. */

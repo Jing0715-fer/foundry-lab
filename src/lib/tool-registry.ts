@@ -25,31 +25,33 @@ export type ToolCategory =
 export type DetectType = "binary" | "python" | "path";
 export type InstallMethod = "pip" | "github" | "binary" | "runtime";
 
+/** Optional native-execution extras shared by every mode. */
+export interface NativeExecutionExtras {
+  /** Hydra-style output flag (dotted, e.g. `inference.output_prefix`):
+   *  PREFIX semantics — the tool writes `<base>_0.pdb`, so the base is pinned
+   *  to `<workDir>/design` to keep artifacts inside the job workDir. */
+  outputPrefixFlag?: string;
+  /** Dashed output flag (e.g. `--out_folder`). FOLDER semantics by default
+   *  (the tool writes inside the given dir); set `outFolderIsPrefix` for
+   *  prefix-taking dashed flags (RFantibody's `-o`). */
+  outFolderFlag?: string;
+  outFolderIsPrefix?: boolean;
+  /** Fixed args appended verbatim after the built command (e.g.
+   *  `inference.write_trajectory=False` to keep job outputs clean). */
+  fixedArgs?: string[];
+  /** Per-tool execution timeout; default 5 min. Heavy CPU tools raise it. */
+  timeoutMs?: number;
+}
+
 export type NativeExecution =
-  | { mode: "binary" }                        // spawn parts[0] of buildCommand
-  | { mode: "script"; script: string; outFolderFlag?: string } // spawn `<python> <script> <rest…>`
-  | {
-      /** Hydra-style output flag: appends `<flag>=<workDir>/design` so the
-       * upstream tool writes its artifacts straight into the job workDir
-       * (RFdiffusion's `inference.output_prefix`). */
-      outputPrefixFlag?: string;
-      /** Fixed args appended verbatim after the built command (e.g.
-       * `inference.write_trajectory=False` to keep job outputs clean). */
-      fixedArgs?: string[];
-      /** Per-tool execution timeout; default 5 min. Heavy CPU tools raise it. */
-      timeoutMs?: number;
-    } & { mode: "script"; script: string; outFolderFlag?: string }
-  | {
-      /** Spawn an executable file directly (shebang scripts installed in a
-       * tool-owned venv, e.g. RFantibody's uv-managed `rfdiffusion` CLI). */
-      mode: "executable";
-      path: string;
-      /** Output flag taking a path PREFIX (`-o <workDir>/design`). */
-      outFolderFlag?: string;
-      fixedArgs?: string[];
-      timeoutMs?: number;
-    }
-  | { mode: "python-module"; module: string } // spawn `<python> -m <module> <rest…>`;
+  // spawn parts[0] of buildCommand
+  | ({ mode: "binary" } & NativeExecutionExtras)
+  // spawn `<python> <script> <rest…>` (repo-cloned CLIs)
+  | ({ mode: "script"; script: string } & NativeExecutionExtras)
+  // spawn an executable directly (shebang CLIs in tool-owned venvs)
+  | ({ mode: "executable"; path: string } & NativeExecutionExtras)
+  // spawn `<python> -m <module> <rest…>`
+  | ({ mode: "python-module"; module: string } & NativeExecutionExtras);
 
 export interface ToolRegistryEntry {
   key: string;
@@ -372,7 +374,9 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     nativeExecution: {
       mode: "executable",
       path: "external-tools/rfantibody/.venv/bin/rfdiffusion",
+      // RFdiffusion-family `-o` takes an output PREFIX (files get suffixed).
       outFolderFlag: "-o",
+      outFolderIsPrefix: true,
       fixedArgs: ["--no-trajectory"],
       timeoutMs: 20 * 60 * 1000,
     },

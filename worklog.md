@@ -2410,3 +2410,40 @@ Work Log:
 Stage Summary:
 - External tools can now run on SSH-reachable clusters (direct or Slurm) exactly in cryoflow's pattern, verified end-to-end against a local test cluster running REAL algorithms.
 - Built-in engines now ship visible provenance (papers) + honest accuracy positioning vs native DL tools.
+
+---
+Task ID: 24-rfdiffusion-native
+Agent: main
+Task: Fix the RFdiffusion one-click install failure (se3-transformer unresolvable from PyPI) and make the NATIVE upstream RFdiffusion actually execute end-to-end through every lane (local run API, workflow canvas node, cluster dispatch, output viewer).
+
+Work Log:
+- Verified the registry fix landed after the user's reported failure: install command now uses RFdiffusion's VENDORED env/SE3Transformer (pip install ./env/SE3Transformer — se3-transformer was never on PyPI), + CPU-compat patch step (scripts/patches/rfdiffusion_cpu.py: NVTX no-op on CPU torch, best-effort dgl GraphBolt) + resumable checkpoint downloads (Base_ckpt.pt + Complex_base_ckpt.pt, wget -c). Venv confirmed: se3-transformer 1.0.0, rfdiffusion 1.1.0 (editable), dgl 2.1.0, both patches APPLIED, both checkpoints present.
+- ROOT CAUSE of remaining native-run failures — the app's CLI grammar did not match RFdiffusion's hydra struct:
+  1. flag was contigmap.contigmap (real key: contigmap.contigs) and the VALUE must be a list of STRINGS — hydra parses bare [60] as an int list and ContigMap.get_sampled_mask crashes on `self.contigs[0].strip()`.
+  2. inference.total_length and inference.seed are NOT in RFdiffusion's config struct — hydra rejects unknown overrides ("Could not override 'inference.seed'").
+  3. runNativeTool appended outputPrefixFlag as TWO tokens (inference.output_prefix <dir>) — hydra needs ONE `key=value` token; and prefix semantics require base <workDir>/design so design_0.pdb lands INSIDE the workDir (the depth-2 artifact scan misses sibling files).
+  4. registry fixedArgs (inference.write_trajectory=False) were silently DROPPED by both the local executor and the cluster command builder.
+  5. runNativeTool never handled nativeExecution mode "executable" (RFantibody).
+- tools.ts: param surface corrected — contigmap.contigs + new `hydraList` field marker (emits `flag=['<value>']` with normalizeContigValue: strips user brackets/quotes, comma→space joins); `engineOnly` marker for total_length + seed (never emitted to native CLIs); symmetry "none" skipped (upstream default null); NEW structured `buildArgs(tool, params): string[]` (no whitespace splitting — values with spaces survive) + buildCommand = join.
+- real-executor.ts: runNativeTool rewritten on buildArgs + fixedArgs + output routing with two semantics (PREFIX flags → <workDir>/design, FOLDER flags → workDir; hydra dotted single-token, dashed two-token; executable-mode outFolderIsPrefix); executable mode implemented; per-entry timeoutMs honored everywhere; NEW normalizePathParams resolves relative path params against the project root (spawned tools run with cwd=workDir, so `outputs/...` input paths previously vanished).
+- tool-registry.ts: NativeExecution union rebuilt on shared NativeExecutionExtras (outputPrefixFlag/outFolderFlag/outFolderIsPrefix/fixedArgs/timeoutMs for every mode); RFantibody entry marked outFolderIsPrefix.
+- cluster-run.ts buildRemoteCommand: now uses the SAME structured buildArgs + fixedArgs + output-routing semantics as the local executor (shQuote per token keeps `contigmap.contigs=['60']` intact through remote bash into hydra).
+- install-jobs.ts: bare `python3` in install commands is rewritten to the resolved engine python at command/chain boundaries (patch steps previously risked patching the SYSTEM interpreter's site-packages instead of the venv that actually got the packages).
+- common.py: parse_contigmap upgraded to the full contig grammar — hydra list syntax "['100-150', 'A30/0']", quotes stripped, chain-prefixed fragments (A30-60/0), ranges, /0 receptor tokens skipped; unit-tested 11 forms + 10-check selftest PASS.
+- workflow-engine.ts: both comptool call sites now append a `##OUTPUTS## <json>` trailer from the executor's file list (the built-in engines print it themselves; NATIVE tools don't — the inspector Outputs button previously never appeared for native runs).
+- inspector.tsx node-mode viewerJob: derives `_meta.executor` from the engine banner in the logs (native vs builtin-engine badge); output-viewer-dialog.tsx jobExecutor: cluster runs (real native tool on a remote host) badge as REAL · NATIVE.
+- mock-cluster: provisioned ~/foundry-lab/tools/RFdiffusion/scripts/run_inference.py shim (python; accepts the REAL run_inference.py hydra grammar incl. contigmap.contigs=['60'] list tokens → routes to the real numpy engine) so the cluster lane's script-mode path matches a real cluster where RFdiffusion is cloned into the remote tools dir.
+- E2E VERIFIED:
+  - Direct native CLI: 60-res design, REAL diffusion (50 timesteps), 1.93 min, design_0.pdb with CA-CA 3.75 Å mean, ZERO non-local clashes, Rg 14.3 Å, all-G placeholder sequence (authentic upstream backbone-only behavior).
+  - /api/tools/run rfdiffusion: completed exit 0, _meta.executor=native, design_0.pdb collected inside the workDir.
+  - Chained: native RFdiffusion backbone → native ProteinMPNN (--pdb_path relative path now resolved): real NN run, 2 sequences of length 60, design_0.fa.
+  - Cluster (slurm → mock-cluster): shim received the new grammar, real engine ran, 5 files synced back to outputs/, job completed.
+  - One-click install re-run: exit 0 (idempotent — clone skipped, deps satisfied, patches already applied, checkpoints complete). The user's exact failed flow now completes.
+  - Browser: Tools page rfdiffusion card "native · native execution active", engines 5/5 PASS; canvas RFdiffusion node ran the REAL network (full 50-timestep transcript in the Logs tab, 4.65 min) → node completed → Outputs button → Output Viewer with "REAL · NATIVE" badge + 3D canvas 639×399 rendering the designed backbone; mobile 375px no-overflow, footer visible, ZERO console errors.
+- Ops notes: the sandbox has 4.1 GB RAM — running native RFdiffusion while next-server had grown to ~1.9 GB triggered the kernel OOM killer (killed the next-server worker mid-run, leaving one node stuck at "running"); cleaned the stuck rows, restarted the dev server detached (setsid), re-ran successfully. RFdiffusion CPU inference ≈ 2-5 min per small design.
+
+Stage Summary:
+- RFdiffusion one-click install fully repaired and re-verified (vendored SE3Transformer + CPU patches + checkpoints, idempotent).
+- The native RFdiffusion NETWORK now executes end-to-end on every lane: run API, workflow canvas nodes, cluster dispatch (direct+slurm), with correct hydra grammar, correct output routing, honest executor provenance (REAL · NATIVE badges), and 3D output viewing.
+- Param surface is now a faithful subset of the upstream CLI (list-typed contigs, engineOnly fields never leak to hydra, symmetry=none skipped).
+- Cluster lane and mock-cluster harness updated to the same grammar — script-mode remote paths match the real-cluster provisioning contract (tools dir clone layout).
