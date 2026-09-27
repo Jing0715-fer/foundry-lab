@@ -675,11 +675,13 @@ function ResultTab({
   outputFiles,
   executor,
   onOpenViewer,
+  viewerOpen,
 }: {
   node: NodeDTO;
   outputFiles: string[];
   executor: ResultExecutor | null;
   onOpenViewer: (() => void) | null;
+  viewerOpen: boolean;
 }) {
   const result = node.result?.trim();
   const isToolNode = outputFiles.length > 0 || executor !== null;
@@ -723,6 +725,7 @@ function ResultTab({
         onOpenFullViewer={onOpenViewer ?? undefined}
         summary={result}
         compact
+        suspend={viewerOpen}
       />
     );
   }
@@ -1191,6 +1194,7 @@ function NodeInspectorImpl() {
                 outputFiles={compToolKey ? outputFiles : []}
                 executor={executor}
                 onOpenViewer={viewerJob ? () => setViewerOpen(true) : null}
+                viewerOpen={viewerOpen}
               />
             </TabsContent>
           </ScrollArea>

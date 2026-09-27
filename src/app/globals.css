@@ -654,3 +654,110 @@ kbd,
     transform: none !important;
   }
 }
+
+/* ============================================================
+   MolVision 内嵌组件（分子工作室）——精密仪器设计语言
+   ============================================================ */
+
+/* 自定义滚动条（面板/序列/控制台） */
+.mol-scroll::-webkit-scrollbar,
+.mol-scroll-x::-webkit-scrollbar {
+  width: 7px;
+  height: 7px;
+}
+.mol-scroll::-webkit-scrollbar-track,
+.mol-scroll-x::-webkit-scrollbar-track {
+  background: transparent;
+}
+.mol-scroll::-webkit-scrollbar-thumb,
+.mol-scroll-x::-webkit-scrollbar-thumb {
+  background: color-mix(in oklab, var(--muted-foreground) 30%, transparent);
+  border-radius: 999px;
+  border: 1px solid transparent;
+}
+.mol-scroll::-webkit-scrollbar-thumb:hover,
+.mol-scroll-x::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklab, var(--muted-foreground) 50%, transparent);
+}
+.mol-scroll::-webkit-scrollbar-corner,
+.mol-scroll-x::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.mol-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklab, var(--muted-foreground) 30%, transparent) transparent;
+}
+
+/* 工具栏横向滚动（窄屏）：完全隐藏滚动条，依赖触屏滑动手势/滚轮 */
+.mol-toolbar-scroll {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.mol-toolbar-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* 横向滚动行动态渐隐（JS 按滚动位置挂载/摘除）：提示两侧还有内容 */
+.mol-fade-l {
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--mol-fade-w, 24px));
+  mask-image: linear-gradient(to right, transparent, black var(--mol-fade-w, 24px));
+}
+.mol-fade-r {
+  -webkit-mask-image: linear-gradient(to right, black calc(100% - var(--mol-fade-w, 24px)), transparent);
+  mask-image: linear-gradient(to right, black calc(100% - var(--mol-fade-w, 24px)), transparent);
+}
+.mol-fade-l.mol-fade-r {
+  -webkit-mask-image: linear-gradient(to right, transparent, black var(--mol-fade-w, 24px), black calc(100% - var(--mol-fade-w, 24px)), transparent);
+  mask-image: linear-gradient(to right, transparent, black var(--mol-fade-w, 24px), black calc(100% - var(--mol-fade-w, 24px)), transparent);
+}
+
+/* 浅色模式柔和分层阴影（活动卡/浮层深度，深色下沉为描边感） */
+.mol-elevate {
+  box-shadow:
+    0 1px 2px oklch(0.25 0.01 80 / 0.06),
+    0 4px 16px -6px oklch(0.25 0.01 80 / 0.09);
+}
+.dark .mol-elevate {
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.4),
+    0 4px 16px -6px oklch(0 0 0 / 0.5);
+}
+/* 主按钮细节：内高光 + 微投影（质感而非渐变） */
+.mol-btn-primary {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.14),
+    0 1px 2px oklch(0.3 0.05 168 / 0.32);
+}
+.dark .mol-btn-primary {
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.1),
+    0 1px 2px oklch(0 0 0 / 0.4);
+}
+
+/* 微标签：大写字距（分组标题/仪表条分区名） */
+.mol-micro {
+  font-size: 9px;
+  line-height: 1;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+/* 序列条「磁带槽」：顶缘 1px 内缝（浅色 = 凹陷暗缝 / 深色 = 内高光） */
+.tape-well {
+  box-shadow: inset 0 1px 0 oklch(0.25 0.01 80 / 0.07);
+}
+.dark .tape-well {
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.04);
+}
+
+/* Radix ScrollArea content table: cap at the viewport width.
+   Radix sizes the inner div with `min-width:100%; display:table` so short
+   content stretches to full width — but auto tables also GROW to content
+   max-content, which lets wide embeds (e.g. the MolVision studio toolbar)
+   blow out narrow hosts horizontally. Capping max-width keeps the table
+   exactly at viewport width; wide inner content must then scroll/shrink
+   inside its own overflow container instead of expanding ancestors. */
+[data-radix-scroll-area-viewport] > div {
+  max-width: 100%;
+}

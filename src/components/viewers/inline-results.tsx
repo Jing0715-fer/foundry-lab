@@ -45,7 +45,22 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import ReactMarkdown from "react-markdown";
-import { Pdb3DViewer } from "./pdb-3d-viewer";
+// (Pdb3DViewer superseded by the embedded MolVision studio below.)
+import dynamic from "next/dynamic";
+
+/** MolVision studio — client-only (three.js engine), no SSR. */
+const MolStudio = dynamic(
+  () => import("@/components/molecular/mol-studio").then((m) => m.MolStudio),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-64 items-center justify-center gap-2 rounded-lg border border-dashed bg-muted/30 text-xs text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        Loading MolVision studio…
+      </div>
+    ),
+  }
+);
 import { FastaViewer } from "./fasta-viewer";
 
 // --- Types ---------------------------------------------------------------------
@@ -65,6 +80,9 @@ export interface InlineResultsProps {
   summary?: string | null;
   /** Tighter paddings for narrow hosts (the 320px inspector). */
   compact?: boolean;
+  /** Suspend the embedded 3D studio (unmount engine) while the full viewer
+   *  dialog is open — avoids two WebGL engines sharing one global store. */
+  suspend?: boolean;
 }
 
 interface FileMeta {
@@ -447,10 +465,12 @@ function FilePreview({
   path,
   fileUrl,
   compact,
+  suspended,
 }: {
   path: string;
   fileUrl: (path: string) => string;
   compact: boolean;
+  suspended: boolean;
 }) {
   const ext = extOf(path);
   const kind = previewKindOf(ext);
@@ -509,10 +529,14 @@ function FilePreview({
 
   switch (kind) {
     case "pdb":
+      // MolVision 内嵌工作室：3D 预览 + DSSP/SASA/氢键/接触/孔道分析，直接内联
       return (
-        <Pdb3DViewer
+        <MolStudio
           pdbText={text}
-          className={cn("overflow-hidden rounded-lg border", compact ? "h-72" : "h-96")}
+          name={baseName(path)}
+          variant="inline"
+          compact={compact}
+          suspended={suspended}
         />
       );
     case "fasta":
@@ -539,6 +563,7 @@ export function InlineResults({
   onOpenFullViewer,
   summary,
   compact = false,
+  suspend = false,
 }: InlineResultsProps) {
   const [selected, setSelected] = React.useState<string | null>(() => pickDefault(files));
   const [metas, setMetas] = React.useState<Record<string, FileMeta>>({});
@@ -723,7 +748,7 @@ export function InlineResults({
               <ExternalLink className="size-3" />
             </a>
           </div>
-          <FilePreview path={selected} fileUrl={fileUrl} compact={compact} />
+          <FilePreview path={selected} fileUrl={fileUrl} compact={compact} suspended={suspend} />
         </div>
       )}
 

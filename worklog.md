@@ -2465,3 +2465,29 @@ Stage Summary:
 - The Result tab IS the results view now: file list + sizes + inline 3D/sequence/metrics-table/CSV/image/text previews, provenance badge, one-click full viewer, auto-switch on completion.
 - File API gained ?meta=1 + binary image serving (also used by the dialog's future image previews).
 - No regressions: markdown path, dialog, cluster lane untouched; lint + tsc clean.
+
+---
+Task ID: 26-molvision-embed
+Agent: main
+Task: Embed MolVision (user's own NeurIPS-grade molecular studio, github.com/Jing0715-fer/MolVision) into foundry-lab as the PDB preview + analysis engine for results — replacing the toy CA-tube viewer with the real 3D engine and its full client-side analysis stack (user request: "能直接把molvision内嵌到该项目中负责pdb预览和分析吗").
+
+Work Log:
+- Research: located the real MolVision repo (Jing0715-fer/MolVision — Three.js/Next.js molecular studio, NOT the NeurIPS benchmark of the same name); deep Explore of its architecture: 100% client-side, all science in pure TypeScript (engine 4580 LOC, parser 924, DSSP 306, SASA 353, hbonds 200, contacts 494, pore 228, superpose 357...), zustand store + imperative MolEngine, zero Python backend.
+- Copied 35 lib files → src/lib/molecular/** (engine, parser, representations, marching-cubes, colors, selection, chemistry, types, store, symmetry, dssp, hbonds+worker+store, sasa+worker+store, contacts+store, pore+store, superpose, morph+refine, ensemble-store, heavy-queue, hover/perf/viewport stores, engine-ready, text-registry, textsprite, cap-material, edge-shader, pdbwriter) + src/i18n/** (DualText tt()/useI18n worker-safe i18n, default zh).
+- Copied studio panels → src/components/molecular/**: panels/AnalysisPanel (1198 LOC: SS composition, SASA card + top-12 exposed residues, H-bond residue-pair table, interface contacts + 2D contact map, pore, cross-structure), RepsPanel, ColorsPanel, MeasurePanel, SelectionPanel (PyMOL selection expressions), SequenceBar (969 LOC per-residue colored sequence + drag-range select), ColorLegend, PoreProfile, ViewportHUD, FadeEdge; trimmed LeftPanel to shared SectionTitle/PanelHint.
+- NEW mol-viewer-mount.tsx: lean MolEngine mount (hover tooltips, click/double-click/measure picks, rubber-band box select, visualRev sync, viewport-scoped shortcuts f/s/r/b/h/w/l/Esc — no conflict with foundry-lab global keys).
+- NEW mol-studio.tsx (~420 LOC): the embed wrapper — parse→register→fit + AUTO SASA on load; compact toolbar (9 presets, 9 color schemes, spin/fit/H-bonds/measure menu/2× PNG capture, atom/res/chains badges); collapsible 5-tab analysis rail (分析/表示/颜色/测量/选择); variants: inline (Result tab) + full (dialog + SequenceBar); suspended prop unmounts the engine while the full viewer dialog is open (single-engine invariant).
+- Multi-instance ownership: module registry (structureOwner map + instance seq) — cleanups remove ONLY own structure ids (fixed the dialog-close↔inline-remount race that wiped the freshly re-added structure); latest-mounted studio takes over; evicted instances self-heal via reloadTick.
+- CRITICAL LAYOUT FIX: Radix ScrollArea's `display:table; min-width:100%` content div expands to content MAX-CONTENT (701px inside the 319px inspector → canvas 683px mostly off-screen). Fix: studio root `w-full [contain:inline-size]` (content no longer contributes to the table's intrinsic sizing) + toolbar children min-w-0/shrink (toolbar scrolls internally) + global CSS cap. Canvas now exactly fits its host; mobile 375px scrollWidth==clientWidth.
+- Wired in: inline-results.tsx (PDB case → MolStudio inline, suspend prop chain inspector→InlineResults→FilePreview), output-viewer-dialog.tsx (Structure tab → MolStudio full + dialog widened to max-w-5xl/6xl, SequenceBar included). Pdb3DViewer retired from both (file kept, unused).
+- E2E VERIFIED (agent-browser + VLM + engine QA hooks window.__molEngine/__molData):
+  - Fresh RFdiffusion node run (stale-output nodes re-run) → Result tab → studio renders the REAL design: salmon cartoon ribbon with helices (600 atoms / 150 res / 1 chain), ball-stick preset switch verified (repTypes=["ballstick"] in engine + VLM).
+  - AUTO analysis on load: SASA 9371 Å² total (4424 hydrophobic / 4947 polar, probe 1.4 Å, 92 pts, 16-17 ms) + top-12 exposed residues (A:ASP113 132 Å², A:VAL68 103...) + DSSP SS composition (92 helix 61% / 58 loop 39%) — all computed client-side from the actual output file.
+  - Selection (resi 20-80 expression) → H-bond network: 169 bonds, residue-pair table with real geometries (A:ILE74→A:TYR76 2.00 Å, A:LEU75→A:TYR76 2.65 Å ×2 — α-helix backbone H-bonds; hbondSelOnly-by-default semantics preserved).
+  - Full viewer dialog: 1152px studio, canvas 562×612 + axis gizmo + analysis rail + SequenceBar showing the real one-letter sequence in colored residue blocks with position rulers; inline studio correctly SUSPENDED while dialog open, correctly re-mounted (self-healed) after close.
+  - Layout containment at 1920 and 375px (no horizontal overflow); zero page/console errors; tsc clean; lint clean; dev.log clean (all file API calls 200).
+  - Contact-map card correctly shows A/B groups (no ligand → graceful empty); measure menu (distance/angle/dihedral) wired; capture() works (downloaded engine-capture.png verified by VLM).
+
+Stage Summary:
+- foundry-lab's PDB results now render through the EMBEDDED MolVision engine: publication-grade 3D (cartoon/ball-stick/spacefill/surface/putty + 9 color schemes + spin/rock/fit/orient) AND the full client-side analysis stack (DSSP, Shrake-Rupley SASA with auto-run, Kabsch-Sander H-bonds, interface contacts/ΔSASA, HOLE-style pore, superposition) — inline in the Result tab, no dialog click-through needed; the full dialog adds the sequence bar and the 5-panel rail.
+- The embed is instance-safe (ownership registry + self-heal), host-width-safe (contain:inline-size), and single-engine-safe (suspend).
