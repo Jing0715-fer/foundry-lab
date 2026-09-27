@@ -2447,3 +2447,21 @@ Stage Summary:
 - The native RFdiffusion NETWORK now executes end-to-end on every lane: run API, workflow canvas nodes, cluster dispatch (direct+slurm), with correct hydra grammar, correct output routing, honest executor provenance (REAL · NATIVE badges), and 3D output viewing.
 - Param surface is now a faithful subset of the upstream CLI (list-typed contigs, engineOnly fields never leak to hydra, symmetry=none skipped).
 - Cluster lane and mock-cluster harness updated to the same grammar — script-mode remote paths match the real-cluster provisioning contract (tools dir clone layout).
+
+---
+Task ID: 25-direct-results
+Agent: main
+Task: Result tab shows run results DIRECTLY — output file list + inline previews (no dialog click-through required).
+
+Work Log:
+- User request: results must be displayed more directly in the Result tab (file list + previews inline).
+- Extended GET /api/tools/file: ?meta=1 returns a JSON stat envelope (name/ext/size/modified) for the file list's size column; binary images (png/jpg/jpeg/gif/webp) now streamed as raw bytes with proper image Content-Type (lossless round-trip verified); svg served as image/svg+xml; csv as text/csv; no-store caching; traversal guard re-verified (403).
+- NEW src/components/viewers/inline-results.tsx (~650 lines): self-contained InlineResults component — provenance badge (REAL · NATIVE / REAL · ENGINE / LEGACY), file-count header + "Viewer" affordance, output file list (type icon per extension, basename + truncated dir, byte size, copy-path + download actions, keyboard-selectable rows), and INLINE previews of the selected file: .pdb → three.js Pdb3DViewer (cartoon/ball-stick/sphere, h-72 compact), .fasta/.fa/.aln → colored FastaViewer with legend + position ruler, .json → 3 smart shapes (flat primitive map → metric cards; array of flat maps → metrics table; {"designs":[…]} unwrap → caption + scalar chips + table; else pretty raw + "Show raw JSON" toggle), .csv/.tsv → rendered table (100 rows/20 cols cap), images → <img>, everything else → truncated monospace text with "show all". Auto-selects the best file (pdb > fasta > json > csv > image > first). Markdown run summary in a collapsible section.
+- inspector.tsx rewired: ResultTab now takes outputFiles/executor/onOpenViewer; tool nodes render InlineResults directly (summary = node.result); non-tool nodes keep the streaming markdown; executor derived once (engine banner / legacy banners / native default) and shared with the viewerJob; Result tab trigger carries a live file-count badge; SSE completion handler auto-switches to the Result tab for comp-tool nodes with outputs so results are the FIRST thing visible after a run.
+- E2E VERIFIED (agent-browser + VLM): fresh RFdiffusion node run → Result tab auto-selected → REAL · ENGINE badge + "17 output files" + file rows with real sizes (183 B fasta / 46.5 kB pdb) → scrolled to preview → three.js 3D teal backbone structure rendered INLINE + "Run summary" collapsible below; clicked design_0.fasta → inline colored sequence viewer ("design_0|rfdiffusion|seed314 150 aa", legend, ruler, Copy sequence); clicked metrics.json → per-design metrics TABLE with prettified headers (design/length/helical/extended/clashes/rama ll/symmetry units, verified in DOM) + Show raw JSON; "Viewer" button → full OutputViewerDialog (Summary/Structure/Sequence/Files/Command); non-tool input node → markdown result intact; mobile 375px with inspector + Result open → scrollWidth 375 = clientWidth 375 (NO overflow), footer visible; zero console/page errors; all meta/content API calls 200 in dev.log.
+- Stale-path resilience: repo-DB demo nodes referencing wiped outputs/ render the list without sizes and an honest per-file load error — re-running regenerates real files.
+
+Stage Summary:
+- The Result tab IS the results view now: file list + sizes + inline 3D/sequence/metrics-table/CSV/image/text previews, provenance badge, one-click full viewer, auto-switch on completion.
+- File API gained ?meta=1 + binary image serving (also used by the dialog's future image previews).
+- No regressions: markdown path, dialog, cluster lane untouched; lint + tsc clean.
