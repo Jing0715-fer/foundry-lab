@@ -30,10 +30,12 @@ case "$host" in
       # bare `ssh gpu05` → an interactive login shell on the node
       exec bash -l
     fi
-    # Re-quote each argument so the joined command preserves the original
-    # word boundaries — real ssh passes argv across untouched, and a naive
-    # "$*" join would re-split quoted compounds (`bash -c 'a; b'` etc.).
-    exec bash -c "$(printf '%q ' "$@")"
+    # Real ssh semantics: the remaining argv words are joined with spaces
+    # and executed by the REMOTE shell, which parses the string afresh. So
+    #   ssh gpu05 "nvidia-smi --query-gpu=… --format=csv,noheader"
+    # lands as one shell line on the node — a plain "$*" join is exactly
+    # right (and matches what the app's generated commands rely on).
+    exec bash -c "$*"
     ;;
   *)
     echo "ssh: connect to host $host: No route to host" >&2

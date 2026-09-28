@@ -1,7 +1,7 @@
 // Workflow node catalog — the single source of truth for node types, ports, params.
 // Inspired by cryoflow's JOB_TYPES but adapted for agentic research workflows.
 
-import type { NodeSpec, NodeType, PortKind } from "./types";
+import type { NodeSpec, NodeType, ParamSchema, PortKind } from "./types";
 import { COMP_TOOLS } from "./tools";
 
 export const CARD_W = 248;
@@ -135,28 +135,9 @@ export const NODE_SPECS: NodeSpec[] = [
       num("temperature", "Temperature", 0.6, { min: 0, max: 1.5, step: 0.05 }),
     ],
   },
-  // --- Tools (per-tool node types — split from old single "comptool") --------
-  // Generic legacy comptool kept for backward compat with existing workflows.
-  {
-    type: "comptool",
-    label: "Comp Tool (legacy)",
-    icon: "cpu",
-    color: "slate",
-    description: "Legacy generic comp tool node. Prefer the specific tool nodes (RFdiffusion, ProteinMPNN, etc.) below.",
-    category: "Tools",
-    inputs: [
-      { name: "input", label: "Input context", kind: "context", accepts: ["text", "context", "results", "*"], multiple: false },
-    ],
-    outputs: [
-      { name: "files", label: "Output files", kind: "files" },
-      { name: "summary", label: "Run summary", kind: "text" },
-    ],
-    params: [
-      sel("toolKey", "Tool", "rfdiffusion", COMP_TOOLS.map((t) => t.key)),
-    ],
-  },
-  // Per-tool node specs — generated from COMP_TOOLS so the palette + inspector
-  // automatically pick up new tools added to tools.ts.
+  // --- Tools ----------------------------------------------------------------
+  // Tool node specs — generated from the tool defs so the palette + inspector
+  // automatically pick up tools added to tools.ts.
   ...COMP_TOOLS.map((t): NodeSpec => ({
     type: t.key as NodeType,
     label: t.label,
@@ -174,7 +155,17 @@ export const NODE_SPECS: NodeSpec[] = [
     params: t.paramFields.map((f) => ({
       key: f.key,
       label: f.label,
-      type: f.type === "path" ? "path" as const : f.type === "bool" ? "bool" as const : f.type === "select" ? "select" as const : f.type === "number" ? "number" as const : "text" as const,
+      type: (f.type === "path"
+        ? "path"
+        : f.type === "textarea"
+          ? "textarea"
+          : f.type === "bool"
+            ? "bool"
+            : f.type === "select"
+              ? "select"
+              : f.type === "number"
+                ? "number"
+                : "text") as ParamSchema["type"],
       default: f.default,
       options: f.options,
       min: f.min,

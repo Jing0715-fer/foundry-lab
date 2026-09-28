@@ -11,36 +11,39 @@ and run **real computational algorithms** — never simulations.
 ## What's inside
 
 - **Workflow canvas** — drag-and-drop nodes (agents, tasks, meetings, research
-  pipelines, computational tools, bio queries) with live progress streaming,
+  pipelines, AlphaFold prediction, bio queries) with live progress streaming,
   minimap, undo/redo, grouping, export/import.
 - **Agent layer** — LLM agents with knowledge configs, tool-calling loops,
   team meetings, multi-round research pipelines, and a PI Copilot.
-- **Real tool execution** — every computational run goes through the
-  execution engine:
-  1. **Native**: if the upstream tool is installed on the host (e.g. a real
-     ProteinMPNN clone + torch), it runs natively.
-  2. **Built-in real algorithm engines**: otherwise, the shipped Python
-     science engines execute the job with real algorithms and published
-     data — Chou-Fasman secondary-structure prediction, Ramachandran-basin
-     torsion sampling with NeRF chain construction, Miyazawa-Jernigan
-     contact potentials, Shrake-Rupley SASA, Metropolis Monte-Carlo
-     minimization, knowledge-based scoring with ΔSASA interfaces and
-     alanine-scan ΔΔG.
-  3. **Never simulated** — there is no fake data path anywhere in the app.
+- **AlphaFold2 structure prediction** — the computational tool, following the
+  cluster tutorial end-to-end:
+  - **Cluster lane (primary)**: connect the mgt login node over SSH (IP +
+    username/password), then the app runs the tutorial flow verbatim —
+    `salloc -N 1 --gres=gpu:1 -p brain2` → `ssh gpu05` →
+    `module load alphafold2` → `CUDA_VISIBLE_DEVICES="6" run_alphafold.py
+    --fasta_paths … --output_dir <name>_AF2 --max_template_date 2021-07-20`
+    (or `--feature_file` to skip the MSA stage) — with live logs and the full
+    output tree synced back (ranked_0..4.pdb by pLDDT, relaxed/unrelaxed
+    models, ranking_debug.json, features.pkl, timings.json, msas/).
+  - **Local lane (fallback)**: the built-in Structure Prediction Engine runs
+    the published Chou-Fasman algorithm offline — a classical baseline, NOT
+    the AF2 network (honest positioning everywhere).
+  - **Never simulated** — there is no fake data path anywhere in the app.
 - **Bio APIs** — live BLAST (NCBI URL-API with RID polling), RCSB PDB
   search, PubMed EUtils, and UniProt REST, with honest error reporting.
 - **3D output viewer** — three.js molecular viewer (cartoon / ball-stick /
   space-filling) over the real PDB artifacts each run produces.
 
-## The Tools page
+## The Environment panel
 
-The Tools panel is an **environment & toolchain** page:
+The Environment sheet (sidebar → Environment) is a **host scan + toolchain**
+page:
 
 | Tier | What it shows |
 |---|---|
 | Runtime | python3 / numpy / scipy / biopython / git — live version detection |
-| Engines | the five built-in real algorithm engines with self-test status |
-| External | RFdiffusion, ProteinMPNN family, Rosetta, RF3, ESMFold, ColabFold… native install status + which engine covers the fallback |
+| Engines | the built-in Structure Prediction engine (local AlphaFold fallback) with self-test status |
+| External | AlphaFold2 — provided on the GPU cluster via `module load alphafold2` (native status + fallback mapping) |
 
 Uninstalled items with an **Install** button support real one-click
 installation (pip / git clone + pip) with a live-streaming terminal and

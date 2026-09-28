@@ -34,7 +34,7 @@ import {
   remoteUpload,
   remoteDownload,
 } from "./ssh";
-import { buildWrapperScript, buildSbatchScript } from "./run-scripts";
+import { buildWrapperScript, buildSbatchScript, buildNodeScript, buildSallocCommand } from "./run-scripts";
 import type {
   ClusterConnection,
   ClusterJobInfoDTO,
@@ -298,7 +298,7 @@ export async function startClusterToolRun(
   }
 
   // 4. Remote command (rewritten) + local display command.
-  const { remote: remoteCommand, local: localCommand } = buildRemoteCommand(
+  const { remote: toolCommand, local: localCommand } = buildRemoteCommand(
     def,
     entry,
     params,
@@ -307,6 +307,52 @@ export async function startClusterToolRun(
     remoteToolsDirAbs,
     staged,
   );
+
+  // 4b. Tutorial-flow wrapping (salloc → ssh node → module load → CUDA pin).
+  //  When a compute node / module / CUDA device is requested, the tool
+  //  command runs from a generated node script uploaded to <W>/.fl-node.sh:
+  //    - salloc mode: salloc -N 1 --gres=gpu:N -p <partition> ssh <node> bash <W>/.fl-node.sh
+  //    - direct + node: ssh <node> bash <W>/.fl-node.sh
+  //    - direct (module only): bash <W>/.fl-node.sh
+  //  slurm mode keeps the command inline (module/CUDA lines are generated
+  //  into the sbatch script itself).
+  const af2Node = (target.node ?? "").trim();
+  const af2Module = (target.module ?? "").trim();
+  const af2Cuda = (target.cudaDevice ?? "").trim();
+  let remoteCommand = toolCommand;
+  if (target.mode !== "slurm" && (af2Node || af2Module || af2Cuda)) {
+    const nodeScriptPath = `${remoteWorkdir}/.fl-node.sh`;
+    const nodeScript = buildNodeScript({
+      conn,
+      command: toolCommand,
+      remoteWorkdir,
+      jobName: `fl_${toolKey}_${jobId.slice(-8)}`,
+      module: af2Module || null,
+      cudaDevice: af2Cuda || null,
+    });
+    const nodeUp = await remoteUpload(conn, nodeScript, nodeScriptPath);
+    if (!nodeUp.ok) {
+      return fail(`failed to upload the node script: ${nodeUp.error ?? "unknown error"}`);
+    }
+    if (target.mode === "salloc") {
+      const sallocPartition = (target.partition ?? conn.slurmPartition ?? conn.af2?.partition ?? "").trim();
+      if (!af2Node) {
+        return fail("salloc mode requires a compute node to ssh into (e.g. gpu05)");
+      }
+      remoteCommand = buildSallocCommand({
+        nodeScriptPath,
+        node: af2Node,
+        partition: sallocPartition,
+        gpus: target.gpus ?? 1,
+      });
+    } else if (af2Node) {
+      remoteCommand = `ssh ${shQuote(af2Node)} bash ${shQuote(nodeScriptPath)}`;
+    } else {
+      remoteCommand = `bash ${shQuote(nodeScriptPath)}`;
+    }
+  } else if (target.mode === "salloc") {
+    return fail("salloc mode requires a compute node (the tutorial's gpu05) — pass cluster.node");
+  }
 
   const scriptPath =
     target.mode === "slurm"
@@ -365,6 +411,9 @@ export async function startClusterToolRun(
           ntasks: target.ntasks ?? 1,
           cpusPerTask: target.cpusPerTask ?? 4,
           timeLimitMin: target.timeLimitMin ?? conn.slurmTimeMin,
+          node: target.node ?? null,
+          module: target.module ?? null,
+          cudaDevice: target.cudaDevice ?? null,
         })
       : buildWrapperScript({ conn, command: remoteCommand, remoteWorkdir, jobName });
 
@@ -479,7 +528,7 @@ function aliveCheckLines(run: ClusterRunState): string[] {
           `if [ -n "$__a" ]; then echo "SACCT:$__a"; else echo "VANISHED:1"; fi; fi`,
       ];
     }
-    if (run.mode === "direct") {
+    if (run.mode === "direct" || run.mode === "salloc") {
       const pidFile = shQuote(`${W}/.cf-pid`);
       return [
         `__pline=$(cat ${pidFile} 2>/dev/null)`,
@@ -865,9 +914,11 @@ export async function stopClusterJob(
 
   if (run.mode === "slurm" && run.slurmId) {
     await exec(conn, `scancel ${shQuote(run.slurmId)}`, { timeoutMs: 15_000 });
-  } else if (run.mode === "direct") {
-    // Process-group kill: read .cf-pid's first field (the session leader),
-    // then TERM the group + pid, escalate to KILL after a second.
+  } else {
+    // Direct + salloc modes: process-group kill. Read .cf-pid's first field
+    // (the session leader), then TERM the group + pid, escalate to KILL after
+    // a second. Killing the salloc/ssh chain on the login node also tears
+    // down the remote node-side process.
     const pidRes = await exec(
       conn,
       `cat ${shQuote(`${run.remoteWorkdir}/.cf-pid`)} 2>/dev/null`,

@@ -16,6 +16,7 @@ const DEFAULTS = {
   port: 22,
   remoteRoot: "~/foundry-lab",
   remoteToolsDir: "~/foundry-lab/tools",
+  af2: { partition: "brain2", node: "gpu05", module: "alphafold2" },
 };
 
 function readRaw(): ClusterConnection[] {
@@ -79,6 +80,7 @@ export function upsertConnection(input: Partial<ClusterConnection> & { name: str
       useSlurm: input.useSlurm ?? false,
       slurmPartition: input.slurmPartition ?? null,
       slurmTimeMin: input.slurmTimeMin ?? null,
+      af2: input.af2 === undefined ? DEFAULTS.af2 : input.af2,
       createdAt: now,
       updatedAt: now,
       lastProbe: null,
@@ -102,6 +104,7 @@ export function upsertConnection(input: Partial<ClusterConnection> & { name: str
     conn.useSlurm = input.useSlurm ?? conn.useSlurm;
     conn.slurmPartition = input.slurmPartition !== undefined ? input.slurmPartition : conn.slurmPartition;
     conn.slurmTimeMin = input.slurmTimeMin !== undefined ? input.slurmTimeMin : conn.slurmTimeMin;
+    conn.af2 = input.af2 === undefined ? (conn.af2 ?? DEFAULTS.af2) : input.af2;
     conn.updatedAt = now;
   }
 

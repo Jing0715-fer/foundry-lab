@@ -174,7 +174,7 @@ export function ClusterPanel() {
   const [probeFor, setProbeFor] = React.useState<{ connId: string; probe: ClusterProbeDTO } | null>(null);
 
   // launcher
-  const [toolKey, setToolKey] = React.useState<string>(COMP_TOOLS[0]?.key ?? "rfdiffusion");
+  const [toolKey, setToolKey] = React.useState<string>(COMP_TOOLS[0]?.key ?? "alphafold");
   const [paramValues, setParamValues] = React.useState<Record<string, string | number | boolean>>({});
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const [launchConnId, setLaunchConnId] = React.useState<string>("");
@@ -620,7 +620,7 @@ export function ClusterPanel() {
                     rows={3}
                     value={draft.envLines}
                     onChange={(e) => setDraft({ ...draft, envLines: e.target.value })}
-                    placeholder={"module load rfdiffusion\nconda activate rf"}
+                    placeholder={"module load alphafold2\nconda activate myenv"}
                     className="font-mono text-xs"
                   />
                 </div>

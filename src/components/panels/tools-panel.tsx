@@ -1,17 +1,16 @@
 "use client";
 
 /**
- * Tools → Environment & Toolchain page (complete redesign).
+ * Environment sheet — Environment & Toolchain panel (host scan + installs).
  *
- * This panel is now an installation-status page for everything the app needs:
+ * Installation-status page for everything the app needs:
  *   ① Runtime dependencies  — python3 / numpy / scipy / biopython / git
  *      (with live version detection + one-click pip install when missing)
- *   ② Built-in real algorithm engines — the shipped Python science engines,
- *      each with a live self-test status + algorithm citations
- *   ③ External tools — the heavyweight upstream packages (RFdiffusion,
- *      ProteinMPNN, Rosetta…): native install status, one-click install with
- *      a live-streaming terminal, and which built-in engine serves as the
- *      real-algorithm fallback while the native tool is missing
+ *   ② Built-in real algorithm engine — the shipped Structure Prediction
+ *      engine (local AlphaFold fallback) with a live self-test + citations
+ *   ③ External tools — AlphaFold2: provided on the GPU cluster via
+ *      `module load alphafold2` (connect it under Cluster); local fallback
+ *      is the built-in engine
  *   ④ Recent install jobs with their full logs.
  */
 
@@ -136,11 +135,7 @@ const TOOL_CATEGORY_ORDER = [
 ];
 
 const ENGINE_LABELS: Record<string, string> = {
-  "engine-diffusion": "Backbone Diffusion",
   "engine-fold": "Structure Prediction",
-  "engine-mpnn": "Inverse Folding",
-  "engine-score": "Knowledge-Based Scoring",
-  "engine-antibody": "Antibody Design",
 };
 
 function timeAgo(iso: string): string {

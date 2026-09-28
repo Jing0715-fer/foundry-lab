@@ -9,7 +9,7 @@ import {
   Bot,
   Command,
   SquarePen,
-  Wrench,
+  Boxes,
   X,
   ChevronLeft,
   ChevronRight,
@@ -111,10 +111,10 @@ const STEPS: TourStep[] = [
     accent: "bg-rose-500 hover:bg-rose-600",
   },
   {
-    icon: Wrench,
-    title: "Comp + Bio tools",
+    icon: Boxes,
+    title: "AlphaFold + Bio tools",
     description:
-      "Run RFdiffusion, ProteinMPNN, BLAST, PDB searches — all from the Tools panel. Runs use real algorithms: the native tool if installed, else the built-in knowledge-based engine.",
+      "Run AlphaFold2 predictions on the GPU cluster (mgt → salloc → gpu05 → module load alphafold2) — plus BLAST, PDB, PubMed searches. Cluster runs use the real AF2; local runs use the built-in classical engine.",
     iconWrap: "bg-cyan-500/15",
     iconText: "text-cyan-600 dark:text-cyan-400",
     accent: "bg-cyan-500 hover:bg-cyan-600",

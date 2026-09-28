@@ -8,13 +8,13 @@ import {
   LayoutGrid,
   LayoutTemplate,
   Loader2,
+  Boxes,
   Server,
   Sparkles,
   SquarePen,
   Store,
   TerminalSquare,
   Users,
-  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -53,7 +53,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "tasks", label: "Tasks", icon: SquarePen },
   { key: "meetings", label: "Meetings", icon: Users },
   { key: "research", label: "Research", icon: BookOpen },
-  { key: "tools", label: "Tools", icon: Wrench },
+  { key: "alphafold", label: "AlphaFold", icon: Boxes },
 ];
 
 /**

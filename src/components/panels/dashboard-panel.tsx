@@ -10,7 +10,7 @@ import {
   SquarePen,
   Sparkles,
   ArrowRight,
-  Wrench,
+  Boxes,
   LayoutGrid,
   Loader2,
   Clock,
@@ -175,13 +175,13 @@ export function DashboardPanel() {
     label: string;
     description: string;
     icon: React.ReactNode;
-    panel: "agents" | "tasks" | "meetings" | "research" | "tools" | "canvas";
+    panel: "agents" | "tasks" | "meetings" | "research" | "alphafold" | "canvas";
   }[] = [
     { label: "Agents", description: "Personas & tools", icon: <Bot className="size-4" />, panel: "agents" },
     { label: "Tasks", description: "Run a prompt", icon: <SquarePen className="size-4" />, panel: "tasks" },
     { label: "Meetings", description: "Multi-agent debate", icon: <Users className="size-4" />, panel: "meetings" },
     { label: "Research", description: "Pipeline + report", icon: <BookOpen className="size-4" />, panel: "research" },
-    { label: "Tools", description: "Comp + bio tools", icon: <Wrench className="size-4" />, panel: "tools" },
+    { label: "AlphaFold", description: "Predict structures", icon: <Boxes className="size-4" />, panel: "alphafold" },
     { label: "Canvas", description: "Visual workflow", icon: <LayoutGrid className="size-4" />, panel: "canvas" },
   ];
 

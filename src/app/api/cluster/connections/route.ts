@@ -67,6 +67,18 @@ export function parseConnectionBody(
     if (Number.isFinite(timeMin) && timeMin > 0) input.slurmTimeMin = Math.floor(timeMin);
   }
 
+  // AlphaFold tutorial defaults for this cluster (mgt → salloc → gpu05 flow).
+  if (body.af2 === null) {
+    input.af2 = null;
+  } else if (body.af2 && typeof body.af2 === "object" && !Array.isArray(body.af2)) {
+    const a = body.af2 as Record<string, unknown>;
+    const af2: { partition?: string; node?: string; module?: string } = {};
+    if (typeof a.partition === "string" && a.partition.trim()) af2.partition = a.partition.trim();
+    if (typeof a.node === "string" && a.node.trim()) af2.node = a.node.trim();
+    if (typeof a.module === "string" && a.module.trim()) af2.module = a.module.trim();
+    input.af2 = af2;
+  }
+
   return { input };
 }
 

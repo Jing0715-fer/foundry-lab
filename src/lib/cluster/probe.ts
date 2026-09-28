@@ -198,7 +198,19 @@ async function probeTools(c: ClusterConnection, homeDir: string): Promise<Cluste
   const checks: ToolCheck[] = [];
 
   for (const entry of TOOL_REGISTRY) {
-    if (entry.detect.type === "binary" && entry.detect.binary) {
+    if (entry.detect.clusterCheck) {
+      // Module-provided tools (AlphaFold2) only exist after `module load` —
+      // the check runs inside a login shell so the module function is
+      // defined, exactly like a user typing the tutorial commands.
+      checks.push({
+        key: entry.key,
+        label: entry.label,
+        via: "module",
+        cmd:
+          `bash -lc ${shQuote(`${entry.detect.clusterCheck} && ` +
+            `echo "TOOL:${entry.key}:yes:module" || echo "TOOL:${entry.key}:no:module"`)} `,
+      });
+    } else if (entry.detect.type === "binary" && entry.detect.binary) {
       checks.push({
         key: entry.key,
         label: entry.label,

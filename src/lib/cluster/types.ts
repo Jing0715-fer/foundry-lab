@@ -16,7 +16,7 @@
 // leave the server: DTOs expose hasPassword / hasPassphrase booleans only.
 
 export type ClusterAuthMethod = "password" | "key" | "agent";
-export type ClusterSubmitMode = "direct" | "slurm";
+export type ClusterSubmitMode = "direct" | "slurm" | "salloc";
 
 // ── Connection ──────────────────────────────────────────────────────────────
 
@@ -46,6 +46,13 @@ export interface ClusterConnection {
   slurmPartition: string | null;
   /** Explicit walltime minutes; null = cluster default. */
   slurmTimeMin: number | null;
+  /** AlphaFold tutorial defaults for this cluster (the mgt → salloc → gpu05
+   *  flow): salloc partition, compute node to ssh into, environment module. */
+  af2?: {
+    partition?: string;
+    node?: string;
+    module?: string;
+  } | null;
   createdAt: string;
   updatedAt: string;
   lastProbe: ClusterProbe | null;
@@ -67,6 +74,11 @@ export interface ClusterConnectionDTO {
   useSlurm: boolean;
   slurmPartition: string | null;
   slurmTimeMin: number | null;
+  af2?: {
+    partition?: string;
+    node?: string;
+    module?: string;
+  } | null;
   createdAt: string;
   updatedAt: string;
   lastProbe: ClusterProbeDTO | null;
@@ -120,7 +132,10 @@ export interface ClusterProbeDTO extends ClusterProbe {}
 // ── Run target & run state ──────────────────────────────────────────────────
 
 /** Where + how a tool run should execute. Sent by the UI with POST
- *  /api/tools/run body.cluster, or threaded through the workflow engine. */
+ *  * /api/tools/run body.cluster, or threaded through the workflow engine.
+ *  The salloc mode follows the AlphaFold tutorial: request one GPU on the
+ *  login node (salloc -N 1 --gres=gpu:1 -p <partition>), ssh to <node>, load
+ *  <module>, pin CUDA_VISIBLE_DEVICES=<cudaDevice>, then run the command. */
 export interface ClusterRunTarget {
   connectionId: string;
   mode: ClusterSubmitMode;
@@ -133,6 +148,14 @@ export interface ClusterRunTarget {
   cpusPerTask?: number;
   /** Walltime minutes. Connection default when omitted. */
   timeLimitMin?: number | null;
+  /** salloc/direct mode: compute node to ssh into after allocation
+   *  (the tutorial's GPU05). */
+  node?: string | null;
+  /** Environment module to load before running (the tutorial's alphafold2). */
+  module?: string | null;
+  /** CUDA card pinning — exported as CUDA_VISIBLE_DEVICES (the tutorial's
+   *  CUDA_VISIBLE_DEVICES="6"). */
+  cudaDevice?: string | null;
 }
 
 export type ClusterRunPhase =
@@ -224,6 +247,7 @@ export function toClusterConnectionDTO(c: ClusterConnection): ClusterConnectionD
     useSlurm: c.useSlurm,
     slurmPartition: c.slurmPartition,
     slurmTimeMin: c.slurmTimeMin,
+    af2: c.af2 ?? null,
     createdAt: c.createdAt,
     updatedAt: c.updatedAt,
     lastProbe: c.lastProbe ?? null,

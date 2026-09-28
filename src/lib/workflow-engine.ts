@@ -155,25 +155,6 @@ async function fetchConnectedAgents(
   return { ok: true, lead, members };
 }
 
-/** Helper: filter comptool params — strip toolKey and unwrap param_<toolKey>_* prefixes. */
-function filterCompParams(
-  params: Record<string, string | number | boolean>,
-  toolKey: string,
-): Record<string, unknown> {
-  const out: Record<string, unknown> = {};
-  const prefix = `param_${toolKey}_`;
-  for (const [k, v] of Object.entries(params)) {
-    if (k === "toolKey") continue;
-    if (k.startsWith(prefix)) {
-      out[k.slice(prefix.length)] = v;
-    } else if (!k.startsWith("param_")) {
-      // Non-tool-specific params (rare) — pass through.
-      out[k] = v;
-    }
-  }
-  return out;
-}
-
 /**
  * Execute a single node given its type + params + inputs.
  * Returns { result, logs, status }.
@@ -285,19 +266,24 @@ export async function executeNode(
         return { result: report, logs: transcript, status: "completed" };
       }
 
-      case "comptool": {
-        const toolKey = String(node.params.toolKey ?? "rfdiffusion");
-        // Cluster target (inspector-managed, task 23-d): a raw `_cluster` param
-        // (JSON string or object) routes this tool to an SSH cluster. It is
-        // stripped from the filtered params so it never reaches buildCommand.
+      case "alphafold": {
+        // The AlphaFold prediction tool node (legacy DB comp-tool nodes are
+        // migrated to "alphafold" by the seed route).
+        const toolKey = "alphafold";
+        // Cluster target (inspector-managed): a raw `_cluster` param (JSON
+        // string or object) routes this run to an SSH cluster — e.g. the
+        // AlphaFold tutorial flow (mgt → salloc → gpu05 → module alphafold2).
+        // It is stripped from the filtered params so it never reaches
+        // buildCommand.
         const clusterTarget = extractClusterTarget(
           (node.params as Record<string, unknown>)._cluster,
         );
-        const filtered = filterCompParams(node.params, toolKey);
-        delete (filtered as Record<string, unknown>)._cluster;
+        const filtered: Record<string, unknown> = { ...node.params };
+        delete filtered._cluster;
+        delete filtered.toolKey;
         if (inputs) {
           // Pass upstream context as an "inputs" hint — executeCompTool ignores unknown keys.
-          (filtered as Record<string, unknown>).__inputs = inputs;
+          filtered.__inputs = inputs;
         }
         const { summary, stdout, files } = await executeCompTool(
           toolKey,
@@ -307,38 +293,6 @@ export async function executeNode(
         // ##OUTPUTS## trailer: the built-in engines print it themselves, native
         // upstream tools do not — append it from the executor's file list so
         // the inspector's Outputs button works for BOTH executors.
-        const logs = files.length
-          ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
-          : stdout;
-        return { result: summary, logs, status: "completed" };
-      }
-
-      // Per-tool node types — dispatch on node.type which IS the toolKey.
-      case "rfdiffusion":
-      case "rfantibody":
-      case "proteinmpnn":
-      case "ligandmpnn":
-      case "solublempnn":
-      case "rosetta":
-      case "pyrosetta":
-      case "rf3":
-      case "esmfold":
-      case "colabfold": {
-        const toolKey = node.type;
-        // Same cluster routing as the comptool case (raw `_cluster` param).
-        const clusterTarget = extractClusterTarget(
-          (node.params as Record<string, unknown>)._cluster,
-        );
-        // node.params are already the tool's own params (no prefixing needed).
-        const filtered: Record<string, unknown> = { ...node.params };
-        delete filtered._cluster;
-        if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
-        const { summary, stdout, files } = await executeCompTool(
-          toolKey,
-          filtered,
-          clusterTarget ? { cluster: clusterTarget } : {},
-        );
-        // Same ##OUTPUTS## trailer as the comptool branch above.
         const logs = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
           : stdout;

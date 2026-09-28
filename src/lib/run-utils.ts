@@ -9,11 +9,13 @@ import {
   summaryPrompt,
 } from "./agents";
 import { getCompTool, buildCommand, extractToolCalls, type CompToolDef } from "./tools";
+import { materializeSequence } from "./alphafold";
 import { executeCompToolReal } from "./real-executor";
 import { db } from "@/lib/db";
 import { startClusterToolRun, reconcileClusterJobs, getRun } from "./cluster/cluster-run";
 import type { ClusterRunTarget } from "./cluster/types";
 import { resolve } from "path";
+import { mkdirSync } from "fs";
 import { runBio } from "./bio-tools";
 import type {
   AgentDTO,
@@ -409,10 +411,21 @@ export function extractClusterTarget(raw: unknown): ClusterRunTarget | null {
 
   const target: ClusterRunTarget = {
     connectionId,
-    mode: o.mode === "slurm" ? "slurm" : "direct",
+    mode: o.mode === "slurm" ? "slurm" : o.mode === "salloc" ? "salloc" : "direct",
   };
   if (typeof o.partition === "string" && o.partition.trim()) {
     target.partition = o.partition.trim();
+  }
+  // Tutorial-flow fields: compute node to ssh into (gpu05), environment
+  // module (alphafold2), CUDA card pinning (CUDA_VISIBLE_DEVICES).
+  if (typeof o.node === "string" && o.node.trim()) {
+    target.node = o.node.trim();
+  }
+  if (typeof o.module === "string" && o.module.trim()) {
+    target.module = o.module.trim();
+  }
+  if (typeof o.cudaDevice === "string" && o.cudaDevice.trim()) {
+    target.cudaDevice = o.cudaDevice.trim().replace(/[^0-9,]/g, "");
   }
   const int = (v: unknown, min: number): number | undefined => {
     const n = Number(v);
@@ -504,8 +517,16 @@ async function executeCompToolOnCluster(
   }
   const workDir = resolve(process.cwd(), "outputs", toolKey, jobId);
 
+  // (a2) AlphaFold: materialize a pasted FASTA sequence into a local input
+  // file so the staging lane uploads it like any other path input.
+  const dispatchParams = { ...params };
+  if (toolKey === "alphafold") {
+    mkdirSync(workDir, { recursive: true });
+    materializeSequence(dispatchParams, workDir);
+  }
+
   // (b) Dispatch (startClusterToolRun never throws; failures mark the row).
-  const started = await startClusterToolRun({ jobId, toolKey, params, workDir, target });
+  const started = await startClusterToolRun({ jobId, toolKey, params: dispatchParams, workDir, target });
   if (!started.ok) {
     return {
       summary: `Cluster run failed: ${started.error}`,
@@ -515,8 +536,10 @@ async function executeCompToolOnCluster(
     };
   }
 
-  // (c) Poll loop: sweep the cluster + read the row every 3s.
-  const deadline = Date.now() + 30 * 60 * 1000;
+  // (c) Poll loop: sweep the cluster + read the row every 3s. Real AF2
+  // predictions (MSA + 5 models + relax) legitimately take hours — the
+  // ceiling is per-tool; the timeout reports honestly either way.
+  const deadline = Date.now() + (toolKey === "alphafold" ? 120 : 30) * 60 * 1000;
   let lastTail = "";
   while (Date.now() < deadline) {
     await new Promise<void>((r) => setTimeout(r, 3000));
@@ -571,8 +594,8 @@ async function executeCompToolOnCluster(
   const tail = lastTail || run?.logTailOut || "";
   return {
     summary:
-      `Cluster run still in progress after 30 minutes (job ${jobId}) — ` +
-      "watch it on the Tools → Jobs page.",
+      `Cluster run still in progress after the poll ceiling (job ${jobId}) — ` +
+      "watch it on the AlphaFold / Jobs panel.",
     stdout: `$ ${run?.command ?? ""}\n[cluster run · job ${jobId} — poll timeout]\n${tail}`,
     files: [],
     command: run?.command ?? "",

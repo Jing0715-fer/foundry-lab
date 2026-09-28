@@ -317,6 +317,18 @@ async function runNativeTool(
 
   // Structured arg tokens (values with spaces survive intact).
   const argTokens = buildArgs(def, params).slice(1); // drop cliCommand head
+  // Environment-prefix params (the tutorial's CUDA_VISIBLE_DEVICES="6") →
+  // process env, never argv.
+  const envVars: Record<string, string> = {};
+  for (const f of def.paramFields) {
+    if (!f.envPrefix) continue;
+    const v = params[f.key] ?? f.default;
+    if (v === "" || v == null) continue;
+    envVars[f.envPrefix] = String(v);
+  }
+  const childEnv = Object.keys(envVars).length
+    ? { ...process.env, ...envVars }
+    : undefined;
   // Registry-pinned flags the param surface doesn't model (e.g. hydra
   // `inference.write_trajectory=False`).
   const fixed = mode.fixedArgs ?? [];
@@ -349,6 +361,7 @@ async function runNativeTool(
       displayCommand,
       Date.now(),
       mode.timeoutMs,
+      childEnv,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -361,6 +374,7 @@ async function runNativeTool(
       displayCommand,
       Date.now(),
       mode.timeoutMs,
+      childEnv,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -374,6 +388,7 @@ async function runNativeTool(
       displayCommand,
       Date.now(),
       mode.timeoutMs,
+      childEnv,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -386,6 +401,7 @@ async function runNativeTool(
     displayCommand,
     Date.now(),
     mode.timeoutMs,
+    childEnv,
   );
   return { ...res, executor: "native", realToolUsed: true };
 }
@@ -447,13 +463,14 @@ async function runProcess(
   displayCommand: string,
   startedAt: number,
   timeoutMs = 5 * 60 * 1000,
+  env?: NodeJS.ProcessEnv,
 ): Promise<Omit<ExecutionResult, "executor" | "realToolUsed">> {
   return new Promise((resolvePromise) => {
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
     let proc: ReturnType<typeof spawn>;
     try {
-      proc = spawn(cmd, args, { cwd, shell: false });
+      proc = spawn(cmd, args, { cwd, shell: false, env });
     } catch (e) {
       resolvePromise({
         stdout: "",
@@ -493,7 +510,7 @@ async function runProcess(
           const entries = await fs.readdir(dir).catch(() => [] as string[]);
           await Promise.all(
             entries
-              .filter((f) => /\.(pdb|fasta|fa|txt|json|csv|out|aln|log)$/i.test(f))
+              .filter((f) => /\.(pdb|fasta|fa|txt|json|csv|out|aln|log|pkl|a3m|sto)$/i.test(f))
               .map(async (f) => {
                 const full = join(dir, f);
                 const st = await fs.stat(full).catch(() => null);

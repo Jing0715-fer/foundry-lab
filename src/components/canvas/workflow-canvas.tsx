@@ -767,11 +767,11 @@ export function WorkflowCanvas() {
               </button>
               <button
                 type="button"
-                onClick={() => void createNodeAtViewportCenter("comptool")}
+                onClick={() => void createNodeAtViewportCenter("alphafold")}
                 className="inline-flex items-center gap-1.5 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-3 py-1.5 text-xs font-medium text-cyan-700 transition-colors hover:bg-cyan-500/20 dark:text-cyan-300"
               >
                 <Cpu className="size-3.5" />
-                Add a Comp Tool
+                Add AlphaFold
               </button>
             </div>
           </div>

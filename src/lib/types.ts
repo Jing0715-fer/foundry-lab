@@ -41,7 +41,7 @@ export interface ChatMessageDTO {
 
 export interface ToolCall {
   kind: "comp" | "bio";
-  tool: string; // rfdiffusion | proteinmpnn | blast | pdb | ...
+  tool: string; // alphafold | blast | pdb | ...
   params: Record<string, unknown>;
   result?: string;
   status?: "pending" | "running" | "completed" | "failed";
@@ -116,11 +116,7 @@ export interface ResearchReportDTO {
 
 export type NodeType =
   | "agent" | "task" | "meeting" | "research"
-  | "comptool" | "biotool" | "input" | "output"
-  // Per-tool node types (split from comptool for richer canvas)
-  | "rfdiffusion" | "rfantibody" | "proteinmpnn" | "ligandmpnn" | "solublempnn"
-  | "rosetta" | "pyrosetta"
-  | "rf3" | "esmfold" | "colabfold";
+  | "alphafold" | "biotool" | "input" | "output";
 
 export type NodeStatus =
   | "idle" | "pending" | "running" | "completed" | "failed";
@@ -166,7 +162,7 @@ export interface NodeSpec {
   params: ParamSchema[];
   /** does this node require an LLM call to run */
   usesLLM?: boolean;
-  /** for comptool: which tool key */
+  /** for the alphafold tool node */
   toolKey?: string;
   /** for biotool: which bio api */
   bioKey?: string;
@@ -212,10 +208,7 @@ export interface WorkflowDTO {
 
 // --- Tools -------------------------------------------------------------------
 
-export type CompToolKey =
-  | "rfdiffusion" | "rfantibody" | "proteinmpnn" | "ligandmpnn" | "solublempnn"
-  | "rosetta" | "pyrosetta"
-  | "rf3" | "esmfold" | "colabfold";
+export type CompToolKey = "alphafold";
 export type BioToolKey = "blast" | "pdb" | "pubmed" | "uniprot";
 
 export interface ToolEnvironmentDTO {

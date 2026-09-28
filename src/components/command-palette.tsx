@@ -34,6 +34,7 @@ import {
   Users,
   BookOpen,
   Cpu,
+  Boxes,
   Database,
   ArrowRightToLine,
   Flag,
@@ -157,14 +158,14 @@ function pickJSONFile(onText: (text: string, fileName: string) => void) {
   input.click();
 }
 
-const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "tasks" | "meetings" | "research" | "tools"; label: string }[] = [
+const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "tasks" | "meetings" | "research" | "alphafold"; label: string }[] = [
   { panel: "canvas", label: "Go to Canvas" },
   { panel: "dashboard", label: "Go to Dashboard" },
   { panel: "agents", label: "Go to Agents" },
   { panel: "tasks", label: "Go to Tasks" },
   { panel: "meetings", label: "Go to Meetings" },
   { panel: "research", label: "Go to Research" },
-  { panel: "tools", label: "Go to Tools" },
+  { panel: "alphafold", label: "Go to AlphaFold" },
 ];
 
 const ADD_NODE_TYPES: { type: string; label: string; icon: React.ReactNode }[] = [
@@ -172,7 +173,7 @@ const ADD_NODE_TYPES: { type: string; label: string; icon: React.ReactNode }[] =
   { type: "task", label: "Add Task", icon: <SquarePen className="size-4 mr-2" /> },
   { type: "meeting", label: "Add Team Meeting", icon: <Users className="size-4 mr-2" /> },
   { type: "research", label: "Add Research", icon: <BookOpen className="size-4 mr-2" /> },
-  { type: "comptool", label: "Add Comp Tool", icon: <Cpu className="size-4 mr-2" /> },
+  { type: "alphafold", label: "Add AlphaFold", icon: <Boxes className="size-4 mr-2" /> },
   { type: "biotool", label: "Add Bio Tool", icon: <Database className="size-4 mr-2" /> },
   { type: "input", label: "Add Input", icon: <ArrowRightToLine className="size-4 mr-2" /> },
   { type: "output", label: "Add Output", icon: <Flag className="size-4 mr-2" /> },

@@ -17,9 +17,9 @@ import { AgentsPanel } from "@/components/panels/agents-panel";
 import { TasksPanel } from "@/components/panels/tasks-panel";
 import { MeetingsPanel } from "@/components/panels/meetings-panel";
 import { ResearchPanel } from "@/components/panels/research-panel";
+import AlphaFoldPanel from "@/components/panels/alphafold-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
-import { EnvironmentPanel } from "@/components/panels/environment-panel";
 import { ClusterPanel } from "@/components/panels/cluster-panel";
 import { PiCopilot } from "@/components/panels/pi-copilot";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
@@ -299,7 +299,7 @@ export default function Home() {
           {activePanel === "tasks" && <div className="min-h-0 flex-1 overflow-y-auto"><TasksPanel /></div>}
           {activePanel === "meetings" && <div className="min-h-0 flex-1 overflow-y-auto"><MeetingsPanel /></div>}
           {activePanel === "research" && <div className="min-h-0 flex-1 overflow-y-auto"><ResearchPanel /></div>}
-          {activePanel === "tools" && <div className="min-h-0 flex-1 overflow-y-auto"><ToolsPanel /></div>}
+          {activePanel === "alphafold" && <div className="min-h-0 flex-1 overflow-y-auto"><AlphaFoldPanel /></div>}
         </main>
       </div>
       <Footer />
@@ -326,22 +326,22 @@ export default function Home() {
           <PiCopilot />
         </SheetContent>
       </Sheet>
-      {/* Environment Sheet — left side, w-full sm:max-w-lg. Renders the
-          Environment Management panel (tool scan + install UI). The sheet
-          opens from the left so it doesn't overlap the right-side PI Copilot
-          sheet (both can be open at once). SheetTitle/Description are
-          sr-only because EnvironmentPanel renders its own visible header. */}
+      {/* Environment Sheet — left side, w-full sm:max-w-2xl. Renders the
+          Environment & Toolchain panel (runtime deps + built-in engines +
+          external tool status + one-click installs). Wider than the old
+          environment viewer because it hosts engine provenance cards and
+          streaming install terminals. */}
       <Sheet open={environmentOpen} onOpenChange={setEnvironmentOpen}>
         <SheetContent
           side="left"
-          className="w-full gap-0 p-0 sm:max-w-lg"
+          className="w-full gap-0 p-0 sm:max-w-2xl"
         >
           <SheetTitle className="sr-only">Environment</SheetTitle>
           <SheetDescription className="sr-only">
-            Scan the host for installed tools and copy install commands for
-            missing ones.
+            Scan the host for runtime dependencies and engine status, and
+            one-click install missing pieces.
           </SheetDescription>
-          <EnvironmentPanel />
+          <ToolsPanel />
         </SheetContent>
       </Sheet>
       {/* Cluster Sheet — left side like Environment, but wider (probe grids +

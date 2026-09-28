@@ -264,11 +264,11 @@ function ParamRow({
     );
   }
 
-  // For comptool nodes, hide param fields whose prefix doesn't match the current toolKey.
-  if (node.type === "comptool" && param.key.startsWith("param_")) {
-    const toolKey = String(node.params.toolKey ?? "rfdiffusion");
-    const prefix = `param_${toolKey}_`;
-    if (!param.key.startsWith(prefix)) return null;
+  // For the alphafold tool node, hide param fields whose prefix doesn't
+  // match a legacy `param_<toolKey>_*` layout (migrated DB nodes).
+  if (param.key.startsWith("param_")) {
+    // Legacy prefixed params no longer exist in the spec — nothing matches.
+    return null;
   }
 
   return (
@@ -300,17 +300,23 @@ interface ClusterConnLite {
   host: string;
   useSlurm: boolean;
   slurmPartition: string | null;
+  af2?: {
+    partition?: string;
+    node?: string;
+    module?: string;
+  } | null;
   lastProbe: {
     slurm: { partitions: { name: string; gpusPerNode: number }[] };
   } | null;
 }
 
-/** Cluster dispatch section for tool nodes (comptool legacy + per-tool types).
+/** Cluster dispatch section for tool nodes (the AlphaFold node).
  *
  * Manages the node's `_cluster` param (stored as a JSON STRING so it fits the
  * string|number|boolean param surface). The workflow engine's
  * extractClusterTarget parses it back and routes the tool run to the
- * SSH cluster instead of local execution. */
+ * SSH cluster instead of local execution. The salloc mode follows the
+ * AlphaFold tutorial (mgt → salloc → gpu05 → module alphafold2). */
 function ClusterTargetSection({
   node,
   onPatchParam,
@@ -324,7 +330,14 @@ function ClusterTargetSection({
   const [connError, setConnError] = React.useState<string | null>(null);
 
   const raw = (node.params as Record<string, unknown>)._cluster;
-  type ClusterTargetLite = { connectionId?: string; mode?: string; partition?: string };
+  type ClusterTargetLite = {
+    connectionId?: string;
+    mode?: string;
+    partition?: string;
+    node?: string;
+    module?: string;
+    cudaDevice?: string;
+  };
   let target: ClusterTargetLite | null = null;
   if (typeof raw === "string" && raw.trim()) {
     try { target = JSON.parse(raw) as ClusterTargetLite; } catch { target = null; }
@@ -350,7 +363,16 @@ function ClusterTargetSection({
     if (enabled && !loaded) void loadConns();
   }, [enabled, loaded, loadConns]);
 
-  const write = (next: { connectionId?: string; mode?: string; partition?: string } | null) => {
+  const write = (
+    next: {
+      connectionId?: string;
+      mode?: string;
+      partition?: string;
+      node?: string;
+      module?: string;
+      cudaDevice?: string;
+    } | null,
+  ) => {
     if (!next || !next.connectionId) {
       onPatchParam("_cluster", "");
       return;
@@ -385,8 +407,11 @@ function ClusterTargetSection({
                 }
                 write({
                   connectionId: list[0]?.id ?? "",
-                  mode: list[0]?.useSlurm ? "slurm" : "direct",
-                  partition: list[0]?.slurmPartition ?? undefined,
+                  mode: "salloc",
+                  partition: list[0]?.af2?.partition ?? list[0]?.slurmPartition ?? undefined,
+                  node: list[0]?.af2?.node ?? "gpu05",
+                  module: list[0]?.af2?.module ?? "alphafold2",
+                  cudaDevice: String(node.params.gpu ?? "0"),
                 });
               })();
             } else {
@@ -431,7 +456,20 @@ function ClusterTargetSection({
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid grid-cols-2 gap-1.5">
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => write({ ...target, connectionId: target?.connectionId ?? "", mode: "salloc" })}
+                  className={cn(
+                    "rounded-md border px-2 py-1.5 text-left text-[11px] transition-colors",
+                    target?.mode === "salloc"
+                      ? "border-emerald-500/60 bg-emerald-500/10 font-medium text-emerald-700 dark:text-emerald-300"
+                      : "border-border text-muted-foreground hover:bg-accent",
+                  )}
+                >
+                  salloc
+                  <span className="block text-[10px] font-normal">tutorial flow</span>
+                </button>
                 <button
                   type="button"
                   onClick={() => write({ ...target, connectionId: target?.connectionId ?? "", mode: "direct" })}
@@ -459,7 +497,7 @@ function ClusterTargetSection({
                   <span className="block text-[10px] font-normal">submit via sbatch</span>
                 </button>
               </div>
-              {target?.mode === "slurm" && (
+              {(target?.mode === "slurm" || target?.mode === "salloc") && (
                 <div className="grid gap-1.5">
                   <label className="text-[11px] font-medium text-muted-foreground">Partition</label>
                   {partitions.length > 0 ? (
@@ -480,16 +518,49 @@ function ClusterTargetSection({
                     <Input
                       value={target?.partition ?? ""}
                       onChange={(e) => write({ ...target, connectionId: target?.connectionId ?? "", partition: e.target.value })}
-                      placeholder="gpu"
+                      placeholder="brain2"
                       className="h-7 text-xs"
                     />
                   )}
                 </div>
               )}
+              {target?.mode === "salloc" && (
+                <div className="grid grid-cols-3 gap-1.5">
+                  <div className="grid gap-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">GPU node</label>
+                    <Input
+                      value={target?.node ?? ""}
+                      onChange={(e) => write({ ...target, connectionId: target?.connectionId ?? "", node: e.target.value })}
+                      placeholder="gpu05"
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">Module</label>
+                    <Input
+                      value={target?.module ?? ""}
+                      onChange={(e) => write({ ...target, connectionId: target?.connectionId ?? "", module: e.target.value })}
+                      placeholder="alphafold2"
+                      className="h-7 text-xs"
+                    />
+                  </div>
+                  <div className="grid gap-1">
+                    <label className="text-[11px] font-medium text-muted-foreground">GPU card</label>
+                    <Input
+                      value={target?.cudaDevice ?? ""}
+                      onChange={(e) => write({ ...target, connectionId: target?.connectionId ?? "", cudaDevice: e.target.value.replace(/[^0-9,]/g, "") })}
+                      placeholder="0"
+                      className="h-7 text-xs"
+                      inputMode="numeric"
+                    />
+                  </div>
+                </div>
+              )}
               <p className="text-[10px] leading-relaxed text-muted-foreground">
                 Stored as the node&apos;s <code className="font-mono">_cluster</code> param — the
-                workflow engine stages inputs, submits over SSH, polls until the cluster job
-                finishes, and syncs outputs back here.
+                workflow engine stages inputs, submits over SSH (salloc → ssh node →
+                module load → run), polls until the cluster job finishes, and syncs
+                outputs back here.
               </p>
             </>
           )}
@@ -514,9 +585,9 @@ function ParamsTab({
   const [showAdvanced, setShowAdvanced] = React.useState(false);
   const basic = spec.params.filter((p) => !p.advanced);
   const advanced = spec.params.filter((p) => p.advanced);
-  // Tool nodes (legacy comptool + per-tool types) get the cluster dispatch
-  // section beneath their params — routes the run to an SSH/HPC cluster.
-  const isToolNode = node.type === "comptool" || !!spec.toolKey;
+  // Tool nodes get the cluster dispatch section beneath their params —
+  // routes the run to an SSH/HPC cluster (the AlphaFold tutorial flow).
+  const isToolNode = !!spec.toolKey;
 
   if (spec.params.length === 0 && !isToolNode) {
     return (
@@ -746,13 +817,13 @@ function NodeInspectorImpl() {
     [node],
   );
 
-  // Comp-tool nodes: parse the real output file list from the engine's
+  // Tool nodes: parse the real output file list from the engine's
   // ##OUTPUTS## trailer in the logs (paths under outputs/<tool>/<run>/).
   const compToolKey =
     node?.type && COMP_TOOLS.some((t) => t.key === node.type)
       ? node.type
-      : node?.type === "comptool"
-        ? String(node.params.toolKey ?? "rfdiffusion")
+      : node?.type === "alphafold"
+        ? "alphafold"
         : null;
   const outputFiles = React.useMemo(() => {
     if (!compToolKey || !node?.logs) return [];

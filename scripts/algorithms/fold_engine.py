@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Foundry Lab — REAL structure prediction engine (esmfold / rf3 / colabfold keys).
+Foundry Lab — REAL structure prediction engine (alphafold local fallback).
 
 Method (all real computation, no network weights required):
   1. Secondary-structure prediction with the published Chou-Fasman algorithm
@@ -11,6 +11,10 @@ Method (all real computation, no network weights required):
      chain building with Engh & Huber covalent geometry.
   4. Per-residue confidence from propensity margins (B-factor column), with
      the mean reported as a pLDDT-style confidence estimate.
+
+This is the LOCAL fallback for the alphafold tool — a classical baseline,
+NOT the AlphaFold2 network. Real AF2 predictions run on the GPU cluster
+(mgt → salloc → gpu05 → module load alphafold2 → run_alphafold.py).
 
 Usage:  python3 fold_engine.py '<json>'     # json = {"params": {...}, "workdir": ...}
 """
@@ -24,9 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import common as C
 
 TOOL_LABELS = {
-    "esmfold": "ESMFold-style single-sequence folding",
-    "rf3": "RoseTTAFold3-style folding",
-    "colabfold": "AlphaFold2/ColabFold-style folding",
+    "alphafold": "AlphaFold2-style folding (local Chou-Fasman engine)",
 }
 
 
@@ -57,17 +59,26 @@ def main():
     workdir = payload["workdir"]
     os.makedirs(workdir, exist_ok=True)
 
-    tool = params.get("_tool", "esmfold")
+    tool = params.get("_tool", "alphafold")
     label = TOOL_LABELS.get(tool, tool)
     recycles = int(params.get("num_recycles", 3) or 3)
     use_msa = bool(params.get("use_msa", True))
     seed = int(params.get("seed", 42) or 42)
     rng = np.random.default_rng(seed)
 
-    # Resolve sequences: inline sequence, or FASTA file.
+    # Resolve sequences: inline sequence (bare or with a >FASTA header), or
+    # a FASTA file.
     seqs = []
     if params.get("sequence"):
-        seqs.append((f"{tool}_target", str(params["sequence"]).upper()))
+        raw = str(params["sequence"]).strip()
+        if raw.startswith(">"):
+            # Pasted FASTA — header line(s) + wrapped sequence. Strip them.
+            lines = [l.strip() for l in raw.splitlines()]
+            body = "".join(l for l in lines[1:] if l and not l.startswith(">"))
+            name = lines[0][1:].split()[0] if len(lines[0]) > 1 else "target"
+            seqs.append((name or "target", body.upper()))
+        else:
+            seqs.append((f"{tool}_target", "".join(raw.split()).upper()))
     elif params.get("fasta_path") and os.path.exists(params["fasta_path"]):
         for hdr, s in C.read_fasta(params["fasta_path"]):
             seqs.append((hdr.split()[0] if hdr.split() else "target", s.upper()))
@@ -91,10 +102,11 @@ def main():
     print(f"[{ts()}] Method: knowledge-based statistical prediction "
           f"(published Chou-Fasman parameters; no neural-network weights "
           f"required)")
-    if use_msa and tool in ("rf3", "colabfold"):
-        print(f"[{ts()}] NOTE: MSA search (jackhmmer/MMseqs2) requires the "
-              f"external MSA service; running in single-sequence mode. "
-              f"Confidence reflects single-sequence evidence only.")
+    if use_msa and tool == "alphafold":
+        print(f"[{ts()}] NOTE: the real MSA search (jackhmmer/MMseqs2 against "
+              f"the AF2_databases) runs on the GPU cluster; the local engine "
+              f"predicts in single-sequence mode. Connect the mgt cluster for "
+              f"real AlphaFold2 predictions with MSA.")
     print(f"[{ts()}] Targets: {len(seqs)} | recycles={recycles} | seed={seed}")
 
     chains_out = []

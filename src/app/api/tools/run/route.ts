@@ -18,6 +18,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { COMP_TOOLS, getCompTool } from "@/lib/tools";
+import { materializeSequence } from "@/lib/alphafold";
 import { executeCompToolReal } from "@/lib/real-executor";
 import { extractClusterTarget } from "@/lib/run-utils";
 import { listConnections, getConnection } from "@/lib/cluster/connections";
@@ -154,13 +155,21 @@ export async function POST(request: Request) {
     const clusterWorkDir = join(OUTPUTS_ROOT, tool, clusterJob.id);
     await fs.mkdir(clusterWorkDir, { recursive: true }).catch(() => {});
 
+    // AlphaFold: a pasted FASTA sequence is materialized into the local
+    // workdir first — the staging lane then uploads it to the cluster like
+    // any other path input (input/<seqname>.fa).
+    const dispatchParams = { ...userParams };
+    if (tool === "alphafold") {
+      materializeSequence(dispatchParams, clusterWorkDir);
+    }
+
     // Fire-and-forget dispatch — startClusterToolRun itself never throws and
     // marks the row failed on any staging/submit error; this catch is a
     // last-resort belt for truly unexpected crashes.
     void startClusterToolRun({
       jobId: clusterJob.id,
       toolKey: tool,
-      params: userParams,
+      params: dispatchParams,
       workDir: clusterWorkDir,
       target: clusterTarget,
     }).catch(async (e: unknown) => {

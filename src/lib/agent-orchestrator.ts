@@ -58,7 +58,7 @@ export async function planTask(
 Available agents:
 ${agentList}
 
-Available tools: RFdiffusion (de novo design), RFantibody (antibody design), ProteinMPNN/LigandMPNN/SolubleMPNN (inverse folding), Rosetta/PyRosetta (scoring), RF3/ESMFold/ColabFold (structure prediction), BLAST/PDB/PubMed/UniProt (bio queries).
+Available tools: AlphaFold2 (structure prediction — sequence in, five pLDDT-ranked models out), BLAST/PDB/PubMed/UniProt (bio queries).
 
 Respond in EXACTLY this JSON format (no prose, no markdown fences):
 {
@@ -130,7 +130,7 @@ ${context || "(none — this is the first step)"}
 
 Use tools if needed by emitting fenced blocks:
 \`\`\`tool
-{"tool":"rfdiffusion","params":{"num_designs":4}}
+{"tool":"alphafold","params":{"sequence":">name\nMKTAYIA..."}}
 \`\`\`
 \`\`\`bio
 {"type":"pdb","query":"antibody"}

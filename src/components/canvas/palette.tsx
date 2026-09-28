@@ -7,6 +7,7 @@ import {
   Users,
   BookOpen,
   Cpu,
+  Boxes,
   Database,
   ArrowRightToLine,
   Flag,
@@ -51,6 +52,8 @@ function SpecIcon({
       return <BookOpen className={className} />;
     case "cpu":
       return <Cpu className={className} />;
+    case "boxes":
+      return <Boxes className={className} />;
     case "database":
       return <Database className={className} />;
     case "arrow-right-to-line":

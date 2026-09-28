@@ -19,7 +19,7 @@ export interface WorkflowTemplateNode {
   refId?: string;
   /** If set, the loader resolves this title → an existing agent's ID (preferred over refId). */
   refTitle?: string;
-  /** Optional node params (e.g. comptool.toolKey, biotool.bioKey). */
+  /** Optional node params (e.g. alphafold.output_dir, biotool.bioKey). */
   params?: Record<string, string | number | boolean>;
 }
 
@@ -47,16 +47,16 @@ const COL = 320;
 const ROW = 180;
 
 export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
-  // 1. Nanobody Design Pipeline ---------------------------------------------
-  // Input → Agent (Computational Biologist) → CompTool (RFdiffusion) → Output
+  // 1. AlphaFold Structure Prediction ---------------------------------------
+  // Input (FASTA) → Agent (Computational Biologist) → AlphaFold → Output
   {
-    id: "nanobody-design",
-    name: "Nanobody Design Pipeline",
+    id: "alphafold-prediction",
+    name: "AlphaFold Structure Prediction",
     description:
-      "A linear computational protein-design workflow: an input prompt feeds a Computational Biologist agent who authors an RFdiffusion run, whose outputs land in a final report.",
+      "A linear prediction workflow: an input carrying a protein sequence feeds a Computational Biologist agent who reviews it, then an AlphaFold2 node predicts the structure (five models ranked by pLDDT), with the outputs landing in a final report.",
     category: "design",
     nodes: [
-      { type: "input", name: "Design Brief", x: 0, y: ROW },
+      { type: "input", name: "Protein Sequence", x: 0, y: ROW, params: { text: ">T1078\nDYKDDDDASKAPVCQEITVPMCRGIGYNLTHMPNQFNHDTQDEAGLEVHQFWPLVEI" } },
       {
         type: "agent",
         name: "Computational Biologist",
@@ -65,13 +65,13 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
         refTitle: "Computational Biologist",
       },
       {
-        type: "comptool",
-        name: "RFdiffusion",
+        type: "alphafold",
+        name: "AlphaFold",
         x: COL * 2,
         y: ROW,
-        params: { toolKey: "rfdiffusion" },
+        params: { output_dir: "T1078_AF2", max_template_date: "2021-07-20", gpu: "0" },
       },
-      { type: "output", name: "Design Report", x: COL * 3, y: ROW },
+      { type: "output", name: "Prediction Report", x: COL * 3, y: ROW },
     ],
     edges: [
       { from: 0, to: 1, fromPort: "text", toPort: "context" },
