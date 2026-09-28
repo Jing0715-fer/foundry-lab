@@ -6,8 +6,13 @@ mock-cluster.log
 fs/projects/*
 !fs/projects/.gitkeep
 
-# runtime job dirs created under ~/foundry-lab — but the ProteinMPNN shim IS source
+# runtime job dirs created under ~/foundry-lab (nothing source-controlled there
+# since the comp-tool shims were removed — tools/ itself stays, it is the
+# remoteToolsDir contract)
 fs/home/foundry/foundry-lab/*
 !fs/home/foundry/foundry-lab/tools/
-fs/home/foundry/foundry-lab/tools/ProteinMPNN/*
-!fs/home/foundry/foundry-lab/tools/ProteinMPNN/protein_mpnn_run.py
+!fs/home/foundry/foundry-lab/tools/.gitkeep
+
+# mock-cluster runtime state
+fs/.salloc-seq
+__pycache__/

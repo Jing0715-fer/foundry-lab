@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+# [mock-cluster shim] nvidia-smi — 8× A100 inventory for the test cluster.
+#
+# The exec-layer JS interception in index.ts answers DIRECT `nvidia-smi`
+# execs; this FILE shim covers nvidia-smi spawned by other commands (e.g.
+# `ssh gpu05 nvidia-smi …`, which goes through real bash via the ssh shim).
+# Both layers report the same inventory:
+#   - 8 × NVIDIA A100-SXM4-40GB (40960 MiB each)
+#   - cards 0–5 fairly busy (mem ~28000–39000 MiB, util 60–98%)
+#   - cards 6–7 nearly free (mem < 1200 MiB, util < 5%)
+#     → the tutorial pins CUDA_VISIBLE_DEVICES to 6 / 7.
+set -u
+
+MODEL="NVIDIA A100-SXM4-40GB"
+NGPU=8
+TOTAL=40960
+MEM=(35214 38902 30156 33440 28406 36711 428 1105)
+UTIL=(91 97 78 85 62 93 0 3)
+
+# ── --query-gpu=<fields> [--format=csv[,noheader|nounits]] ──────────────────
+query=""
+prev=""
+for a in "$@"; do
+  case "$a" in
+    --query-gpu=*) query="${a#--query-gpu=}" ;;
+  esac
+  if [ "$prev" = "--query-gpu" ]; then
+    query="$a"
+  fi
+  prev="$a"
+done
+
+if [ -n "$query" ]; then
+  IFS=',' read -r -a fields <<< "$query"
+
+  # count is special: it collapses the whole report to a single row.
+  has_count=0
+  for f in "${fields[@]}"; do
+    case "$f" in count|count.count) has_count=1 ;; esac
+  done
+
+  if [ "$has_count" = "1" ]; then
+    line=""
+    for f in "${fields[@]}"; do
+      case "$f" in
+        count|count.count) val="$NGPU" ;;
+        *)                 val="$MODEL" ;;
+      esac
+      line="${line:+$line, }$val"
+    done
+    echo "$line"
+    exit 0
+  fi
+
+  for ((i = 0; i < NGPU; i++)); do
+    line=""
+    for f in "${fields[@]}"; do
+      case "$f" in
+        index|index.count)     val="$i" ;;
+        name)                  val="$MODEL" ;;
+        name.display_mode)     val="Enabled" ;;
+        name.display_active)   val="Disabled" ;;
+        memory.used)           val="${MEM[$i]}" ;;
+        memory.total)          val="$TOTAL" ;;
+        memory.free)           val="$((TOTAL - MEM[$i]))" ;;
+        utilization.gpu)       val="${UTIL[$i]}" ;;
+        utilization.memory)    val="${UTIL[$i]}" ;;
+        uuid)                  val="GPU-00000000-mock-000$i" ;;
+        temperature.gpu)       val="$((38 + i))" ;;
+        power.draw)            val="$((90 + i * 7))" ;;
+        fan.speed)             val="$((23 + i))" ;;
+        *)                     val="?" ;;
+      esac
+      line="${line:+$line, }$val"
+    done
+    echo "$line"
+  done
+  exit 0
+fi
+
+# ── -L: one line per GPU ────────────────────────────────────────────────────
+for a in "$@"; do
+  if [ "$a" = "-L" ]; then
+    for ((i = 0; i < NGPU; i++)); do
+      echo "GPU $i: $MODEL (UUID: GPU-00000000-mock-000$i)"
+    done
+    exit 0
+  fi
+done
+
+# ── bare nvidia-smi: small plausible summary table ──────────────────────────
+date
+echo "+-----------------------------------------------------------------------------+"
+echo "| NVIDIA-SMI 535.129.03   Driver Version: 535.129.03   CUDA Version: 12.2    |"
+echo "|-------------------------------+----------------------+----------------------+"
+echo "| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |"
+echo "|   Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |"
+echo "|===============================+======================+======================|"
+for ((i = 0; i < NGPU; i++)); do
+  mem="${MEM[$i]}"
+  util="${UTIL[$i]}"
+  bus=$(printf '00000000:%02x:00.0' "$i")
+  printf '|   %2d  %s  Off | %s  Off | %3d %%                |\n' "$i" "$MODEL" "$bus" "$util"
+  printf '|   %2d%%   %2dC    P0    %3dW / 400W |  %5sMiB / 40960MiB |    %3d%%     Default |\n' \
+    "$((23 + i))" "$((38 + i))" "$((90 + i * 7))" "$mem" "$util"
+done
+echo "|                               |                      |                      |"
+echo "+-------------------------------+----------------------+----------------------+"
+echo "[mock-cluster] $NGPU emulated GPUs (local test cluster)"
+exit 0

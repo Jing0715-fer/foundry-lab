@@ -1,0 +1,177 @@
+#!/usr/bin/env bash
+# [mock-cluster shim] salloc — request an allocation, then run a command.
+#
+# FILE-shim twin of the salloc interception in index.ts (which handles
+# salloc as a TOP-LEVEL exec command arriving over the SSH channel). This
+# file covers salloc invocations NESTED inside scripts — e.g. the app's
+# generated .fl-run.sh wrapper runs
+#     setsid bash -c 'salloc -N 1 --gres=gpu:1 -p brain2 ssh gpu05 bash …; …'
+# which never passes through the JS interception layer. Both twins behave
+# the same:
+#
+#   salloc [-N <n>] [--nodes=<n>] [-g <n>|--gres[=]gpu:<n>] [-p <p>]
+#         [--partition=<p>] [-w <nodelist>] [other flags…]] <command…>
+#
+# -N/--nodes, -g/--gres and -p/--partition are parsed; -w/--nodelist and
+# the other common flags are accepted and ignored; everything after the
+# flags is the COMMAND to run. Prints "salloc: Granted job allocation <id>"
+# to stderr (like real salloc), exports SLURM_JOB_ID / SLURM_JOB_PARTITION /
+# SLURM_GPUS_ON_NODE / SLURM_JOB_NUM_NODES, executes the command, prints
+# "salloc: Relinquishing job allocation <id>", and exits with the command's
+# real exit code. Job ids come from a sequence file (910001+, separate from
+# the JS layer's in-memory 900001+ sbatch/salloc counter).
+#
+# No command → error (interactive mode is unsupported on this channel).
+set -u
+
+nodes=1
+partition=""
+gres=""
+cmd_start_args_seen=0
+cmd=()
+
+while [ $# -gt 0 ]; do
+  a="$1"
+  case "$a" in
+    --version|-V|--help)
+      echo "slurm 24.05.2"
+      exit 0
+      ;;
+    --)
+      # everything after `--` is the command
+      shift
+      cmd=("$@")
+      break
+      ;;
+    -N)
+      nodes="${2:-$nodes}"
+      shift 2
+      ;;
+    -N[0-9]*)
+      nodes="${a#-N}"
+      shift
+      ;;
+    --nodes)
+      nodes="${2:-$nodes}"
+      shift 2
+      ;;
+    --nodes=*)
+      nodes="${a#*=}"
+      shift
+      ;;
+    -g)
+      gres="${2:-$gres}"
+      shift 2
+      ;;
+    -g[0-9]*)
+      gres="${a#-g}"
+      shift
+      ;;
+    --gres)
+      gres="${2:-$gres}"
+      shift 2
+      ;;
+    --gres=*)
+      gres="${a#--gres=}"
+      shift
+      ;;
+    -p)
+      partition="${2:-$partition}"
+      shift 2
+      ;;
+    -p?*)
+      partition="${a#-p}"
+      shift
+      ;;
+    --partition)
+      partition="${2:-$partition}"
+      shift 2
+      ;;
+    --partition=*)
+      partition="${a#*=}"
+      shift
+      ;;
+    # accepted + ignored (with their values)
+    -w|--nodelist|-n|--ntasks|-c|--cpus-per-task|-t|--time|-C|--constraint|\
+-A|--account|-D|--chdir|-M|--clusters|-J|--job-name|-q|--qos|-K|--kill-command|\
+--signal|--mpi|--mem|--mem-per-cpu|--mem-per-gpu|--begin|--deadline)
+      shift 2
+      ;;
+    --nodelist=*|--ntasks=*|--cpus-per-task=*|--time=*|--constraint=*|\
+--account=*|--chdir=*|--clusters=*|--job-name=*|--qos=*|--mem=*|\
+--mem-per-cpu=*|--mem-per-gpu=*|--mpi=*|--begin=*|--deadline=*)
+      shift
+      ;;
+    # bare flags
+    -v|--verbose|-Q|--quiet|--bell|--no-bell|--no-shell|--immediate|-Z|\
+--overcommit|--exclusive|--contiguous)
+      shift
+      ;;
+    -*)
+      # unknown flag: swallow just the flag itself (its value, if any, will
+      # then read as the start of the command — the defined grammar never
+      # hits this path)
+      shift
+      ;;
+    *)
+      # first non-flag word → the command runs to the end of the arguments
+      cmd=("$@")
+      break
+      ;;
+  esac
+done
+
+if [ ${#cmd[@]} -eq 0 ]; then
+  echo "salloc: error: interactive mode unsupported on this channel — append a command" >&2
+  exit 1
+fi
+
+# gpu count out of the gres spec ("gpu", "gpu:2", "gpu:A100:2", "gpu:2,shm:1")
+gpus=""
+if [ -n "$gres" ]; then
+  IFS=',' read -r -a __gres_parts <<< "$gres"
+  for part in "${__gres_parts[@]}"; do
+    case "$part" in
+      gpu)    gpus=1 ;;
+      gpu:*)  sub="${part#gpu:}"
+              case "$sub" in
+                [0-9]*)              gpus="$sub" ;;
+                *:[0-9]*)            gpus="${sub##*:}" ;;
+                *)                   gpus=1 ;;
+              esac
+              ;;
+      [0-9]*) gpus="$part" ;;
+      *)      : ;;
+    esac
+  done
+fi
+
+# job id: 910001+ sequence file next to the mock fs root (restart-safe)
+shim_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # …/fs/opt/bin
+fs_root="$(cd "$shim_dir/../.." && pwd)"                   # …/fs
+seq_file="$fs_root/.salloc-seq"
+job_id=910001
+if [ -r "$seq_file" ]; then
+  v="$(cat "$seq_file" 2>/dev/null)"
+  case "$v" in
+    [0-9]*) job_id=$((v + 1)) ;;
+  esac
+fi
+echo "$job_id" > "$seq_file" 2>/dev/null || true
+
+echo "salloc: Granted job allocation $job_id" >&2
+export SLURM_JOB_ID="$job_id"
+export SLURM_JOB_NUM_NODES="$nodes"
+if [ -n "$partition" ]; then
+  export SLURM_JOB_PARTITION="$partition"
+fi
+if [ -n "$gpus" ]; then
+  export SLURM_GPUS_ON_NODE="$gpus"
+fi
+
+# Execute the command (re-quoted per-word so original argument boundaries
+# survive the join), then relinquish the allocation like real salloc does.
+bash -c "$(printf '%q ' "${cmd[@]}")"
+__fl_rc=$?
+echo "salloc: Relinquishing job allocation $job_id" >&2
+exit $__fl_rc

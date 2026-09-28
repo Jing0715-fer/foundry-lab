@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# [mock-cluster shim] ssh — route to the test cluster's compute nodes.
+#
+# The tutorial's stage-2 step (`ssh gpu05 …`, after `salloc` on the login
+# node) lands here. Known compute-node names (gpuNN / computeNN / cN /
+# nodeNN) "log in": ssh starts at $HOME, then the remaining argv is joined
+# and executed via `bash -c`, and its exit code is forwarded. Any other
+# host is unreachable — there is no real network, so do NOT fall through to
+# a real ssh binary (there is none worth using from this harness anyway):
+#   ssh: connect to host <host>: No route to host   (exit 255)
+set -u
+
+if [ $# -lt 1 ]; then
+  echo "ssh: missing host operand" >&2
+  exit 255
+fi
+
+host="$1"
+shift
+
+case "$host" in
+  gpu[0-9]|gpu[0-9][0-9]|compute[0-9]*|c[0-9]*|node[0-9]*)
+    # ssh sessions start in the user's home directory
+    if [ -n "${HOME:-}" ]; then
+      cd "$HOME" || exit 255
+    fi
+    # Let tools on the "node" report which node they run on.
+    export FOUNDRY_MOCK_HOST="$host"
+    if [ $# -eq 0 ]; then
+      # bare `ssh gpu05` → an interactive login shell on the node
+      exec bash -l
+    fi
+    # Re-quote each argument so the joined command preserves the original
+    # word boundaries — real ssh passes argv across untouched, and a naive
+    # "$*" join would re-split quoted compounds (`bash -c 'a; b'` etc.).
+    exec bash -c "$(printf '%q ' "$@")"
+    ;;
+  *)
+    echo "ssh: connect to host $host: No route to host" >&2
+    exit 255
+    ;;
+esac

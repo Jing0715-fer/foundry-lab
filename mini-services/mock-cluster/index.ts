@@ -19,11 +19,25 @@
  *     state machine (PENDING → RUNNING → COMPLETED/FAILED/CANCELLED)
  *     that spawns the submitted script FOR REAL, honoring
  *     `#SBATCH --output=` / `--error=` directives
- *   - real tool shims in fs/opt/bin (RFdiffusion, RFantibody,
- *     rosetta_scripts, colabfold_batch, rf3) route to the REAL built-in
- *     numpy engines under scripts/algorithms/
- *   - fs/home/foundry/tools/ProteinMPNN/protein_mpnn_run.py routes to the
- *     real mpnn engine (remoteToolsDir contract)
+ *   - `salloc` is intercepted too (the tutorial's allocation step):
+ *     `salloc -N 1 --gres=gpu:1 -p brain2 ssh gpu05 bash …` prints
+ *     `salloc: Granted job allocation <id>` to stderr, exports the
+ *     SLURM_* env, then executes the trailing command FOR REAL and
+ *     forwards its exit code. fs/opt/bin/salloc is a file-shim twin for
+ *     salloc nested inside scripts (the app's .fl-run.sh wrappers).
+ *   - `module load alphafold2` (bash function in ~/.bash_profile AND
+ *     ~/.bashrc) prepends the ABSOLUTE /opt/alphafold2/bin to PATH so
+ *     run_alphafold.py survives any later `cd`
+ *   - fs/opt/alphafold2/bin/run_alphafold.py — faithful mock of the
+ *     cluster's AF2 CLI (Task 25-c): full input validation, 5 REAL
+ *     fold-engine runs (seeds 0–4) and the complete tutorial output tree
+ *     (ranked_*.pdb, ranking_debug.json, features.pkl, result_model_*.pkl,
+ *     relaxed/unrelaxed models, timings.json, msas/)
+ *   - fs/opt/bin/ssh routes `ssh gpuNN <cmd>` to the "node" (bash -c at
+ *     $HOME); any other host → "No route to host", exit 255
+ *   - fs/opt/bin/nvidia-smi + the JS emulation below both report the same
+ *     8× A100-SXM4-40GB inventory (cards 0–5 busy, 6–7 nearly free —
+ *     the tutorial pins CUDA_VISIBLE_DEVICES to 6/7)
  *   - sftp is intentionally NOT supported (ssh2 refuses the subsystem
  *     request automatically when no 'sftp' listener exists)
  *
@@ -244,6 +258,44 @@ function tokenize(seg: string): string[] {
     hasTok = true;
   }
   if (hasTok || cur) toks.push(cur);
+  return toks;
+}
+
+/** Quote-aware tokenizer that also records each token's position in the
+ * ORIGINAL string (quote chars excluded from .text but included in the
+ * [start, end) span). Used by the salloc parser to slice the trailing
+ * command VERBATIM — original quoting/operators preserved for `bash -c`. */
+interface RawTok { text: string; start: number; end: number }
+
+function tokenizeWithPos(s: string): RawTok[] {
+  const toks: RawTok[] = [];
+  let cur = "";
+  let start = -1;
+  let quote: string | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === quote) quote = null;
+      else cur += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      if (start < 0) start = i;
+      continue;
+    }
+    if (/\s/.test(ch)) {
+      if (start >= 0) {
+        toks.push({ text: cur, start, end: i });
+        cur = "";
+        start = -1;
+      }
+      continue;
+    }
+    if (start < 0) start = i;
+    cur += ch;
+  }
+  if (start >= 0) toks.push({ text: cur, start, end: s.length });
   return toks;
 }
 
@@ -473,9 +525,19 @@ interface EmuResult {
 }
 
 const GPU_MODEL = "NVIDIA A100-SXM4-40GB";
+const NGPUS = 8;
+const GPU_TOTAL_MIB = 40960;
+/** Per-card inventory (the tutorial pins cards 6 and 7 — they are free).
+ * Shared by the JS emulation below and mirrored by fs/opt/bin/nvidia-smi
+ * (the file shim serves commands spawned by other commands, e.g.
+ * `ssh gpu05 nvidia-smi …`). */
+const GPU_MEM_USED = [35214, 38902, 30156, 33440, 28406, 36711, 428, 1105];
+const GPU_UTIL = [91, 97, 78, 85, 62, 93, 0, 3];
 
-/** sinfo partition inventory (mirrors a small shared GPU cluster). */
+/** sinfo partition inventory (mirrors a small shared GPU cluster + the
+ * tutorial's brain2 partition with the AF2 stage-2 node gpu05). */
 const SINFO_ROWS: Array<Record<string, string>> = [
+  { P: "brain2", a: "up", D: "1", G: "gpu:8", T: "mixed", l: "08:00:00", L: "02:00:00", N: "gpu05", c: "64", m: "512000+" },
   { P: "gpu", a: "up", D: "2", G: "gpu:4", T: "mixed", l: "08:00:00", L: "02:00:00", N: "node[01-02]", c: "32", m: "256000+" },
   { P: "cpu", a: "up", D: "8", G: "0", T: "idle", l: "72:00:00", L: "48:00:00", N: "node[03-10]", c: "64", m: "512000+" },
 ];
@@ -761,23 +823,79 @@ function emulateSbatch(tokens: string[], baseDir: string): EmuResult {
 }
 
 function emulateNvidiaSmi(tokens: string[]): EmuResult {
-  const joined = tokens.join(" ");
-  if (joined.includes("--query-gpu") && /count/.test(joined)) {
-    return { out: `2, ${GPU_MODEL}\n`, err: "", code: 0 };
+  // find the --query-gpu field list (either --query-gpu=f1,f2 or --query-gpu f1,f2)
+  let query: string[] | null = null;
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith("--query-gpu=")) {
+      query = t.slice("--query-gpu=".length).split(",");
+      break;
+    }
+    if (t === "--query-gpu") {
+      query = (tokens[i + 1] ?? "").split(",");
+      break;
+    }
+  }
+  if (query) {
+    const fields = query.map((f) => f.trim()).filter(Boolean);
+    // `count` collapses the whole report to a single row (real nvidia-smi)
+    if (fields.some((f) => f === "count" || f === "count.count")) {
+      const line = fields
+        .map((f) => (f === "count" || f === "count.count" ? String(NGPUS) : GPU_MODEL))
+        .join(", ");
+      return { out: `${line}\n`, err: "", code: 0 };
+    }
+    const field = (f: string, i: number): string => {
+      switch (f) {
+        case "index": case "index.count": return String(i);
+        case "name": return GPU_MODEL;
+        case "name.display_mode": return "Enabled";
+        case "name.display_active": return "Disabled";
+        case "memory.used": return String(GPU_MEM_USED[i]);
+        case "memory.total": return String(GPU_TOTAL_MIB);
+        case "memory.free": return String(GPU_TOTAL_MIB - GPU_MEM_USED[i]);
+        case "utilization.gpu": case "utilization.memory": return String(GPU_UTIL[i]);
+        case "uuid": return `GPU-00000000-mock-000${i}`;
+        case "temperature.gpu": return String(38 + i);
+        case "power.draw": return String(90 + i * 7);
+        case "fan.speed": return String(23 + i);
+        default: return "?";
+      }
+    };
+    let out = "";
+    for (let i = 0; i < NGPUS; i++) {
+      out += fields.map((f) => field(f, i)).join(", ") + "\n";
+    }
+    return { out, err: "", code: 0 };
   }
   if (tokens.includes("-L")) {
     return {
-      out: `GPU 0: ${GPU_MODEL} (UUID: GPU-00000000-mock-0000)\nGPU 1: ${GPU_MODEL} (UUID: GPU-00000000-mock-0001)\n`,
+      out: Array.from({ length: NGPUS }, (_, i) =>
+        `GPU ${i}: ${GPU_MODEL} (UUID: GPU-00000000-mock-000${i})\n`).join(""),
       err: "",
       code: 0,
     };
   }
-  if (joined.includes("--query-gpu=")) {
-    // any other query: name rows for both GPUs
-    return { out: `${GPU_MODEL}\n${GPU_MODEL}\n`, err: "", code: 0 };
-  }
+  // bare nvidia-smi: a small plausible summary table + the standard headers
+  const tableRows = GPU_MEM_USED.map((mem, i) => {
+    const bus = `00000000:${String(i).padStart(2, "0")}:00.0`;
+    return (
+      `|   ${String(i).padStart(2)}  ${GPU_MODEL}  Off | ${bus}  Off | ${String(GPU_UTIL[i]).padStart(3)} %                |\n` +
+      `|   ${String(23 + i).padStart(2)}%   ${String(38 + i).padStart(2)}C    P0    ${String(90 + i * 7).padStart(3)}W / 400W |  ${String(mem).padStart(5)}MiB / ${GPU_TOTAL_MIB}MiB |    ${String(GPU_UTIL[i]).padStart(3)}%     Default |\n`
+    );
+  }).join("");
   return {
-    out: `Mon Jan  1 00:00:00 2026\n+-----------------------------------------------------------------------------+\n| NVIDIA-SMI 535.129.03   Driver Version: 535.129.03   CUDA Version: 12.2    |\n|-------------------------------+----------------------+----------------------+\n| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |\n|   0  ${GPU_MODEL}  Off | 00000000:01:00.0 Off |                    0 |\n|   1  ${GPU_MODEL}  Off | 00000000:02:00.0 Off |                    0 |\n+-------------------------------+----------------------+----------------------+\n[mock-cluster] 2 emulated GPUs (local test cluster)\n`,
+    out: `${new Date().toString()}\n` +
+      `+-----------------------------------------------------------------------------+\n` +
+      `| NVIDIA-SMI 535.129.03   Driver Version: 535.129.03   CUDA Version: 12.2    |\n` +
+      `|-------------------------------+----------------------+----------------------+\n` +
+      `| GPU  Name        Persistence-M| Bus-Id        Disp.A | Volatile Uncorr. ECC |\n` +
+      `|   Fan  Temp  Perf  Pwr:Usage/Cap|         Memory-Usage | GPU-Util  Compute M. |\n` +
+      `|===============================+======================+======================|\n` +
+      tableRows +
+      `|                               |                      |                      |\n` +
+      `+-------------------------------+----------------------+----------------------+\n` +
+      `[mock-cluster] ${NGPUS} emulated GPUs (local test cluster)\n`,
     err: "",
     code: 0,
   };
@@ -906,15 +1024,170 @@ function planScheduler(raw: string):
 }
 
 // ---------------------------------------------------------------------------
+// salloc — the tutorial's allocation step, intercepted as a TOP-LEVEL exec
+// (Task 25-c). The whole chain arrives as ONE exec:
+//     salloc -N 1 --gres=gpu:1 -p brain2 ssh gpu05 bash <W>/.fl-node.sh
+// Parse the allocation flags, grant an id from the SAME 900001+ counter the
+// sbatch state machine uses, print the real salloc banner to stderr, then
+// execute the trailing command FOR REAL (same detached spawn + exit-code
+// forwarding as ordinary commands) with the SLURM_* env exported. salloc
+// nested INSIDE scripts (the app's .fl-run.sh wrappers run it under
+// `setsid bash -c '…'`) is served by the fs/opt/bin/salloc file-shim twin.
+// ---------------------------------------------------------------------------
+
+/** GPU card count out of a --gres spec: "gpu", "gpu:2", "gpu:A100:2",
+ * "gpu:2,shm:1", or a bare "2". */
+function gpuCountFromGres(spec: string): number | null {
+  for (const part of String(spec ?? "").split(",")) {
+    const p = part.trim();
+    if (p === "gpu") return 1;
+    if (p.startsWith("gpu:")) {
+      const sub = p.slice(4);
+      if (/^\d+$/.test(sub)) return Number(sub) || null;
+      const m = /:(\d+)$/.exec(sub);
+      if (m) return Number(m[1]) || null;
+      return 1; // "gpu:A100" (model only, count defaults to 1)
+    }
+    if (/^\d+$/.test(p)) return Number(p) || null;
+  }
+  return null;
+}
+
+interface SallocPlan {
+  version: boolean;
+  nodes: number | null;
+  gpus: number | null;
+  partition: string;
+  /** The trailing command, sliced VERBATIM from the raw exec (""). */
+  cmdRaw: string;
+}
+
+/** Parse `salloc [flags] <command…>` from the raw exec string. */
+function parseSallocCommand(raw: string): SallocPlan {
+  const base = String(raw ?? "").trim();
+  const toks = tokenizeWithPos(base);
+  let i = 1; // toks[0] === "salloc" (guaranteed by the caller)
+  let version = false;
+  let nodes: number | null = null;
+  let gpus: number | null = null;
+  let partition = "";
+  let cmdStart = -1;
+  const valueFlags = new Set([
+    "-N", "--nodes", "-g", "--gres", "-p", "--partition", "-w", "--nodelist",
+    "-n", "--ntasks", "-c", "--cpus-per-task", "-t", "--time", "-C",
+    "--constraint", "-A", "--account", "-D", "--chdir", "-J", "--job-name",
+    "-q", "--qos", "-M", "--clusters", "--mem", "--mem-per-cpu",
+    "--mem-per-gpu", "--begin", "--deadline", "--signal", "-K",
+    "--kill-command", "--mpi",
+  ]);
+  while (i < toks.length) {
+    const t = toks[i];
+    const text = t.text;
+    if (text === "--") {
+      if (i + 1 < toks.length) cmdStart = toks[i + 1].start;
+      break;
+    }
+    if (text === "--version" || text === "-V" || text === "-4" || text === "--help") {
+      version = true;
+      i++;
+      continue;
+    }
+    const eq = /^--[\w-]+=/.test(text) ? text.indexOf("=") : -1;
+    if (eq > 0) {
+      const key = text.slice(0, eq);
+      const val = text.slice(eq + 1);
+      if (key === "--nodes") nodes = Number(val) || null;
+      else if (key === "--gres") gpus = gpuCountFromGres(val);
+      else if (key === "--partition") partition = val;
+      i++;
+      continue;
+    }
+    if (text.startsWith("-") && text.length > 1) {
+      const m = /^-([Ngp])(.*)$/.exec(text);
+      if (m) {
+        if (m[2]) {
+          if (m[1] === "N") nodes = Number(m[2]) || null;
+          else if (m[1] === "g") gpus = gpuCountFromGres(m[2]);
+          else partition = m[2];
+          i++;
+        } else {
+          const val = toks[i + 1]?.text ?? "";
+          if (m[1] === "N") nodes = Number(val) || null;
+          else if (m[1] === "g") gpus = gpuCountFromGres(val);
+          else partition = val;
+          i += 2;
+        }
+        continue;
+      }
+      i += valueFlags.has(text) ? 2 : 1; // flag+value or bare flag
+      continue;
+    }
+    // first non-flag word → the command runs from here to the end
+    cmdStart = t.start;
+    break;
+  }
+  const cmdRaw = cmdStart >= 0 ? base.slice(cmdStart).trim() : "";
+  return { version, nodes, gpus, partition, cmdRaw };
+}
+
+/** Is this exec a salloc chain the JS layer should own? Only SINGLE-segment
+ * commands starting with `salloc` (the app dispatches exactly that shape);
+ * compound/nested salloc is left to real bash + the fs/opt/bin/salloc twin. */
+function isSallocExec(raw: string): boolean {
+  const cmd = String(raw ?? "").trim();
+  if (!cmd || hasHeredoc(cmd)) return false;
+  const pieces = splitPieces(cmd);
+  if (pieces.length !== 1 || pieces[0].kind !== "seg") return false;
+  const toks = tokenize(pieces[0].text);
+  return toks[0] === "salloc";
+}
+
+/** Handle a top-level salloc exec. Returns the spawned process (for signal
+ * forwarding) — or null for the answered-in-JS paths (version / error). */
+function handleSallocExec(stream: any, raw: string): any | null {
+  const plan = parseSallocCommand(raw);
+  if (plan.version) {
+    safeWrite(stream, "slurm 24.05.2\n");
+    try { stream.exit(0); } catch { /* ignore */ }
+    try { stream.close(); } catch { /* ignore */ }
+    return null;
+  }
+  if (!plan.cmdRaw) {
+    safeWrite(
+      stream.stderr,
+      "salloc: error: interactive mode unsupported on this channel — append a command\n",
+    );
+    try { stream.exit(1); } catch { /* ignore */ }
+    try { stream.close(); } catch { /* ignore */ }
+    return null;
+  }
+  const id = nextJobId++;
+  log(`salloc: granted allocation ${id} (nodes=${plan.nodes ?? "?"} gpus=${plan.gpus ?? "?"} partition=${plan.partition || "?"})`);
+  safeWrite(stream.stderr, `salloc: Granted job allocation ${id}\n`);
+  const env: NodeJS.ProcessEnv = { ...commandEnv() };
+  env.SLURM_JOB_ID = String(id);
+  if (plan.nodes != null) env.SLURM_JOB_NUM_NODES = String(plan.nodes);
+  if (plan.partition) env.SLURM_JOB_PARTITION = plan.partition;
+  if (plan.gpus != null) env.SLURM_GPUS_ON_NODE = String(plan.gpus);
+  // The trailing command executes FOR REAL; runCommand forwards its exit
+  // code to the channel (salloc semantics: allocation ends with the command).
+  return runCommand(stream, ["-c", plan.cmdRaw], env);
+}
+
+// ---------------------------------------------------------------------------
 // Command runner — REAL /bin/bash, wired to the SSH channel
 // ---------------------------------------------------------------------------
 
-function runCommand(stream: any, args: string[]): any | null {
+function runCommand(
+  stream: any,
+  args: string[],
+  env: NodeJS.ProcessEnv = commandEnv(),
+): any | null {
   let proc: any;
   try {
     proc = spawn("/bin/bash", args, {
       cwd: FS_ROOT,
-      env: commandEnv(),
+      env,
       detached: true, // own session → backgrounded children survive
     });
   } catch (err: any) {
@@ -1085,6 +1358,12 @@ function handleSession(session: any) {
     try {
       const raw = String(info?.command ?? "");
       logExec(raw);
+      // Top-level salloc chains own their whole exec (grant + real run).
+      if (isSallocExec(raw)) {
+        activeProc = handleSallocExec(stream, raw) ?? activeProc;
+        if (activeProc) activeProc.on?.("exit", clearActive);
+        return;
+      }
       const plan = planScheduler(raw);
       if (plan && "pure" in plan) {
         const emu = plan.pure;
@@ -1199,7 +1478,7 @@ server.on("error", (err: any) => {
 server.listen(PORT, BIND_HOST, () => {
   log(`LOCAL TEST CLUSTER listening on :${PORT} (bind ${BIND_HOST})`);
   log(`this is a TEST HARNESS: commands execute FOR REAL via /bin/bash;`);
-  log(`only the scheduler (sbatch/squeue/sacct/scancel/sinfo) is a state machine`);
+  log(`only the scheduler (sbatch/squeue/sacct/scancel/sinfo/salloc) is a state machine`);
   log(`auth: user "${AUTH_USER}" / password "${AUTH_PASSWORD}" (password only)`);
   log(`fs root: ${FS_ROOT} · HOME: ${HOME}`);
   log(`PATH: ${MOCK_PATH}`);
