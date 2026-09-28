@@ -273,7 +273,7 @@ function JsonPreview({ text }: { text: string }) {
 
   if (parseError || parsed === null) {
     return (
-      <pre className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
+      <pre className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap wrap-anywhere">
         {text}
       </pre>
     );
@@ -376,7 +376,7 @@ function JsonPreview({ text }: { text: string }) {
 
 function RawJson({ parsed }: { parsed: unknown }) {
   return (
-    <pre className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
+    <pre className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap wrap-anywhere">
       {JSON.stringify(parsed, null, 2)}
     </pre>
   );
@@ -441,7 +441,7 @@ function TextPreview({ text }: { text: string }) {
   const body = truncated ? `${text.slice(0, TEXT_PREVIEW_LIMIT)}\n…` : text;
   return (
     <div className="space-y-1.5">
-      <pre className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap break-words">
+      <pre className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap wrap-anywhere">
         {body}
       </pre>
       {text.length > TEXT_PREVIEW_LIMIT && (

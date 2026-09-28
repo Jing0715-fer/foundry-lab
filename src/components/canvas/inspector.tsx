@@ -253,7 +253,7 @@ function ParamRow({
   // For agent nodes, render the refId param as an agent picker.
   if (node.type === "agent" && param.key === "refId") {
     return (
-      <div className="grid gap-1.5">
+      <div className="grid grid-cols-1 gap-1.5">
         <label className="text-xs font-medium">{param.label}</label>
         <AgentPicker
           agents={agents}
@@ -273,7 +273,7 @@ function ParamRow({
   }
 
   return (
-    <div className="grid gap-1.5">
+    <div className="grid grid-cols-1 gap-1.5">
       <label className="flex items-center justify-between text-xs font-medium">
         <span>{param.label}</span>
         {param.unit && (
@@ -434,7 +434,7 @@ function ClusterTargetSection({
             </p>
           ) : (
             <>
-              <div className="grid gap-1.5">
+              <div className="grid grid-cols-1 gap-1.5">
                 <label className="text-[11px] font-medium text-muted-foreground">Connection</label>
                 <Select
                   value={target?.connectionId ?? ""}
@@ -447,7 +447,7 @@ function ClusterTargetSection({
                     });
                   }}
                 >
-                  <SelectTrigger size="sm"><SelectValue placeholder="Pick a connection" /></SelectTrigger>
+                  <SelectTrigger className="w-full" size="sm"><SelectValue placeholder="Pick a connection" /></SelectTrigger>
                   <SelectContent>
                     {connList.map((c) => (
                       <SelectItem key={c.id} value={c.id}>
@@ -499,14 +499,14 @@ function ClusterTargetSection({
                 </button>
               </div>
               {(target?.mode === "slurm" || target?.mode === "salloc") && (
-                <div className="grid gap-1.5">
+                <div className="grid grid-cols-1 gap-1.5">
                   <label className="text-[11px] font-medium text-muted-foreground">Partition</label>
                   {partitions.length > 0 ? (
                     <Select
                       value={target?.partition ?? ""}
                       onValueChange={(v) => write({ ...target, connectionId: target?.connectionId ?? "", partition: v })}
                     >
-                      <SelectTrigger size="sm"><SelectValue placeholder="default" /></SelectTrigger>
+                      <SelectTrigger className="w-full" size="sm"><SelectValue placeholder="default" /></SelectTrigger>
                       <SelectContent>
                         {partitions.map((p) => (
                           <SelectItem key={p.name} value={p.name}>
@@ -527,7 +527,7 @@ function ClusterTargetSection({
               )}
               {target?.mode === "salloc" && (
                 <div className="grid grid-cols-3 gap-1.5">
-                  <div className="grid gap-1">
+                  <div className="grid grid-cols-1 gap-1">
                     <label className="text-[11px] font-medium text-muted-foreground">GPU node</label>
                     <Input
                       value={target?.node ?? ""}
@@ -536,7 +536,7 @@ function ClusterTargetSection({
                       className="h-7 text-xs"
                     />
                   </div>
-                  <div className="grid gap-1">
+                  <div className="grid grid-cols-1 gap-1">
                     <label className="text-[11px] font-medium text-muted-foreground">Module</label>
                     <Input
                       value={target?.module ?? ""}
@@ -545,7 +545,7 @@ function ClusterTargetSection({
                       className="h-7 text-xs"
                     />
                   </div>
-                  <div className="grid gap-1">
+                  <div className="grid grid-cols-1 gap-1">
                     <label className="text-[11px] font-medium text-muted-foreground">GPU card</label>
                     <Input
                       value={target?.cudaDevice ?? ""}
@@ -721,7 +721,7 @@ function LogsTab({ node }: { node: NodeDTO }) {
       </div>
       <pre
         ref={preRef}
-        className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words"
+        className="max-h-96 overflow-auto rounded-md border bg-muted/30 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap wrap-anywhere"
       >
         {logs}
       </pre>
@@ -1254,7 +1254,15 @@ function NodeInspectorImpl() {
               )}
             </TabsTrigger>
           </TabsList>
-          <ScrollArea className="min-h-0 flex-1">
+          {/* Radix sizes the viewport's inner wrapper with `display: table;
+              min-width: 100%`, which expands to the content's intrinsic
+              width — so one long unwrapped log line (e.g. the ##OUTPUTS##
+              file list) or a wide hint sentence makes the WHOLE panel wider
+              than the sidebar and clips everything past the right border.
+              Overriding the wrapper to `display: block` lays content out at
+              the panel width so text wraps; genuinely-wide content is then
+              reachable via the ScrollArea's horizontal scrollbar. */}
+          <ScrollArea className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:!block">
             <TabsContent value="params" className="m-0">
               <ParamsTab
                 node={node}

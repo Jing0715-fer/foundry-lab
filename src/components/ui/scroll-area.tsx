@@ -23,6 +23,11 @@ function ScrollArea({
         {children}
       </ScrollAreaPrimitive.Viewport>
       <ScrollBar />
+      {/* Horizontal scrollbar — rendered so wide content (long log lines,
+          metric tables, file paths) can be scrolled to instead of being
+          silently clipped at the panel's right edge. Radix only shows it
+          when the viewport actually overflows horizontally. */}
+      <ScrollBar orientation="horizontal" />
       <ScrollAreaPrimitive.Corner />
     </ScrollAreaPrimitive.Root>
   )

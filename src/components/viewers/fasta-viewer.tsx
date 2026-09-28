@@ -181,12 +181,12 @@ export function FastaViewer({ fastaText, className }: FastaViewerProps) {
               </Button>
             </div>
 
-            {/* Sequence strip */}
+            {/* Sequence strip + position ruler. The strip wraps at the
+                available width (no fixed minWidth: forcing ~732px blew out
+                narrow containers like the 320px inspector panel and clipped
+                everything past the right border). */}
             <div className="space-y-1.5">
-              <div
-                className="flex flex-wrap gap-px overflow-x-auto rounded-md bg-muted/40 p-1.5"
-                style={{ minWidth: `${Math.min(record.sequence.length, 60) * CHAR_WIDTH + 12}px` }}
-              >
+              <div className="flex flex-wrap gap-px overflow-x-auto rounded-md bg-muted/40 p-1.5">
                 {record.sequence.split("").map((aa, i) => (
                   <div
                     key={i}

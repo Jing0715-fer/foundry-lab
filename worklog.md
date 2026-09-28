@@ -2654,3 +2654,27 @@ Stage Summary:
 - Merge complete and pushed lineage: e9b529b → [remote: ee62673, 4cd2b52, eca658b] + [local: bafe4c1..5dd5bea] → 30e6115 (merge) → 790f081 (review fixes) → this entry's commit.
 - Both feature sets coexist and interoperate: comp-tools (10) + alphafold2 (tutorial grammar, CUDA env pin w/ cluster fallback) + MolVision studio + direct results UX.
 - Ops note for future sessions: after any operation that replaces db/custom.db (git checkout --ours, branch switch), RESTART the dev server or Prisma writes will fail readonly; and restart servers one-route-at-a-time warm on memory-tight boxes.
+
+---
+Task ID: 29-output-window-overflow-fix
+Agent: main
+Task: Fix "output窗口内容显示不全，右侧超出边框的内容都看不到" — output window content clipped past the right border.
+
+Work Log:
+- Reproduced with agent-browser on the completed AlphaFold2 workflow node: inspector Radix ScrollArea viewport measured clientW=319 vs scrollW=813 (Logs tab, pre 787px wide) and 366 (Params tab) — content past the 320px panel's right border was clipped and unreachable.
+- Root causes identified:
+  1. Radix ScrollArea sizes the viewport's inner wrapper with `display: table; min-width: 100%` → the wrapper expands to content intrinsic (min-content) width, so one unwrappable line (the ##OUTPUTS## trailer with 26 long cluster paths) or a long hint sentence blows the whole panel wide.
+  2. `break-words` (overflow-wrap: break-word) does NOT affect min-content intrinsic sizing — the huge path list line never wrapped because the pre "fit" its own expanded width.
+  3. Shared ScrollArea rendered only a vertical scrollbar; the viewport computed `overflow: hidden scroll` — horizontal scrolling was impossible even programmatically-by-mouse.
+  4. FastaViewer sequence strip forced `minWidth: min(seqLen,60)*12+12 ≈ 732px`.
+  5. Param rows used bare `grid gap-1.5` (implicit auto track sizes to content max-content) and two cluster SelectTriggers were `w-fit` + `whitespace-nowrap` (Connection select measured 316px).
+- Fixes applied:
+  - src/components/ui/scroll-area.tsx: render `<ScrollBar orientation="horizontal" />` next to the vertical one — wide content is now reachable by scroll anywhere the shared ScrollArea is used (Radix only shows it on real overflow; verified no spurious scrollbars appear in palette/sidebar).
+  - src/components/canvas/inspector.tsx: ScrollArea gets `[&_[data-slot=scroll-area-viewport]>div]:!block` to defeat the display:table sizing (content lays out at panel width); LogsTab pre `break-words` → `wrap-anywhere`; all param/cluster rows `grid gap-1.5` → `grid grid-cols-1 gap-1.5` (minmax(0,1fr) tracks); Connection/Partition SelectTriggers → `w-full`.
+  - src/components/viewers/fasta-viewer.tsx: removed the fixed minWidth style — the sequence strip now flex-wraps at the available width (275px in the inspector, no clipping).
+  - src/components/viewers/inline-results.tsx: all three preview pres upgraded `break-words` → `wrap-anywhere`.
+- Browser-verified post-fix: inspector Params 319/319 & maxOver=0; Logs pre cw=sw=293 with overflow-wrap:anywhere (the ##OUTPUTS## line wraps); Result tab fits (only MolStudio toolbar scrolls internally by design, 509/301 reachable); FASTA strip 275px fitsPanel=true; page body scrollWidth==clientWidth==1280; OutputViewerDialog (Summary/Structure/Files/Command) maxOver=0 with pre wrapping 1118/1118; VLM visual checks confirm no right-edge truncation on Params (was: FASTA textarea cut), Logs, Result tabs. Lint clean; tsc: zero app-src errors (1 pre-existing non-app error unchanged).
+
+Stage Summary:
+- "Output window clipped at right border" was three stacked layout bugs (Radix display:table intrinsic sizing + break-words not affecting min-content + no horizontal scrollbar), fixed at the shared-component level (ScrollArea now scrolls horizontally when needed) and at the content level (block wrapper override in the inspector, wrap-anywhere on log/preview pres, constrained grids/selects, wrap-at-width FASTA strip).
+- Ops note: Radix ScrollArea horizontal clipping pattern — for any future panel using ScrollArea with wide content, either render the horizontal ScrollBar (now default) or constrain intrinsic widths; `overflow-wrap: anywhere` (Tailwind `wrap-anywhere`), unlike `break-words`, also caps min-content width.
