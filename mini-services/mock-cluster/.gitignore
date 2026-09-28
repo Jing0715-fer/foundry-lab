@@ -6,12 +6,14 @@ mock-cluster.log
 fs/projects/*
 !fs/projects/.gitkeep
 
-# runtime job dirs created under ~/foundry-lab (nothing source-controlled there
-# since the comp-tool shims were removed — tools/ itself stays, it is the
-# remoteToolsDir contract)
+# runtime job dirs created under ~/foundry-lab — but the comp-tool shims ARE source
+# (RFdiffusion script entry + ProteinMPNN run script live in the remoteToolsDir;
+# task 26-mock restored them after the 25-c removal)
 fs/home/foundry/foundry-lab/*
 !fs/home/foundry/foundry-lab/tools/
 !fs/home/foundry/foundry-lab/tools/.gitkeep
+fs/home/foundry/foundry-lab/tools/ProteinMPNN/*
+!fs/home/foundry/foundry-lab/tools/ProteinMPNN/protein_mpnn_run.py
 
 # mock-cluster runtime state
 fs/.salloc-seq

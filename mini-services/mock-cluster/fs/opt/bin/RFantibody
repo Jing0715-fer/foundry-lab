@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# [mock-cluster shim] RFantibody CLI → the REAL built-in antibody engine.
+# Hydra-style flags (inference.num_designs / inference.target_pdb /
+# inference.hotspot_res / inference.cdr_scheme; bare aliases tolerated)
+# are routed to /home/z/my-project/scripts/algorithms/antibody_engine.py.
+set -u
+ENGINE="/home/z/my-project/scripts/algorithms/antibody_engine.py"
+HELPER="/home/z/my-project/mini-services/mock-cluster/shims/generic_payload.py"
+
+num_designs=""; target_pdb=""; hotspot=""; cdr_scheme=""
+for arg in "$@"; do
+  key="${arg%%=*}"; val="${arg#*=}"
+  [ "$key" = "$arg" ] && val=""
+  case "$key" in
+    inference.num_designs|num_designs)   num_designs="$val" ;;
+    inference.target_pdb|target_pdb)     target_pdb="$val" ;;
+    inference.hotspot_res|hotspot_res|hotspot) hotspot="$val" ;;
+    inference.cdr_scheme|cdr_scheme)     cdr_scheme="$val" ;;
+    *) ;;
+  esac
+done
+
+payload="$(python3 "$HELPER" rfantibody "$(pwd)" \
+  num_designs="$num_designs" target_pdb="$target_pdb" \
+  hotspot="$hotspot" cdr_scheme="$cdr_scheme")" || exit 1
+
+echo "[mock-cluster shim] RFantibody CLI received — routing to the REAL built-in"
+echo "[mock-cluster shim] antibody engine (germline frameworks + IMGT CDRs, numpy):"
+echo "[mock-cluster shim] engine: $ENGINE"
+echo "[mock-cluster shim] payload: $payload"
+
+exec python3 "$ENGINE" "$payload"
