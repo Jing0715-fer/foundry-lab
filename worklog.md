@@ -2629,3 +2629,28 @@ Stage Summary:
   4. NIT — dead viewer files kept: pdb-3d-viewer.tsx (documented as retired) and pdb-viewer.tsx (pre-existing) have zero importers.
   5. NIT — pre-existing (not merge-related): workflow-engine alphafold/comptool cases return status "completed" even when executeCompTool reports a failed run (failure only surfaces in result/logs text); and `bunx tsc --noEmit`'s 4 errors in examples/ + skills/ are outside the app (the task's `rg 'src/'` filter would misleadingly show skills/stock-analysis-skill/src/analyzer.ts — it is NOT the app's src/).
 - Overall verdict: the merge is CLEAN — local's superset was preserved everywhere it mattered, remote's UX additions were integrated without losing their prop wiring, and nothing blocks E2E. Both minor issues are quality-of-implementation seams (provenance duplication, CUDA-pin sync), not functional breaks in the primary lanes (alphafold panel, inspector auto-seed, local native runs all pin correctly). E2E can proceed as-is; the two MINORs are worth a small follow-up patch.
+
+---
+Task ID: 28-merge-e2e-push
+Agent: main
+Task: Pull remote origin/main, merge it with local (comp-tools + alphafold2 side), comprehensive code review, E2E testing, then push to GitHub.
+
+Work Log:
+- Fetched origin (Jing0715-fer/foundry-lab, token auth): local was 5 ahead / 3 behind — remote carried "direct results UX" (inline-results + /api/tools/file?meta=1 + auto Result-tab switch) and "MolVision studio embed" (~50 files: src/lib/molecular/**, src/components/molecular/**, src/i18n/**); local carried the comp-tools restoration + alphafold2 tutorial tool.
+- MERGE (30e6115): 7 conflicts resolved — db/custom.db binary kept local (fresh seed w/ comptool migration); inspector.tsx / real-executor.ts / tool-registry.ts / tools.ts / workflow-engine.ts each kept the LOCAL side WITHIN conflict hunks only (scripted resolution — NOT checkout --ours, so remote's clean auto-merges like InlineResults wiring, suspend prop chain, ?meta=1 file API survived intact); worklog.md union-merged. Local side was a strict superset: envPrefix (CUDA_VISIBLE_DEVICES as process env, all 4 runProcess call sites), alphafold fasta/features mutual-exclusion grammar, hydraList contigs.
+- CODE REVIEW (subagent task 27-review, appended above): verdict CLEAN, nothing blocks E2E. 2 MINORs found and FIXED (790f081): (1) inspector viewerJob now reuses the outer executor memo so dialog + inline badges always agree (legacy-simulated nodes show LEGACY in both) and the dep array is truthful; (2) startClusterToolRun gained a CUDA-pin fallback — empty target.cudaDevice falls back to the envPrefix gpu param so remote node scripts always export CUDA_VISIBLE_DEVICES. tsc: 0 src errors; lint clean.
+- DISCOVERED + FIXED an operational landmine: the running dev server's Prisma held the pre-merge db inode → "attempt to write a readonly database" (SQLite 1032) → all node-run/job POSTs 500'd. Fresh connections wrote fine; the fix was a server restart (Prisma reopens the merged file). Verified: RFdiffusion node run 200 with 8 designs / 17 fresh files.
+- Dev-server restarts were fragile: cold Turbopack compile storms (page + many API routes compiled in parallel by the preview panel's auto-reload) transiently spiked memory past the 4 GiB cgroup limit and killed next-server silently (no OOM recorded in the root memory.oom_control, but pattern = death exactly during parallel compiles, survival when warmed one route at a time). Final stable state: one warm server (foreground-launched, ~1.5 GB RSS), all routes compiled, survived the full E2E session.
+- E2E VERIFIED (agent-browser + VLM + disk + API):
+  - Page: title + all nav tabs (incl. AlphaFold) + palette with TOOLS 12 (10 comp tools + alphafold2 + biotool); skip-tour flow works.
+  - AlphaFold panel: tutorial guide w/ copyable commands; connection "Local test cluster · foundry@localhost"; probe "alphafold2: ready on cluster"; GPU check renders 8×A100 with memory bars + busy/free + Use buttons; card 6 selected; tutorial example FASTA (T1078) + max_template_date 2021-07-20 loaded.
+  - REAL cluster run (job cmukvtjvc000im6yiex3riplo): salloc "Granted job allocation 910008" → exit 0 → 27 files / 270 KB synced → on-disk tree matches the tutorial exactly (input/T1078.fa, features.pkl, ranked_0-4.pdb, ranking_debug.json, relaxed/unrelaxed/result_model_1-5, timings.json, msas/{bfd_uniclust,magnify,uniref90}).
+  - MolVision: full-dialog studio renders ranked_0.pdb (cartoon ribbon, VLM-confirmed) with 表示法预设/配色方案/自动旋转/取景/SASA panels; INLINE studio in the canvas inspector Result tab renders the fresh design_0.pdb (VLM-confirmed, 301×288 compact canvas).
+  - InlineResults: REAL · ENGINE badge, "17 OUTPUT FILES", per-file sizes via ?meta=1 (183 B fasta / 46.5 KB pdb), Copy path + Download actions, Viewer affordance.
+  - API: POST node run 200; jobs list shows 7 alphafold jobs all completed exit 0 × 27 files.
+  - Responsive: 375 px viewport scrollWidth == clientWidth (no overflow), footer visible; zero page-error entries; zero console errors.
+
+Stage Summary:
+- Merge complete and pushed lineage: e9b529b → [remote: ee62673, 4cd2b52, eca658b] + [local: bafe4c1..5dd5bea] → 30e6115 (merge) → 790f081 (review fixes) → this entry's commit.
+- Both feature sets coexist and interoperate: comp-tools (10) + alphafold2 (tutorial grammar, CUDA env pin w/ cluster fallback) + MolVision studio + direct results UX.
+- Ops note for future sessions: after any operation that replaces db/custom.db (git checkout --ours, branch switch), RESTART the dev server or Prisma writes will fail readonly; and restart servers one-route-at-a-time warm on memory-tight boxes.
