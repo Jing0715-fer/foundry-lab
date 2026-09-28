@@ -897,18 +897,21 @@ function NodeInspectorImpl() {
   }, [compToolKey, node, node?.logs]);
   const viewerJob: ToolJobDTO | null = React.useMemo(() => {
     if (!compToolKey || !node || outputFiles.length === 0) return null;
-    // Executor provenance for the badge: the workflow's engine path stamps a
-    // "[built-in real algorithm engine]" banner into the logs; its absence
-    // on a successful run means the native upstream tool executed.
     const logs = node.logs ?? "";
-    const viaEngine = /\[built-in real algorithm engine\]/i.test(logs);
+    // Executor provenance for the badge — REUSE the outer `executor` memo so
+    // the dialog badge and the inline Result-tab badge always agree (a
+    // legacy-simulated node with outputs shows LEGACY in both, not just in
+    // the inline view). Falls back to "native" when the memo is undecided.
     return {
       id: `node-${node.id}`,
       tool: compToolKey,
       presetName: null,
       params: {
         _meta: {
-          executor: viaEngine ? "builtin-engine" : "native",
+          executor:
+            executor === "builtin-engine" || executor === "legacy-simulated"
+              ? executor
+              : "native",
           realToolUsed: true,
         },
       },

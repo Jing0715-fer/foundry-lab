@@ -224,7 +224,7 @@ export interface StartClusterRunArgs {
 export async function startClusterToolRun(
   args: StartClusterRunArgs,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
-  const { jobId, toolKey, params, workDir, target } = args;
+  const { jobId, toolKey, params, workDir, target: rawTarget } = args;
 
   const fail = async (error: string): Promise<{ ok: false; error: string }> => {
     updateRun(jobId, {
@@ -242,11 +242,33 @@ export async function startClusterToolRun(
   };
 
   // 1. Connection + tool defs.
-  const conn = getConnection(target.connectionId);
-  if (!conn) return fail(`cluster connection not found: ${target.connectionId}`);
   const def = getCompTool(toolKey);
   if (!def) return fail(`unknown tool: ${toolKey}`);
   const entry = getToolRegistryEntry(toolKey);
+
+  // 1b. CUDA-pin fallback. The tutorial grammar models the GPU card as an
+  //     envPrefix PARAM (alphafold's `gpu` → CUDA_VISIBLE_DEVICES). The
+  //     cluster lane pins the card via `target.cudaDevice` instead — when the
+  //     target carries no explicit device (programmatic POST /api/tools/run
+  //     with only params.gpu, or an inspector that never re-synced _cluster),
+  //     fall back to the param value so the remote node script still exports
+  //     CUDA_VISIBLE_DEVICES instead of silently running unpinned.
+  const target: ClusterRunTarget =
+    !(rawTarget.cudaDevice ?? "").trim()
+      ? (() => {
+          const envField = def.paramFields.find(
+            (f) => f.envPrefix === "CUDA_VISIBLE_DEVICES",
+          );
+          const gpuVal = envField
+            ? String(params[envField.key] ?? envField.default ?? "").trim()
+            : "";
+          const normalized = gpuVal.replace(/[^0-9,]/g, "");
+          return normalized ? { ...rawTarget, cudaDevice: normalized } : rawTarget;
+        })()
+      : rawTarget;
+
+  const conn = getConnection(target.connectionId);
+  if (!conn) return fail(`cluster connection not found: ${target.connectionId}`);
 
   // 2. Cluster clock + home. $HOME expands any `~` in remoteRoot BEFORE we
   //    quote paths (quoting would defeat remote tilde expansion).
