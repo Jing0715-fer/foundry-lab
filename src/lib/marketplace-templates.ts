@@ -27,7 +27,7 @@ export interface MarketplaceTemplateNode {
   y: number;
   /** If set, the loader resolves this title → an existing agent's ID. */
   refTitle?: string;
-  /** Optional node params (e.g. comptool.toolKey, biotool.bioKey, input.text). */
+  /** Optional node params (e.g. rfdiffusion.num_designs, biotool.bioKey, input.text). */
   params?: Record<string, unknown>;
 }
 
@@ -56,6 +56,30 @@ export interface MarketplaceTemplate {
 export const MARKETPLACE_TEMPLATES: MarketplaceTemplate[] = [
   {
     id: "mp-antibody-design",
+    name: "Antibody Design Pipeline",
+    description:
+      "Complete antibody design workflow: target analysis → RFantibody design → ProteinMPNN sequence → Rosetta refinement.",
+    author: "BioDesign Labs",
+    category: "design",
+    tags: ["antibody", "rfdiffusion", "proteinmpnn", "rosetta"],
+    stars: 42,
+    downloads: 128,
+    nodes: [
+      { type: "input", name: "Target PDB", x: 80, y: 120, params: { text: "Target antigen structure" } },
+      { type: "agent", name: "Immunologist", x: 400, y: 120, refTitle: "Immunologist" },
+      { type: "rfantibody", name: "RFantibody", x: 720, y: 120, params: { num_designs: 4 } },
+      { type: "proteinmpnn", name: "ProteinMPNN", x: 1040, y: 120, params: { num_seq: 8 } },
+      { type: "output", name: "Designed Antibody", x: 1360, y: 120 },
+    ],
+    edges: [
+      { from: 0, to: 1, fromPort: "text", toPort: "context" },
+      { from: 1, to: 2, fromPort: "message", toPort: "input" },
+      { from: 2, to: 3, fromPort: "files", toPort: "input" },
+      { from: 3, to: 4, fromPort: "summary", toPort: "value" },
+    ],
+  },
+  {
+    id: "mp-antibody-structure",
     name: "Antibody Structure Prediction",
     description:
       "Complete antibody structure pipeline: target sequence → Immunologist review → AlphaFold2 prediction (five pLDDT-ranked models) → report.",
@@ -148,10 +172,32 @@ export const MARKETPLACE_TEMPLATES: MarketplaceTemplate[] = [
     id: "mp-education-tutorial",
     name: "Education: Protein Basics",
     description:
-      "Interactive tutorial: input question → agent explains → AlphaFold prediction demo → output summary.",
+      "Interactive tutorial: input question → agent explains → comp tool demo → output summary.",
     author: "EduLab",
     category: "education",
     tags: ["education", "tutorial", "beginner"],
+    stars: 15,
+    downloads: 42,
+    nodes: [
+      { type: "input", name: "Question", x: 80, y: 120, params: { text: "What is protein folding?" } },
+      { type: "agent", name: "PI Tutor", x: 400, y: 120, refTitle: "Principal Investigator" },
+      { type: "rfdiffusion", name: "RFdiffusion Demo", x: 720, y: 120, params: { num_designs: 2 } },
+      { type: "output", name: "Tutorial Output", x: 1040, y: 120 },
+    ],
+    edges: [
+      { from: 0, to: 1, fromPort: "text", toPort: "context" },
+      { from: 1, to: 2, fromPort: "message", toPort: "input" },
+      { from: 2, to: 3, fromPort: "summary", toPort: "value" },
+    ],
+  },
+  {
+    id: "mp-education-af2",
+    name: "Education: AlphaFold Basics",
+    description:
+      "Interactive tutorial: input question → agent explains → AlphaFold prediction demo → output summary.",
+    author: "EduLab",
+    category: "education",
+    tags: ["education", "tutorial", "alphafold", "beginner"],
     stars: 15,
     downloads: 42,
     nodes: [
@@ -170,10 +216,34 @@ export const MARKETPLACE_TEMPLATES: MarketplaceTemplate[] = [
     id: "mp-production-qa",
     name: "Production QA Pipeline",
     description:
-      "Quality assurance: input → multi-tool validation → structural check → QA report.",
+      "Quality assurance: input → Rosetta energy validation → PDB check → QA report.",
     author: "QAPro",
     category: "production",
     tags: ["qa", "validation", "production", "quality"],
+    stars: 8,
+    downloads: 23,
+    nodes: [
+      { type: "input", name: "Design Input", x: 80, y: 120, params: { text: "Designed protein" } },
+      { type: "rosetta", name: "Rosetta Check", x: 400, y: 120, params: { protocol: "minimize" } },
+      { type: "biotool", name: "PDB Validation", x: 720, y: 120, params: { bioKey: "pdb" } },
+      { type: "agent", name: "QA Reviewer", x: 1040, y: 120, refTitle: "Scientific Critic" },
+      { type: "output", name: "QA Report", x: 1360, y: 120 },
+    ],
+    edges: [
+      { from: 0, to: 1, fromPort: "text", toPort: "input" },
+      { from: 1, to: 2, fromPort: "files", toPort: "query" },
+      { from: 2, to: 3, fromPort: "results", toPort: "context" },
+      { from: 3, to: 4, fromPort: "message", toPort: "value" },
+    ],
+  },
+  {
+    id: "mp-production-qa-af2",
+    name: "Production QA: Structure Check",
+    description:
+      "Quality assurance with AlphaFold2: input → structure prediction check → PDB validation → QA report.",
+    author: "QAPro",
+    category: "production",
+    tags: ["qa", "validation", "alphafold", "quality"],
     stars: 8,
     downloads: 23,
     nodes: [

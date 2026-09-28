@@ -112,6 +112,16 @@ Available node types:
 - "agent" — an agent persona node (nodeRefTitle: "Principal Investigator" | "Computational Biologist" | "Bioinformatician" | "Immunologist" | "Structural Biologist" | "Machine Learning Engineer" | "Biochemist" | "Cell Biologist")
 - "meeting" — a team meeting node (params: {agenda: "...", numRounds: 3, temperature: 0.7})
 - "research" — a deep research pipeline (params: {topic: "...", numRounds: 2, temperature: 0.6})
+- "rfdiffusion" — de novo protein design (params: {num_designs: 8, total_length: 150, contigmap: "150"})
+- "rfantibody" — antibody design
+- "proteinmpnn" — inverse folding (sequence design from backbone)
+- "ligandmpnn" — inverse folding with ligand context
+- "solublempnn" — soluble-optimized inverse folding
+- "rosetta" — energy minimization / docking
+- "pyrosetta" — advanced scoring
+- "rf3" — structure prediction (RoseTTAFold3)
+- "esmfold" — fast structure prediction (no MSA)
+- "colabfold" — AlphaFold2-based prediction (local ColabFold)
 - "alphafold" — AlphaFold2 structure prediction (params: {sequence: ">name\nMKT...", output_dir: "name_AF2", max_template_date: "2021-07-20", gpu: "0"}). Runs on the GPU cluster (mgt → salloc → gpu05 → module load alphafold2) when routed via the inspector, else locally with the built-in engine.
 - "biotool" — bioinformatics query (params: {bioKey: "blast|pdb|pubmed|uniprot", query: "...", maxResults: 5})
 - "output" — final result display
@@ -123,8 +133,8 @@ To execute actions, emit a fenced code block with JSON:
   "actions": [
     {"type": "create_node", "nodeType": "input", "nodeName": "Target", "params": {"text": "..."}},
     {"type": "create_node", "nodeType": "agent", "nodeName": "CompBio", "nodeRefTitle": "Computational Biologist"},
-    {"type": "create_node", "nodeType": "alphafold", "nodeName": "AlphaFold", "params": {"sequence": ">target\nMKTAYIA..."}},
-    {"type": "create_edge", "fromNodeName": "Target", "toNodeName": "AlphaFold", "fromPort": "text", "toPort": "input"},
+    {"type": "create_node", "nodeType": "rfdiffusion", "nodeName": "RFdiffusion", "params": {"num_designs": 4}},
+    {"type": "create_edge", "fromNodeName": "Target", "toNodeName": "RFdiffusion", "fromPort": "text", "toPort": "input"},
     {"type": "run_workflow"}
   ]
 }
@@ -135,13 +145,15 @@ IMPORTANT: For "agent" nodes, the "nodeRefTitle" field must be a TOP-LEVEL key o
 Current canvas state:
 ${currentNodeNames}
 
-Workflow: When the user asks for a protein task:
+Workflow: When the user asks for a protein design task:
 1. Create an input node with the target sequence or specification.
 2. If discussion is needed, create a meeting node + connect 2-3 agent nodes + the input.
-3. Create an "alphafold" node for structure prediction — paste the FASTA sequence into its sequence param.
-4. Connect the nodes into a pipeline.
-5. Emit "run_workflow" to execute.
-6. After the workflow completes, the frontend will fetch results and you'll be called again to summarize (outputs include five models ranked by pLDDT — ranked_0.pdb is the highest-confidence prediction).
+3. Create the appropriate design tool node(s) — RFdiffusion for de novo design, RFantibody for antibodies, ProteinMPNN for sequence design from a backbone.
+4. For structure prediction, use "alphafold" (the GPU-cluster tutorial flow) or RF3/ESMFold/ColabFold for local prediction.
+5. For validation, use Rosetta/PyRosetta.
+6. Connect the nodes into a pipeline.
+7. Emit "run_workflow" to execute.
+8. After the workflow completes, the frontend will fetch results and you'll be called again to summarize (AlphaFold outputs include five models ranked by pLDDT — ranked_0.pdb is the highest-confidence prediction).
 
 Be concise in your prose. Put the structured plan + actions in the JSON block. After the block, write 1-2 sentences explaining what you're doing.`;
 

@@ -38,12 +38,22 @@ import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 
 /**
  * Tools that produce PDB files (the Structure tab is shown for these).
- * AlphaFold2 outputs ranked_*.pdb / relaxed_*.pdb models — the Structure tab
- * is its whole point.
+ * Includes all design + structure-prediction + scoring tools — every comp
+ * tool whose real executors (native or built-in engine) emit .pdb output,
+ * plus AlphaFold2 (ranked_*.pdb / relaxed_*.pdb models).
  */
-const STRUCTURE_TOOLS = new Set(["alphafold"]);
+const STRUCTURE_TOOLS = new Set([
+  "rfdiffusion",
+  "rfantibody",
+  "rosetta",
+  "pyrosetta",
+  "rf3",
+  "esmfold",
+  "colabfold",
+  "alphafold",
+]);
 /** Tools that produce FASTA files (the Sequence tab is shown for these). */
-const SEQUENCE_TOOLS = new Set<string>([]);
+const SEQUENCE_TOOLS = new Set(["proteinmpnn", "ligandmpnn", "solublempnn"]);
 
 // Used as the fallback when the file fetch fails (e.g. server unreachable).
 const SAMPLE_PDB = generateSamplePdb();

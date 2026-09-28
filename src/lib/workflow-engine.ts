@@ -267,12 +267,11 @@ export async function executeNode(
       }
 
       case "alphafold": {
-        // The AlphaFold prediction tool node (legacy DB comp-tool nodes are
-        // migrated to "alphafold" by the seed route).
+        // The AlphaFold prediction tool node (the cluster tutorial flow:
+        // mgt → salloc → gpu05 → module alphafold2 → run_alphafold.py).
         const toolKey = "alphafold";
         // Cluster target (inspector-managed): a raw `_cluster` param (JSON
-        // string or object) routes this run to an SSH cluster — e.g. the
-        // AlphaFold tutorial flow (mgt → salloc → gpu05 → module alphafold2).
+        // string or object) routes this run to an SSH cluster.
         // It is stripped from the filtered params so it never reaches
         // buildCommand.
         const clusterTarget = extractClusterTarget(
@@ -293,6 +292,40 @@ export async function executeNode(
         // ##OUTPUTS## trailer: the built-in engines print it themselves, native
         // upstream tools do not — append it from the executor's file list so
         // the inspector's Outputs button works for BOTH executors.
+        const logs = files.length
+          ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
+          : stdout;
+        return { result: summary, logs, status: "completed" };
+      }
+
+      // Per-tool node types — dispatch on node.type which IS the toolKey.
+      // (The old generic "comptool" node was removed — each tool is its own
+      // standalone command/node now.)
+      case "rfdiffusion":
+      case "rfantibody":
+      case "proteinmpnn":
+      case "ligandmpnn":
+      case "solublempnn":
+      case "rosetta":
+      case "pyrosetta":
+      case "rf3":
+      case "esmfold":
+      case "colabfold": {
+        const toolKey = node.type;
+        // Same cluster routing as the alphafold case (raw `_cluster` param).
+        const clusterTarget = extractClusterTarget(
+          (node.params as Record<string, unknown>)._cluster,
+        );
+        // node.params are already the tool's own params (no prefixing needed).
+        const filtered: Record<string, unknown> = { ...node.params };
+        delete filtered._cluster;
+        if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
+        const { summary, stdout, files } = await executeCompTool(
+          toolKey,
+          filtered,
+          clusterTarget ? { cluster: clusterTarget } : {},
+        );
+        // Same ##OUTPUTS## trailer as the alphafold branch above.
         const logs = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
           : stdout;

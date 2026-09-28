@@ -112,9 +112,9 @@ const STEPS: TourStep[] = [
   },
   {
     icon: Boxes,
-    title: "AlphaFold + Bio tools",
+    title: "Comp tools + AlphaFold",
     description:
-      "Run AlphaFold2 predictions on the GPU cluster (mgt → salloc → gpu05 → module load alphafold2) — plus BLAST, PDB, PubMed searches. Cluster runs use the real AF2; local runs use the built-in classical engine.",
+      "Run RFdiffusion, ProteinMPNN, Rosetta, BLAST, PDB searches — plus dedicated AlphaFold2 predictions on the GPU cluster (mgt → salloc → gpu05 → module load alphafold2). Runs use real algorithms: the native tool if installed, else the built-in knowledge-based engine.",
     iconWrap: "bg-cyan-500/15",
     iconText: "text-cyan-600 dark:text-cyan-400",
     accent: "bg-cyan-500 hover:bg-cyan-600",

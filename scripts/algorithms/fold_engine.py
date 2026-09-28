@@ -29,6 +29,9 @@ import common as C
 
 TOOL_LABELS = {
     "alphafold": "AlphaFold2-style folding (local Chou-Fasman engine)",
+    "esmfold": "ESMFold-style single-sequence folding",
+    "rf3": "RoseTTAFold3-style folding",
+    "colabfold": "AlphaFold2/ColabFold-style folding",
 }
 
 

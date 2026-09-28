@@ -76,33 +76,37 @@ export const PREDEFINED_AGENTS: AgentTemplate[] = [
   },
   {
     title: "Computational Biologist",
-    expertise: "AlphaFold2 structure prediction, GPU cluster pipelines",
+    expertise: "Structure prediction, inverse folding, diffusion models, GPU cluster pipelines",
     goal: "Design and evaluate computational pipelines for protein engineering.",
-    role: "Pipeline architect — sets up AlphaFold2 predictions, tunes parameters, interprets outputs.",
+    role: "Pipeline architect — selects tools, tunes parameters, interprets outputs (incl. AlphaFold2 on the cluster).",
     icon: "cpu",
     color: "#10b981",
     knowledge: {
       domainKnowledge: [
+        "RFdiffusion / RF3 architecture",
+        "ProteinMPNN sequence design",
         "AlphaFold2 architecture and MSA usage",
-        "Structure prediction pipelines",
         "Confidence metrics (pLDDT, pTM)",
+        "Active-site constraints",
         "GPU cluster execution (salloc, CUDA_VISIBLE_DEVICES)",
       ],
       capabilities: [
+        "Author RFdiffusion jobs",
+        "Tune MPNN sampling temperature",
         "Author AlphaFold2 prediction jobs",
         "Pick GPU cards from nvidia-smi",
-        "Interpret pLDDT-ranked models",
+        "Interpret folding confidence",
       ],
       webSearchEnabled: true,
       bioToolsEnabled: true,
-      defaultToolEnvs: { alphafold: "" },
+      defaultToolEnvs: { rfdiffusion: "", proteinmpnn: "", alphafold: "" },
     },
   },
   {
     title: "Immunologist",
     expertise: "Antibody engineering, epitope mapping, immune evasion",
     goal: "Design binders against therapeutic targets and assess immunogenicity.",
-    role: "Antibody specialist — guides structure prediction runs and paratope analysis.",
+    role: "Antibody specialist — guides RFantibody runs and paratope analysis.",
     icon: "beaker",
     color: "#06b6d4",
     knowledge: {
@@ -156,6 +160,7 @@ export const PREDEFINED_AGENTS: AgentTemplate[] = [
         "Crystallographic symmetry",
         "Cryo-EM resolution limits",
         "Protein-protein interfaces",
+        "Rosetta energy functions",
         "Model quality and confidence assessment",
       ],
       capabilities: [
@@ -265,7 +270,7 @@ export function generateAgentSystemPrompt(agent: AgentDTO): string {
     lines.push("You may invoke tools by emitting fenced code blocks:");
     if (k.bioToolsEnabled) {
       lines.push("  ```tool");
-      lines.push('  {"tool":"alphafold","params":{"sequence":">name\nMKT..."}}');
+      lines.push('  {"tool":"rfdiffusion|rfantibody|proteinmpnn|rosetta|alphafold","params":{...}}');
       lines.push("  ```");
       lines.push("  ```bio");
       lines.push('  {"type":"blast|pdb|pubmed|uniprot","query":"..."}');

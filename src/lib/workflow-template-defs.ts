@@ -47,7 +47,40 @@ const COL = 320;
 const ROW = 180;
 
 export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
-  // 1. AlphaFold Structure Prediction ---------------------------------------
+  // 1. Nanobody Design Pipeline ---------------------------------------------
+  // Input → Agent (Computational Biologist) → RFdiffusion → Output
+  {
+    id: "nanobody-design",
+    name: "Nanobody Design Pipeline",
+    description:
+      "A linear computational protein-design workflow: an input prompt feeds a Computational Biologist agent who authors an RFdiffusion run, whose outputs land in a final report.",
+    category: "design",
+    nodes: [
+      { type: "input", name: "Design Brief", x: 0, y: ROW },
+      {
+        type: "agent",
+        name: "Computational Biologist",
+        x: COL,
+        y: ROW,
+        refTitle: "Computational Biologist",
+      },
+      {
+        type: "rfdiffusion",
+        name: "RFdiffusion",
+        x: COL * 2,
+        y: ROW,
+        params: { num_designs: 4 },
+      },
+      { type: "output", name: "Design Report", x: COL * 3, y: ROW },
+    ],
+    edges: [
+      { from: 0, to: 1, fromPort: "text", toPort: "context" },
+      { from: 1, to: 2, fromPort: "message", toPort: "input" },
+      { from: 2, to: 3, fromPort: "summary", toPort: "value" },
+    ],
+  },
+
+  // 1b. AlphaFold Structure Prediction ---------------------------------------
   // Input (FASTA) → Agent (Computational Biologist) → AlphaFold → Output
   {
     id: "alphafold-prediction",

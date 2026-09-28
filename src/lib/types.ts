@@ -41,7 +41,7 @@ export interface ChatMessageDTO {
 
 export interface ToolCall {
   kind: "comp" | "bio";
-  tool: string; // alphafold | blast | pdb | ...
+  tool: string; // rfdiffusion | proteinmpnn | alphafold | blast | pdb | ...
   params: Record<string, unknown>;
   result?: string;
   status?: "pending" | "running" | "completed" | "failed";
@@ -116,7 +116,12 @@ export interface ResearchReportDTO {
 
 export type NodeType =
   | "agent" | "task" | "meeting" | "research"
-  | "alphafold" | "biotool" | "input" | "output";
+  | "alphafold" | "biotool" | "input" | "output"
+  // Per-tool node types — each comp tool is its own canvas node (the old
+  // generic "comptool" node was removed; these are the standalone commands).
+  | "rfdiffusion" | "rfantibody" | "proteinmpnn" | "ligandmpnn" | "solublempnn"
+  | "rosetta" | "pyrosetta"
+  | "rf3" | "esmfold" | "colabfold";
 
 export type NodeStatus =
   | "idle" | "pending" | "running" | "completed" | "failed";
@@ -162,7 +167,7 @@ export interface NodeSpec {
   params: ParamSchema[];
   /** does this node require an LLM call to run */
   usesLLM?: boolean;
-  /** for the alphafold tool node */
+  /** for tool nodes: which tool key (every comp-tool node spec) */
   toolKey?: string;
   /** for biotool: which bio api */
   bioKey?: string;
@@ -208,7 +213,11 @@ export interface WorkflowDTO {
 
 // --- Tools -------------------------------------------------------------------
 
-export type CompToolKey = "alphafold";
+export type CompToolKey =
+  | "alphafold"
+  | "rfdiffusion" | "rfantibody" | "proteinmpnn" | "ligandmpnn" | "solublempnn"
+  | "rosetta" | "pyrosetta"
+  | "rf3" | "esmfold" | "colabfold";
 export type BioToolKey = "blast" | "pdb" | "pubmed" | "uniprot";
 
 export interface ToolEnvironmentDTO {

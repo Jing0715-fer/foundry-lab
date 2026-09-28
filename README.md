@@ -11,12 +11,18 @@ and run **real computational algorithms** — never simulations.
 ## What's inside
 
 - **Workflow canvas** — drag-and-drop nodes (agents, tasks, meetings, research
-  pipelines, AlphaFold prediction, bio queries) with live progress streaming,
-  minimap, undo/redo, grouping, export/import.
+  pipelines, comp tools, AlphaFold prediction, bio queries) with live progress
+  streaming, minimap, undo/redo, grouping, export/import.
 - **Agent layer** — LLM agents with knowledge configs, tool-calling loops,
   team meetings, multi-round research pipelines, and a PI Copilot.
-- **AlphaFold2 structure prediction** — the computational tool, following the
-  cluster tutorial end-to-end:
+- **Comp tools** — RFdiffusion, RFantibody, ProteinMPNN, LigandMPNN,
+  SolubleMPNN, Rosetta, PyRosetta, RF3, ESMFold, ColabFold: each a standalone
+  canvas node / command with its own param surface, native CLI grammar,
+  cluster dispatch (direct / Slurm), and a built-in real-algorithm engine as
+  the local fallback. (The old generic "Comp Tool (legacy)" node is gone —
+  every tool is its own node.)
+- **AlphaFold2 structure prediction** — following the cluster tutorial
+  end-to-end:
   - **Cluster lane (primary)**: connect the mgt login node over SSH (IP +
     username/password), then the app runs the tutorial flow verbatim —
     `salloc -N 1 --gres=gpu:1 -p brain2` → `ssh gpu05` →
@@ -42,8 +48,8 @@ page:
 | Tier | What it shows |
 |---|---|
 | Runtime | python3 / numpy / scipy / biopython / git — live version detection |
-| Engines | the built-in Structure Prediction engine (local AlphaFold fallback) with self-test status |
-| External | AlphaFold2 — provided on the GPU cluster via `module load alphafold2` (native status + fallback mapping) |
+| Engines | the five built-in real-algorithm engines (diffusion / folding / inverse folding / scoring / antibody) with self-test status |
+| External | RFdiffusion, ProteinMPNN, Rosetta… (native status + fallback mapping), plus AlphaFold2 — provided on the GPU cluster via `module load alphafold2` |
 
 Uninstalled items with an **Install** button support real one-click
 installation (pip / git clone + pip) with a live-streaming terminal and

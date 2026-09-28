@@ -1,21 +1,13 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { PREDEFINED_AGENTS } from "@/lib/agents";
+import { COMP_TOOLS } from "@/lib/tools";
 
-/** Node types from the removed comp-tool system — migrated to "alphafold". */
-const LEGACY_COMP_NODE_TYPES = [
-  "comptool",
-  "rfdiffusion",
-  "rfantibody",
-  "proteinmpnn",
-  "ligandmpnn",
-  "solublempnn",
-  "rosetta",
-  "pyrosetta",
-  "rf3",
-  "esmfold",
-  "colabfold",
-];
+/** The removed legacy generic comp-tool node type. Its nodes are migrated to
+ *  the SPECIFIC tool they were configured with (node.params.toolKey) — the
+ *  per-tool node types themselves are alive and well. */
+const LEGACY_COMPTOOL_TYPE = "comptool";
+const VALID_TOOL_TYPES = new Set<string>(COMP_TOOLS.map((t) => t.key));
 
 /** POST /api/seed — idempotently seed builtin agents + a default workflow. */
 export async function POST() {
@@ -55,27 +47,40 @@ export async function POST() {
     workflowId = first?.id ?? "";
   }
 
-  // 3. Comp-tool removal migration: every legacy comp-tool node becomes an
-  //    "alphafold" node (the single prediction tool that replaced them).
+  // 3. Legacy-node migration: every generic "comptool" node becomes the
+  //    SPECIFIC per-tool node it was configured with (its params.toolKey);
+  //    unknown tool keys fall back to "rfdiffusion" (the old default).
+  //    Per-tool node types (rfdiffusion, proteinmpnn, …) and "alphafold"
+  //    nodes are untouched — those types are current.
   let migratedNodes = 0;
   try {
-    const res = await db.node.updateMany({
-      where: { type: { in: LEGACY_COMP_NODE_TYPES } },
-      data: { type: "alphafold" },
+    const legacyNodes = await db.node.findMany({
+      where: { type: LEGACY_COMPTOOL_TYPE },
+      select: { id: true, params: true },
     });
-    migratedNodes = res.count;
+    for (const n of legacyNodes) {
+      let toolKey: string = "rfdiffusion";
+      try {
+        const p =
+          typeof n.params === "string" ? JSON.parse(n.params) : n.params;
+        const k = String((p as Record<string, unknown>)?.toolKey ?? "");
+        if (VALID_TOOL_TYPES.has(k)) toolKey = k;
+      } catch {
+        /* keep the default */
+      }
+      await db.node.update({ where: { id: n.id }, data: { type: toolKey } });
+      migratedNodes++;
+    }
   } catch {
     /* best-effort — old rows keep their type and render as unknown nodes */
   }
 
-  // 4. Drop stale jobs from the removed comp tools (their tool badges and
-  //    re-run affordances no longer exist). AlphaFold history is kept.
+  // 4. Drop stale jobs from the removed generic comptool only (per-tool
+  //    + alphafold job history is all still valid).
   let prunedJobs = 0;
   try {
     const res = await db.toolJob.deleteMany({
-      where: {
-        tool: { in: ["comptool", ...LEGACY_COMP_NODE_TYPES] },
-      },
+      where: { tool: LEGACY_COMPTOOL_TYPE },
     });
     prunedJobs = res.count;
   } catch {
@@ -84,3 +89,4 @@ export async function POST() {
 
   return NextResponse.json({ agents, workflow: workflowId, migratedNodes, prunedJobs });
 }
+
