@@ -37,6 +37,7 @@ import { Separator } from "@/components/ui/separator";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { OutputViewerDialog } from "@/components/viewers/output-viewer-dialog";
+import { InlineResults, type ResultExecutor } from "@/components/viewers/inline-results";
 import type { ToolJobDTO } from "@/lib/types";
 import { COMP_TOOLS } from "@/lib/tools";
 import {
@@ -728,10 +729,33 @@ function LogsTab({ node }: { node: NodeDTO }) {
   );
 }
 
-/** Result tab content. Renders the live-updating result as it streams in.
- * A "Download" button exports the result markdown as a .md file. */
-function ResultTab({ node }: { node: NodeDTO }) {
+/** Build the API URL for workflow-node outputs (no ToolJob row exists). */
+function nodeFileApiUrl(path: string): string {
+  return `/api/tools/file?path=${encodeURIComponent(path)}`;
+}
+
+/** Result tab content. For COMP-TOOL nodes the results are shown DIRECTLY:
+ * the real output file list (with sizes, type icons, copy/download actions)
+ * plus inline previews — 3D structure viewer for PDB, colored sequence
+ * viewer for FASTA, metric cards for JSON, tables for CSV, images, and
+ * monospace text for everything else. A collapsible "Run summary" section
+ * carries the markdown summary; the full-screen viewer dialog is one click
+ * away. Non-tool nodes keep the live-streaming markdown rendering. */
+function ResultTab({
+  node,
+  outputFiles,
+  executor,
+  onOpenViewer,
+  viewerOpen,
+}: {
+  node: NodeDTO;
+  outputFiles: string[];
+  executor: ResultExecutor | null;
+  onOpenViewer: (() => void) | null;
+  viewerOpen: boolean;
+}) {
   const result = node.result?.trim();
+  const isToolNode = outputFiles.length > 0 || executor !== null;
 
   const handleDownload = () => {
     if (!result) return;
@@ -746,26 +770,47 @@ function ResultTab({ node }: { node: NodeDTO }) {
     URL.revokeObjectURL(url);
   };
 
-  if (!result && node.status === "running") {
+  if (!result && outputFiles.length === 0 && node.status === "running") {
     return (
       <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
         <Loader2 className="size-3.5 animate-spin" />
-        Generating…
+        {isToolNode ? "Running — output files will appear here…" : "Generating…"}
       </div>
     );
   }
-  if (!result) {
+  if (!result && outputFiles.length === 0) {
     return (
       <div className="p-4 text-center text-xs text-muted-foreground">
         Not run yet.
       </div>
     );
   }
+
+  // Tool nodes: the output file list + inline previews render directly.
+  if (outputFiles.length > 0) {
+    return (
+      <InlineResults
+        files={outputFiles}
+        fileUrl={nodeFileApiUrl}
+        executor={executor ?? "builtin-engine"}
+        onOpenFullViewer={onOpenViewer ?? undefined}
+        summary={result}
+        compact
+        suspend={viewerOpen}
+      />
+    );
+  }
+
+  // Everything else (incl. tool nodes that produced no files): markdown.
+  const md = result ?? "";
   return (
     <div className="flex flex-col gap-2 p-3">
       <div className="flex items-center justify-between">
         <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-          result · {result.length.toLocaleString()} chars
+          result · {md.length.toLocaleString()} chars
+          {node.status === "failed" && (
+            <span className="ml-1 text-rose-600 dark:text-rose-400">· failed</span>
+          )}
         </p>
         <Button
           variant="ghost"
@@ -779,7 +824,7 @@ function ResultTab({ node }: { node: NodeDTO }) {
         </Button>
       </div>
       <div className="prose prose-sm dark:prose-invert max-w-none">
-        <ReactMarkdown>{result}</ReactMarkdown>
+        <ReactMarkdown>{md}</ReactMarkdown>
       </div>
     </div>
   );
@@ -838,6 +883,18 @@ function NodeInspectorImpl() {
       return [];
     }
   }, [compToolKey, node?.logs]);
+  // Executor provenance — derived from the engine banner in the logs. Its
+  // absence on a successful run means the native upstream tool executed.
+  const executor: ResultExecutor | null = React.useMemo(() => {
+    if (!compToolKey || !node) return null;
+    const logs = node.logs ?? "";
+    if (/\[built-in real algorithm engine\]/i.test(logs)) return "builtin-engine";
+    if (/^\[SIMULATED/i.test(logs) || /\(simulated\)/i.test(logs) || /FOUNDRY-LAB SIMULATION/i.test(logs)) {
+      return "legacy-simulated";
+    }
+    if (node.status === "completed") return "native";
+    return "builtin-engine";
+  }, [compToolKey, node, node?.logs]);
   const viewerJob: ToolJobDTO | null = React.useMemo(() => {
     if (!compToolKey || !node || outputFiles.length === 0) return null;
     // Executor provenance for the badge: the workflow's engine path stamps a
@@ -869,7 +926,7 @@ function NodeInspectorImpl() {
       finishedAt: node.completedAt,
       createdAt: node.createdAt,
     };
-  }, [compToolKey, node, outputFiles]);
+  }, [compToolKey, node, outputFiles, executor]);
 
   // ⌘+Enter / Ctrl+Enter to run this node. Ref holds the latest run function
   // so the keyboard listener doesn't need to re-bind on every keystroke.
@@ -929,6 +986,17 @@ function NodeInspectorImpl() {
             });
             es.close();
           }
+          // Comp-tool nodes: jump straight to the Result tab so the real
+          // output file list + previews are the FIRST thing the user sees
+          // (this is the whole point of the direct-results UX).
+          if (
+            data.status === "completed" &&
+            compToolKey &&
+            typeof data.logs === "string" &&
+            data.logs.includes("##OUTPUTS## ")
+          ) {
+            setTab("result");
+          }
         }
       } catch {
         // Malformed payload — ignore this tick.
@@ -976,7 +1044,7 @@ function NodeInspectorImpl() {
     return () => {
       es.close();
     };
-  }, [node?.id, node?.status]);
+  }, [node?.id, node?.status, compToolKey, setTab, setNodeStatus, toast]);
 
   if (!node || !spec) return null;
 
@@ -1171,7 +1239,17 @@ function NodeInspectorImpl() {
           <TabsList className="m-2 grid w-[calc(100%-1rem)] grid-cols-3">
             <TabsTrigger value="params">Params</TabsTrigger>
             <TabsTrigger value="logs">Logs</TabsTrigger>
-            <TabsTrigger value="result">Result</TabsTrigger>
+            <TabsTrigger value="result" className="gap-1">
+              Result
+              {outputFiles.length > 0 && (
+                <span
+                  className="rounded-full bg-primary/10 px-1.5 text-[10px] font-semibold tabular-nums text-primary"
+                  title={`${outputFiles.length} output files`}
+                >
+                  {outputFiles.length}
+                </span>
+              )}
+            </TabsTrigger>
           </TabsList>
           <ScrollArea className="min-h-0 flex-1">
             <TabsContent value="params" className="m-0">
@@ -1186,7 +1264,13 @@ function NodeInspectorImpl() {
               <LogsTab node={node} />
             </TabsContent>
             <TabsContent value="result" className="m-0">
-              <ResultTab node={node} />
+              <ResultTab
+                node={node}
+                outputFiles={compToolKey ? outputFiles : []}
+                executor={executor}
+                onOpenViewer={viewerJob ? () => setViewerOpen(true) : null}
+                viewerOpen={viewerOpen}
+              />
             </TabsContent>
           </ScrollArea>
         </Tabs>

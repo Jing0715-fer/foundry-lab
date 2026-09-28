@@ -31,7 +31,22 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { ToolJobDTO } from "@/lib/types";
 import { generateSamplePdb } from "@/lib/pdb-parser";
-import { Pdb3DViewer } from "./pdb-3d-viewer";
+// (Pdb3DViewer superseded by the embedded MolVision studio.)
+import dynamic from "next/dynamic";
+
+/** MolVision studio — client-only (three.js engine), no SSR. */
+const MolStudio = dynamic(
+  () => import("@/components/molecular/mol-studio").then((m) => m.MolStudio),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-72 items-center justify-center gap-2 rounded-lg border border-dashed bg-muted/30 text-xs text-muted-foreground">
+        <Loader2 className="size-4 animate-spin" />
+        Loading MolVision studio…
+      </div>
+    ),
+  }
+);
 import { FastaViewer, generateSampleFasta } from "./fasta-viewer";
 
 // --- Helpers ------------------------------------------------------------------
@@ -204,7 +219,12 @@ export function OutputViewerDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="max-h-[88vh] max-w-3xl gap-0 overflow-hidden p-0">
+      <DialogContent
+        className={cn(
+          "max-h-[88vh] gap-0 overflow-hidden p-0",
+          hasStructure ? "max-w-5xl xl:max-w-6xl" : "max-w-3xl",
+        )}
+      >
         <DialogHeader className="border-b px-5 py-3">
           <DialogTitle className="flex flex-wrap items-center gap-2 text-base">
             <Wrench className="size-4 text-muted-foreground" />
@@ -312,13 +332,15 @@ export function OutputViewerDialog({
             </div>
           </TabsContent>
 
-          {/* Structure tab — PDB viewer (real fetched PDB, falls back to sample) */}
+          {/* Structure tab — MolVision embedded studio (3D engine + analysis
+              panels + sequence bar); falls back to a representative scaffold
+              when the job has no PDB output. */}
           {hasStructure && (
             <TabsContent
               value="structure"
-              className="m-0 flex-1 overflow-y-auto p-4"
+              className="m-0 flex-1 overflow-hidden p-3"
             >
-              <div className="mb-3 flex items-center gap-2 text-xs text-muted-foreground">
+              <div className="mb-2 flex items-center gap-2 text-xs text-muted-foreground">
                 <Box className="size-3.5" />
                 {pdbFile ? (
                   <code className="truncate font-mono">{pdbFile}</code>
@@ -349,9 +371,15 @@ export function OutputViewerDialog({
                   Loading structure…
                 </div>
               ) : (
-                <Pdb3DViewer
+                <MolStudio
                   pdbText={pdbContent ?? SAMPLE_PDB}
-                  className="h-[60vh] overflow-hidden rounded-lg border"
+                  name={
+                    pdbFile
+                      ? (pdbFile.split("/").pop() ?? "structure").replace(/\.pdb$/i, "")
+                      : "sample"
+                  }
+                  variant="full"
+                  className="h-[calc(88vh-190px)] min-h-[480px]"
                 />
               )}
             </TabsContent>
