@@ -2701,3 +2701,26 @@ Stage Summary:
 - Prisma schema gained Agent.runtime, WorkflowVersion, WorkflowSchedule (db pushed; seeded data intact).
 - Services: dev server :3000 + mock-cluster :3022 run as double-fork daemons (survive tool-call reaping).
 - Ready to commit + push to origin/main.
+
+---
+Task ID: env-ui-fix
+Agent: main (Z.ai Code)
+Task: Fix UI issues on the Environment & Toolchain page (user report: "Environment & Toolchain 页面ui有问题，需要修复")
+
+Work Log:
+- Investigated the Environment & Toolchain panel (`src/components/panels/tools-panel.tsx`) rendered inside a left Sheet (`src/app/page.tsx`).
+- Reproduced in agent-browser + DOM measurements: SheetContent is fixed-height (672×577) but ToolsPanel content was 3075px tall with NO scrollable container (`overflow: visible`) → content sliced off at the bottom edge, no scrollbar, content bleeding past the sheet.
+- VLM analysis of screenshots confirmed: cards cut mid-row at the bottom, missing scrollbar, X close button clearance issue.
+- Root cause: ToolsPanel root was `mx-auto max-w-5xl space-y-6 p-4 sm:p-6` (no height/overflow), unlike ClusterPanel which correctly uses `flex h-full flex-col overflow-y-auto`.
+- Fixed `tools-panel.tsx`:
+  1. Root → `flex h-full flex-col overflow-y-auto p-4 sm:p-6` + inner wrapper `mx-auto w-full max-w-3xl space-y-6` (same pattern as ClusterPanel).
+  2. Loading skeleton wrapped in the same scrollable container.
+  3. Header text block gets `min-w-0 flex-1` so the Re-scan button stays on row 1.
+  4. Re-scan button gets `mr-8 shrink-0` to clear the Sheet's absolute X close button at top-right.
+- Dev server had been OOM-killed (next-server 1.8GB RSS on a 4.1GB box, dmesg confirmed); killed stale wrapper, restarted with `(setsid bun run dev ... &)` — stable now.
+- Verified with agent-browser + VLM: panel scrolls (scrollHeight 3380 reachable), no bottom cut-off, engine card expand works, Re-scan works, mobile 390px single-column with no overflow, X button clear, no console/page errors, lint clean.
+
+Stage Summary:
+- Environment & Toolchain sheet now scrolls correctly inside the fixed-height Sheet; all four sections (runtime / engines / external tools / recent installs) fully reachable.
+- Button overlap with the sheet's X close button fixed; header layout no longer wraps awkwardly.
+- Dev server restarted and stable; all APIs 200; browser-verified on desktop + mobile.

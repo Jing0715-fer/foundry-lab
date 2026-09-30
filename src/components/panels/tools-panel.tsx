@@ -282,7 +282,7 @@ export function ToolsPanel() {
 
   if (loading) {
     return (
-      <div className="p-6">
+      <div className="flex h-full flex-col overflow-y-auto p-4 sm:p-6">
         <PanelSkeleton count={4} />
       </div>
     );
@@ -290,11 +290,15 @@ export function ToolsPanel() {
 
   const summary = scan?.summary;
 
+  // Root is a full-height scroll container: the panel renders inside a
+  // fixed-height Sheet (side="left"), so it must own its scrolling — same
+  // pattern as ClusterPanel. Content is centered with max-w-3xl.
   return (
-    <div className="mx-auto max-w-5xl space-y-6 p-4 sm:p-6">
+    <div className="flex h-full flex-col overflow-y-auto p-4 sm:p-6">
+      <div className="mx-auto w-full max-w-3xl space-y-6">
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
+        <div className="min-w-0 flex-1 space-y-1">
           <div className="flex items-center gap-2">
             <Wrench className="size-5 text-primary" />
             <h2 className="text-lg font-semibold tracking-tight">
@@ -309,9 +313,12 @@ export function ToolsPanel() {
             support one-click installation.
           </p>
         </div>
+        {/* mr-8 keeps the button clear of the Sheet's absolute close (X)
+            button, which floats at the top-right corner of the sheet. */}
         <Button
           variant="outline"
           size="sm"
+          className="mr-8 shrink-0"
           onClick={() => void runScan()}
           disabled={scanning}
         >
@@ -527,6 +534,7 @@ export function ToolsPanel() {
           )}
         </DialogContent>
       </Dialog>
+      </div>
     </div>
   );
 }
