@@ -76,9 +76,13 @@ export async function POST(
       data: { agentId: id, role: "user", content: message },
     });
 
-    // Run the agent turn (tool-calling loop).
+    // The history above was fetched BEFORE the save, so the agent would
+    // otherwise never see the message it must answer — append it explicitly.
+    history.push({ role: "user", content: message });
+
+    // Run the agent turn (tool-calling loop). No explicit temperature —
+    // the agent's saved runtime config (fine-tune dialog) is the default.
     const result = await runAgentTurn(agent, history, {
-      temperature: 0.7,
       maxRounds: 3,
     });
 

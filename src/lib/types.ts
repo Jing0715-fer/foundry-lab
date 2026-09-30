@@ -15,6 +15,26 @@ export interface AgentKnowledgeConfig {
   defaultToolEnvs?: Record<string, string>;
 }
 
+/**
+ * Per-agent runtime settings (the fine-tune dialog). Persisted on the
+ * Agent row as JSON and applied by runAgentTurn as the DEFAULTS for every
+ * LLM call this agent makes — callers can still override per-turn.
+ */
+export interface AgentRuntimeConfig {
+  /** Sampling temperature (0–2, default 0.7). */
+  temperature: number;
+  /** Max completion tokens (default 2000). */
+  maxTokens: number;
+  /** Top-p nucleus sampling (0–1, default 0.9). */
+  topP: number;
+  /** Extra system-prompt suffix appended to the agent's persona prompt. */
+  systemPromptSuffix?: string;
+  /** Verbose mode (richer tool-call reporting in logs). */
+  verbose?: boolean;
+  /** Stream tokens to the client when the lane supports it. */
+  streaming?: boolean;
+}
+
 export interface AgentDTO {
   id: string;
   title: string;
@@ -25,6 +45,7 @@ export interface AgentDTO {
   color: string;
   icon: string;
   knowledge: AgentKnowledgeConfig;
+  runtime?: AgentRuntimeConfig;
   builtin: boolean;
   createdAt: string;
   updatedAt: string;

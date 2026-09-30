@@ -190,13 +190,22 @@ export async function executeNode(
         const history = inputs
           ? [{ role: "user" as const, content: inputs }]
           : [{ role: "user" as const, content: fallbackPrompt }];
-        const { text, toolCalls } = await runAgentTurn(agent, history, {
-          temperature: 0.7,
-        });
-        const logs =
-          toolCalls.length > 0
-            ? `Tool calls: ${toolCalls.map((t) => t.tool).join(", ")}\n\nFinal reply (${text.length} chars)`
-            : `Agent replied (${text.length} chars)`;
+        // No explicit temperature — the agent's saved runtime config
+        // (fine-tune dialog) supplies the default inside runAgentTurn.
+        const { text, toolCalls } = await runAgentTurn(agent, history, {});
+        const verbose = agent.runtime?.verbose;
+        const logs = toolCalls.length > 0
+          ? (verbose
+              ? toolCalls
+                  .map(
+                    (t) =>
+                      `[${t.kind}] ${t.tool} → ${t.status ?? "completed"}\n` +
+                      `params: ${JSON.stringify(t.params)}\n` +
+                      `result: ${(t.result ?? "").slice(0, 400)}`,
+                  )
+                  .join("\n") + `\n\nFinal reply (${text.length} chars)`
+              : `Tool calls: ${toolCalls.map((t) => t.tool).join(", ")}\n\nFinal reply (${text.length} chars)`)
+          : `Agent replied (${text.length} chars)`;
         return { result: text, logs, status: "completed" };
       }
 

@@ -744,7 +744,7 @@ export default function AlphaFoldPanel() {
       toast({
         title: "Local test cluster added",
         description:
-          "foundry@localhost:3022 · mock cluster (partition gpu, module alphafold2).",
+          "foundry@localhost:3022 · local test cluster — commands run FOR REAL via bash; only the SLURM scheduler is an in-memory state machine (partition gpu, module alphafold2).",
         variant: "success",
       });
       await loadConnections();
@@ -1515,7 +1515,7 @@ export default function AlphaFoldPanel() {
                     ) : (
                       <Zap className="mr-1 size-3.5" />
                     )}
-                    Add local test cluster (mock)
+                    Add local test cluster
                   </Button>
                 )}
               </div>

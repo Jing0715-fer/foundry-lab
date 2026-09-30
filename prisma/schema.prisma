@@ -21,6 +21,7 @@ model Agent {
   color       String   @default("#10b981")
   icon        String   @default("bot")
   knowledge   String?  // JSON: AgentKnowledgeConfig
+  runtime     String?  // JSON: AgentRuntimeConfig — temperature/maxTokens/topP/promptSuffix (fine-tune dialog)
   builtin     Boolean  @default(false)
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
@@ -150,8 +151,45 @@ model Workflow {
   name      String   @default("Untitled Workflow")
   nodes     Node[]
   edges     Edge[]
+  versions  WorkflowVersion[]
+  schedules WorkflowSchedule[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Version snapshots — real persisted canvas state (nodes + edges JSON blobs),
+// restorable via POST /api/workflows/:id/versions/:versionId/restore.
+model WorkflowVersion {
+  id         String   @id @default(cuid())
+  workflowId String
+  label      String
+  nodes      String   // JSON: Node row snapshot array
+  edges      String   // JSON: Edge row snapshot array
+  nodeCount  Int      @default(0)
+  edgeCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+  workflow   Workflow @relation(onDelete: Cascade, fields: [workflowId], references: [id])
+
+  @@index([workflowId])
+}
+
+// Scheduled runs — persisted in the DB and fired by the scheduler sweeper
+// (src/lib/scheduler.ts, started from instrumentation.ts) when runAt arrives.
+model WorkflowSchedule {
+  id         String    @id @default(cuid())
+  workflowId String
+  runAt      DateTime
+  label      String
+  status     String    @default("scheduled") // scheduled | firing | fired | failed | cancelled
+  firedAt    DateTime?
+  error      String?
+  started    Int       @default(0)
+  completed  Int       @default(0)
+  createdAt  DateTime  @default(now())
+  workflow   Workflow  @relation(onDelete: Cascade, fields: [workflowId], references: [id])
+
+  @@index([workflowId])
+  @@index([status, runAt])
 }
 
 model Node {

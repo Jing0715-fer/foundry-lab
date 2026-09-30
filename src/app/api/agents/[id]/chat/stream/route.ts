@@ -17,11 +17,10 @@ export const runtime = "nodejs";
  *   event: done   data: { content, messageId }
  *   event: error  data: { error }            (terminal — connection closes)
  *
- * The underlying `chatStream` helper is a "fake stream" (single shot
- * completion + chunked emit), but the SSE framing here is correct so the
- * client treats it like a real token stream. When the SDK supports true
- * streaming we can swap the implementation of `chatStream` without touching
- * this endpoint.
+ * chatStream performs REAL SDK streaming (SSE deltas decoded as they
+ * arrive); the deterministic chunked-emit path is only a fallback when the
+ * upstream refuses streaming. LLM sampling options come from the agent's
+ * saved runtime config (fine-tune dialog).
  */
 export async function POST(
   request: NextRequest,
@@ -49,7 +48,19 @@ export async function POST(
   });
 
   const agentDTO = toAgentDTO(agent);
-  const system = generateAgentSystemPrompt(agentDTO);
+  // System prompt = agent persona + the fine-tune dialog's saved suffix.
+  const baseSystem = generateAgentSystemPrompt(agentDTO);
+  const suffix = agentDTO.runtime?.systemPromptSuffix?.trim();
+  const system = suffix
+    ? `${baseSystem}\n\n--- Additional operator instructions ---\n${suffix}`
+    : baseSystem;
+  // Runtime sampling defaults (fine-tune dialog); fall back to sane values.
+  const rt = agentDTO.runtime;
+  const llmOpts = {
+    temperature: rt?.temperature ?? 0.7,
+    ...(rt?.maxTokens != null ? { maxTokens: rt.maxTokens } : {}),
+    ...(rt?.topP != null ? { topP: rt.topP } : {}),
+  };
 
   // Fetch last 50 messages (ascending) for context. We slice off the final
   // user message because we already append it explicitly below — but the
@@ -91,7 +102,7 @@ export async function POST(
             fullText += delta;
             send("delta", { delta });
           },
-          { temperature: 0.7 },
+          llmOpts,
         );
         // Prefer the canonical return value if the SDK returned something
         // (defensive — the onDelta accumulation should match, but a future

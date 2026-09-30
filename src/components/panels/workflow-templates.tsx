@@ -23,9 +23,11 @@ import {
 } from "@/lib/workflow-io";
 import {
   ArrowRight,
+  Ban,
   Bot,
   BookOpen,
   CalendarClock,
+  Check,
   Cpu,
   Database,
   Download,
@@ -47,6 +49,8 @@ import { Input } from "@/components/ui/input";
 interface VersionItem {
   id: string;
   label: string;
+  nodeCount: number;
+  edgeCount: number;
   createdAt: string;
   current?: boolean;
 }
@@ -57,6 +61,11 @@ interface ScheduleItem {
   workflowId: string;
   runAt: string;
   label: string;
+  status: "scheduled" | "firing" | "fired" | "failed" | "cancelled";
+  firedAt: string | null;
+  error: string | null;
+  started: number;
+  completed: number;
   createdAt: string;
 }
 
@@ -113,10 +122,12 @@ export function WorkflowTemplates({
   const [versions, setVersions] = React.useState<VersionItem[]>([]);
   const [versionsLoading, setVersionsLoading] = React.useState(false);
   const [savingVersion, setSavingVersion] = React.useState(false);
+  const [restoringVersionId, setRestoringVersionId] = React.useState<string | null>(null);
 
   // Scheduling state — same pattern as versions: fetch on `workflow?.id`
   // change, optimistic prepend on POST, optimistic remove on DELETE.
   const [schedules, setSchedules] = React.useState<ScheduleItem[]>([]);
+  const [scheduleHistory, setScheduleHistory] = React.useState<ScheduleItem[]>([]);
   const [schedulesLoading, setSchedulesLoading] = React.useState(false);
   const [savingSchedule, setSavingSchedule] = React.useState(false);
   const [cancellingScheduleId, setCancellingScheduleId] = React.useState<string | null>(null);
@@ -327,7 +338,10 @@ export function WorkflowTemplates({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ label: label.trim() }),
       });
-      if (!res.ok) throw new Error(`${res.status}`);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? `${res.status}`);
+      }
       const created: VersionItem = await res.json();
       // Optimistic prepend (newest-first). Mark all others as non-current.
       setVersions((prev) =>
@@ -335,7 +349,7 @@ export function WorkflowTemplates({
       );
       toast({
         title: "Version saved",
-        description: created.label,
+        description: `${created.label} — ${created.nodeCount} nodes · ${created.edgeCount} edges`,
         variant: "success",
       });
     } catch (e) {
@@ -349,34 +363,73 @@ export function WorkflowTemplates({
     }
   }
 
-  function handleRestoreVersion(v: VersionItem) {
-    // Non-functional in this demo — restore isn't wired through the API yet.
-    toast({
-      title: "Restore coming soon",
-      description: `Restoring "${v.label}" is not yet implemented.`,
-      variant: "default",
-    });
+  async function handleRestoreVersion(v: VersionItem) {
+    if (!workflow?.id || restoringVersionId) return;
+    const ok = window.confirm(
+      `Restore "${v.label}"?\n\nThe current canvas (${workflow.nodes.length} nodes) will be replaced with this snapshot (${v.nodeCount} nodes · ${v.edgeCount} edges). Other snapshots are kept.`,
+    );
+    if (!ok) return;
+    setRestoringVersionId(v.id);
+    try {
+      const res = await fetch(
+        `/api/workflows/${workflow.id}/versions/${v.id}/restore`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err?.error ?? `${res.status}`);
+      }
+      const data: {
+        restored: boolean;
+        workflow: { id: string; name: string; nodes: NodeDTO[]; edges: EdgeDTO[]; createdAt: string; updatedAt: string };
+      } = await res.json();
+      // Swap the canvas to the restored workflow (canonical server state).
+      setWorkflow(data.workflow);
+      toast({
+        title: "Version restored",
+        description: `${v.label} — ${data.workflow.nodes.length} nodes · ${data.workflow.edges.length} edges`,
+        variant: "success",
+      });
+      setActivePanel("canvas");
+      onLoaded?.();
+    } catch (e) {
+      toast({
+        title: "Failed to restore version",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setRestoringVersionId(null);
+    }
   }
 
   // --- Scheduling -------------------------------------------------------------
 
   // Fetch schedules whenever the workflow id changes (covers initial dialog
   // open + switching workflows while the dialog is open). Same lifecycle
-  // pattern as the versions useEffect above.
+  // pattern as the versions useEffect above. The endpoint returns BOTH the
+  // upcoming list and the fired/failed/cancelled history.
   React.useEffect(() => {
     let cancelled = false;
     if (!workflow?.id) {
       setSchedules([]);
+      setScheduleHistory([]);
       return;
     }
     setSchedulesLoading(true);
     fetch(`/api/workflows/${workflow.id}/schedule`)
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-      .then((data: { schedules?: ScheduleItem[] }) => {
-        if (!cancelled) setSchedules(data.schedules ?? []);
+      .then((data: { schedules?: ScheduleItem[]; history?: ScheduleItem[] }) => {
+        if (!cancelled) {
+          setSchedules(data.schedules ?? []);
+          setScheduleHistory(data.history ?? []);
+        }
       })
       .catch(() => {
-        if (!cancelled) setSchedules([]);
+        if (!cancelled) {
+          setSchedules([]);
+          setScheduleHistory([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setSchedulesLoading(false);
@@ -462,8 +515,9 @@ export function WorkflowTemplates({
       try {
         const r = await fetch(`/api/workflows/${workflow.id}/schedule`);
         if (r.ok) {
-          const data: { schedules?: ScheduleItem[] } = await r.json();
+          const data: { schedules?: ScheduleItem[]; history?: ScheduleItem[] } = await r.json();
           setSchedules(data.schedules ?? []);
+          setScheduleHistory(data.history ?? []);
         }
       } catch {
         // ignore — the toast already reported the failure.
@@ -631,15 +685,15 @@ export function WorkflowTemplates({
         })}
       </div>
 
-      {/* Version History — sits below the templates grid. Lets the user
-          snapshot the current canvas and (eventually) restore prior
-          versions. Restore is intentionally non-functional in this demo. */}
+      {/* Version History — sits below the templates grid. Snapshots are
+          persisted in the DB (nodes + edges with full run state) and can be
+          restored — the restore replaces the canvas transactionally. */}
       <section className="space-y-2">
         <div className="flex items-center gap-2">
           <History className="size-4 text-muted-foreground" />
           <h3 className="text-sm font-medium">Version History</h3>
           <span className="text-[11px] text-muted-foreground">
-            Snapshot the current canvas (mock storage — Restore coming soon).
+            Snapshots persist in the database and can be restored anytime.
           </span>
           <Button
             size="sm"
@@ -698,22 +752,27 @@ export function WorkflowTemplates({
                         variant="outline"
                         className="border-primary/30 bg-primary/10 px-1.5 py-0 text-[9px] text-primary"
                       >
-                        current
+                        latest
                       </Badge>
                     )}
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    {new Date(v.createdAt).toLocaleString()}
+                    {new Date(v.createdAt).toLocaleString()} · {v.nodeCount} nodes · {v.edgeCount} edges
                   </div>
                 </div>
                 <Button
                   size="sm"
                   variant="ghost"
                   className="h-7 gap-1 px-2 text-[11px]"
-                  onClick={() => handleRestoreVersion(v)}
+                  onClick={() => void handleRestoreVersion(v)}
+                  disabled={!!restoringVersionId}
                   type="button"
                 >
-                  <RotateCcw className="size-3" />
+                  {restoringVersionId === v.id ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <RotateCcw className="size-3" />
+                  )}
                   Restore
                 </Button>
               </li>
@@ -722,15 +781,16 @@ export function WorkflowTemplates({
         )}
       </section>
 
-      {/* Schedule — lets the user queue a workflow run for a future time.
-          Storage is mock (in-memory on the server) so schedules reset on
-          server restart, but the full POST/GET/DELETE lifecycle is wired. */}
+      {/* Schedule — queue a workflow run for a future time. Schedules are
+          persisted in the DB; the scheduler sweeper fires them automatically
+          through the same execution lane as manual runs, even if the server
+          restarted in between. */}
       <section className="space-y-2">
         <div className="flex items-center gap-2">
           <CalendarClock className="size-4 text-muted-foreground" />
           <h3 className="text-sm font-medium">Schedule</h3>
           <span className="text-[11px] text-muted-foreground">
-            Queue a workflow run for a future time (mock storage).
+            Queue a run for a future time — persisted and fired automatically.
           </span>
         </div>
 
@@ -812,6 +872,7 @@ export function WorkflowTemplates({
                 {schedules.map((s, i) => {
                   const runAtDate = new Date(s.runAt);
                   const isPast = runAtDate.getTime() < Date.now();
+                  const isFiring = s.status === "firing";
                   return (
                     <li
                       key={s.id}
@@ -821,24 +882,38 @@ export function WorkflowTemplates({
                       <div
                         className={cn(
                           "flex size-7 shrink-0 items-center justify-center rounded-md",
-                          isPast
-                            ? "bg-muted text-muted-foreground"
-                            : "bg-primary/10 text-primary",
+                          isFiring
+                            ? "bg-teal-500/15 text-teal-600 dark:text-teal-400"
+                            : isPast
+                              ? "bg-muted text-muted-foreground"
+                              : "bg-primary/10 text-primary",
                         )}
                       >
-                        <CalendarClock className="size-3.5" />
+                        {isFiring ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <CalendarClock className="size-3.5" />
+                        )}
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1.5">
                           <span className="truncate text-xs font-medium">
                             {s.label}
                           </span>
-                          {isPast && (
+                          {isFiring && (
+                            <Badge
+                              variant="outline"
+                              className="border-teal-500/30 bg-teal-500/10 px-1.5 py-0 text-[9px] text-teal-600 dark:text-teal-400"
+                            >
+                              firing now
+                            </Badge>
+                          )}
+                          {isPast && !isFiring && (
                             <Badge
                               variant="outline"
                               className="border-amber-500/30 bg-amber-500/10 px-1.5 py-0 text-[9px] text-amber-600 dark:text-amber-400"
                             >
-                              past due
+                              due
                             </Badge>
                           )}
                         </div>
@@ -851,7 +926,7 @@ export function WorkflowTemplates({
                         variant="ghost"
                         className="h-7 gap-1 px-2 text-[11px] text-muted-foreground hover:text-destructive"
                         onClick={() => void handleCancelSchedule(s)}
-                        disabled={!!cancellingScheduleId}
+                        disabled={!!cancellingScheduleId || isFiring}
                         type="button"
                         title="Cancel this scheduled run"
                       >
@@ -866,6 +941,74 @@ export function WorkflowTemplates({
                   );
                 })}
               </ul>
+            )}
+
+            {/* Run history — fired / failed / cancelled rows (persisted). */}
+            {scheduleHistory.length > 0 && (
+              <div className="space-y-1.5">
+                <div className="flex items-center gap-1.5 pt-1">
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+                    Run history
+                  </span>
+                </div>
+                <ul className="space-y-1.5">
+                  {scheduleHistory.slice(0, 8).map((s) => {
+                    const fired = s.status === "fired";
+                    const failed = s.status === "failed";
+                    return (
+                      <li
+                        key={s.id}
+                        className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-1.5"
+                      >
+                        <div
+                          className={cn(
+                            "flex size-6 shrink-0 items-center justify-center rounded-md",
+                            fired
+                              ? "bg-teal-500/15 text-teal-600 dark:text-teal-400"
+                              : failed
+                                ? "bg-red-500/10 text-red-600 dark:text-red-400"
+                                : "bg-muted text-muted-foreground",
+                          )}
+                        >
+                          {fired ? (
+                            <Check className="size-3" />
+                          ) : failed ? (
+                            <X className="size-3" />
+                          ) : (
+                            <Ban className="size-3" />
+                          )}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-[11px] font-medium text-muted-foreground">
+                              {s.label}
+                            </span>
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "px-1.5 py-0 text-[9px]",
+                                fired
+                                  ? "border-teal-500/30 bg-teal-500/10 text-teal-600 dark:text-teal-400"
+                                  : failed
+                                    ? "border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-400"
+                                    : "",
+                              )}
+                            >
+                              {s.status}
+                            </Badge>
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            {s.firedAt
+                              ? `fired ${new Date(s.firedAt).toLocaleString()} — ${s.started} started · ${s.completed} completed`
+                              : new Date(s.runAt).toLocaleString()}
+                            {failed && s.error ? ` — ${s.error}` : ""}
+                          </div>
+                        </div>
+                      </li>
+                    );
+                  })}
+                </ul>
+              </div>
             )}
 
             {/* Bulk cancel — only shown when there are schedules. */}
@@ -902,9 +1045,10 @@ export function WorkflowTemplates({
                           `/api/workflows/${workflow.id}/schedule`,
                         );
                         if (r.ok) {
-                          const data: { schedules?: ScheduleItem[] } =
+                          const data: { schedules?: ScheduleItem[]; history?: ScheduleItem[] } =
                             await r.json();
                           setSchedules(data.schedules ?? []);
+                          setScheduleHistory(data.history ?? []);
                         }
                       } catch {
                         // ignore

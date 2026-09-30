@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { toAgentDTO } from "@/lib/run-utils";
-import type { AgentKnowledgeConfig } from "@/lib/types";
+import type { AgentKnowledgeConfig, AgentRuntimeConfig } from "@/lib/types";
 
 /** GET /api/agents/:id — fetch one agent as AgentDTO. */
 export async function GET(
@@ -36,6 +36,7 @@ export async function PUT(
     color?: string;
     icon?: string;
     knowledge?: AgentKnowledgeConfig;
+    runtime?: AgentRuntimeConfig;
     builtin?: boolean;
   };
 
@@ -60,6 +61,11 @@ export async function PUT(
   }
   if (body.knowledge !== undefined) {
     data.knowledge = JSON.stringify(body.knowledge);
+  }
+  // Runtime settings (fine-tune dialog) — persisted as JSON and applied by
+  // runAgentTurn / the chat-stream lane as the agent's sampling defaults.
+  if (body.runtime !== undefined) {
+    data.runtime = JSON.stringify(body.runtime);
   }
 
   const updated = await db.agent.update({ where: { id }, data });

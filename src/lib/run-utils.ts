@@ -19,6 +19,7 @@ import { mkdirSync } from "fs";
 import { runBio } from "./bio-tools";
 import type {
   AgentDTO,
+  AgentRuntimeConfig,
   DiscussionMessage,
   ToolCall,
 } from "./types";
@@ -67,6 +68,33 @@ export function parseKnowledge(raw: string | null | undefined): AgentDTO["knowle
   }
 }
 
+/** Parse an Agent row's runtime JSON into the typed shape (fine-tune settings). */
+export function parseRuntime(raw: string | null | undefined): AgentDTO["runtime"] {
+  if (!raw) return undefined;
+  try {
+    const obj = JSON.parse(raw) as Record<string, unknown>;
+    const rt: AgentRuntimeConfig = {
+      temperature: clampNum(obj.temperature, 0, 2, 0.7),
+      maxTokens: Math.max(64, Math.floor(Number(obj.maxTokens) || 2000)),
+      topP: clampNum(obj.topP, 0, 1, 0.9),
+      verbose: !!obj.verbose,
+      streaming: obj.streaming !== false,
+    };
+    if (typeof obj.systemPromptSuffix === "string" && obj.systemPromptSuffix.trim()) {
+      rt.systemPromptSuffix = obj.systemPromptSuffix;
+    }
+    return rt;
+  } catch {
+    return undefined;
+  }
+}
+
+function clampNum(v: unknown, min: number, max: number, dflt: number): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return dflt;
+  return Math.min(max, Math.max(min, n));
+}
+
 /** Map a Prisma Agent row to a DTO. */
 export function toAgentDTO(a: {
   id: string;
@@ -78,6 +106,7 @@ export function toAgentDTO(a: {
   color: string;
   icon: string;
   knowledge: string | null;
+  runtime?: string | null;
   builtin: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -92,16 +121,45 @@ export function toAgentDTO(a: {
     color: a.color,
     icon: a.icon,
     knowledge: parseKnowledge(a.knowledge),
+    runtime: parseRuntime(a.runtime),
     builtin: a.builtin,
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   };
 }
 
+/** Resolve the effective LLM options for an agent turn: the agent's saved
+ *  runtime settings (fine-tune dialog) act as DEFAULTS; explicit per-turn
+ *  opts win. Returns null when nothing is configured (callers use their own
+ *  defaults). */
+function resolveAgentLLMOptions(
+  agent: AgentDTO,
+  opts: { temperature?: number; maxTokens?: number; topP?: number },
+): { temperature?: number; maxTokens?: number; topP?: number } | null {
+  const rt = agent.runtime;
+  if (!rt) return null;
+  const out: { temperature?: number; maxTokens?: number; topP?: number } = {};
+  if (opts.temperature === undefined && rt.temperature !== undefined) out.temperature = rt.temperature;
+  if (opts.maxTokens === undefined && rt.maxTokens !== undefined) out.maxTokens = rt.maxTokens;
+  if (opts.topP === undefined && rt.topP !== undefined) out.topP = rt.topP;
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+/** Build the agent's system prompt, appending the fine-tune dialog's
+ *  systemPromptSuffix when the agent has one saved. */
+function buildAgentSystemPrompt(agent: AgentDTO): string {
+  const base = generateAgentSystemPrompt(agent);
+  const suffix = agent.runtime?.systemPromptSuffix?.trim();
+  if (!suffix) return base;
+  return `${base}\n\n--- Additional operator instructions ---\n${suffix}`;
+}
+
 /**
  * Run a single agent turn with a tool-calling loop (up to `maxRounds`).
  * Each round: call LLM → extract tool fences → execute tools → feed results back.
  * When `opts.reflect` is true, run one final self-critique pass (deepseek-harness reflect).
+ * Temperature / maxTokens / topP default to the agent's saved runtime config
+ * (fine-tune dialog) when the caller doesn't specify them.
  */
 export async function runAgentTurn(
   agent: AgentDTO,
@@ -109,8 +167,14 @@ export async function runAgentTurn(
   opts: AgentRunOptions = {},
 ): Promise<AgentRunResult> {
   const maxRounds = opts.maxRounds ?? 3;
-  const temperature = opts.temperature ?? 0.7;
-  const system = generateAgentSystemPrompt(agent);
+  const llmDefaults = resolveAgentLLMOptions(agent, opts) ?? {};
+  const temperature = opts.temperature ?? llmDefaults.temperature ?? 0.7;
+  const llmOpts = {
+    temperature,
+    ...(llmDefaults.maxTokens !== undefined ? { maxTokens: llmDefaults.maxTokens } : {}),
+    ...(llmDefaults.topP !== undefined ? { topP: llmDefaults.topP } : {}),
+  };
+  const system = buildAgentSystemPrompt(agent);
   const toolCalls: ToolCall[] = [];
   const convo: ChatMessage[] = [
     { role: "system", content: system },
@@ -119,7 +183,7 @@ export async function runAgentTurn(
 
   let lastText = "";
   for (let round = 0; round < maxRounds; round++) {
-    const reply = await chat(convo, { temperature });
+    const reply = await chat(convo, llmOpts);
     lastText = reply;
     const { comp, bio } = extractToolCalls(reply);
     if (comp.length === 0 && bio.length === 0) break;

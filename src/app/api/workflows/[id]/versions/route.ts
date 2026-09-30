@@ -1,16 +1,8 @@
 // GET  /api/workflows/[id]/versions — list all stored version snapshots of a
-//   workflow (newest-first). Since the Prisma schema doesn't have a
-//   dedicated Version model (we can't modify it from this subagent), we
-//   synthesise a deterministic mock list anchored to the workflow's
-//   `createdAt` + `updatedAt` timestamps so the UI has something real to
-//   render. The shape matches what a real `db.workflowVersion.findMany(...)`
-//   would return, so swapping in real storage later is a drop-in change.
-//
-// POST /api/workflows/[id]/versions — "create" a new version snapshot.
-//   Body: { label?: string }. Returns the new version object. Storage is
-//   mock — the persisted list isn't actually extended (no schema column for
-//   it) — but the response is identical in shape to the GET items so the
-//   UI's optimistic prepend just works.
+//   workflow (newest-first). Each row is a REAL persisted snapshot of the
+//   canvas (nodes + edges JSON) taken at POST time.
+// POST /api/workflows/[id]/versions — snapshot the workflow's CURRENT nodes
+//   + edges into a new WorkflowVersion row. Body: { label? }.
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -18,15 +10,14 @@ import { db } from "@/lib/db";
 export interface WorkflowVersionDTO {
   id: string;
   label: string;
+  nodeCount: number;
+  edgeCount: number;
   createdAt: string;
   current?: boolean;
 }
 
-function toIso(d: Date | string): string {
-  return d instanceof Date ? d.toISOString() : new Date(d).toISOString();
-}
-
-// GET — list all versions of a workflow (returns synthesised snapshots).
+// GET — list all versions of a workflow (newest first). The newest snapshot
+// is flagged `current` for the UI.
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -40,33 +31,40 @@ export async function GET(
     );
   }
 
-  // Return mock versions anchored to the workflow's timestamps. Newest first
-  // so the UI's prepend-then-sort is a no-op.
-  const versions: WorkflowVersionDTO[] = [
-    {
-      id: "v2",
-      label: "Latest",
-      createdAt: toIso(workflow.updatedAt),
-      current: true,
+  const rows = await db.workflowVersion.findMany({
+    where: { workflowId: id },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      label: true,
+      nodeCount: true,
+      edgeCount: true,
+      createdAt: true,
     },
-    {
-      id: "v1",
-      label: "Initial version",
-      createdAt: toIso(workflow.createdAt),
-      current: false,
-    },
-  ];
+  });
+
+  const versions: WorkflowVersionDTO[] = rows.map((r, i) => ({
+    id: r.id,
+    label: r.label,
+    nodeCount: r.nodeCount,
+    edgeCount: r.edgeCount,
+    createdAt: r.createdAt.toISOString(),
+    current: i === 0,
+  }));
 
   return NextResponse.json({ versions });
 }
 
-// POST — create a new version snapshot.
+// POST — snapshot the current canvas into a new version row.
 export async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  const workflow = await db.workflow.findUnique({ where: { id } });
+  const workflow = await db.workflow.findUnique({
+    where: { id },
+    include: { nodes: true, edges: true },
+  });
   if (!workflow) {
     return NextResponse.json(
       { error: "Workflow not found" },
@@ -80,13 +78,26 @@ export async function POST(
       ? body.label.trim()
       : `Snapshot ${new Date().toLocaleString()}`;
 
-  // In a real implementation we'd persist the snapshot (e.g. a JSON blob in
-  // a WorkflowVersion row). For now, just return success with the new shape
-  // so the UI can optimistically prepend it.
+  // Snapshot the RAW rows (ids, positions, params, results, logs, status) —
+  // restoring recreates the exact canvas, including run history.
+  const row = await db.workflowVersion.create({
+    data: {
+      workflowId: id,
+      label,
+      nodes: JSON.stringify(workflow.nodes),
+      edges: JSON.stringify(workflow.edges),
+      nodeCount: workflow.nodes.length,
+      edgeCount: workflow.edges.length,
+    },
+  });
+
   const version: WorkflowVersionDTO = {
-    id: `v_${Date.now()}`,
-    label,
-    createdAt: new Date().toISOString(),
+    id: row.id,
+    label: row.label,
+    nodeCount: row.nodeCount,
+    edgeCount: row.edgeCount,
+    createdAt: row.createdAt.toISOString(),
+    current: true,
   };
 
   return NextResponse.json(version);

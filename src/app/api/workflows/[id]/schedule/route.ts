@@ -3,52 +3,61 @@
 // DELETE /api/workflows/[id]/schedule?scheduleId=<id> — cancel one scheduled run.
 // DELETE /api/workflows/[id]/schedule         — cancel ALL scheduled runs for a workflow.
 //
-// Storage is mock — an in-memory `Map<workflowId, Schedule[]>` scoped to the
-// server process. In production this would be a DB table (e.g. a `WorkflowSchedule`
-// Prisma model with a `runAt` timestamp + a `label` column + an index on
-// `workflowId`). The shape + handler semantics below are written to drop straight
-// onto a real DB table without touching the client code.
+// REAL persistence: schedules are WorkflowSchedule rows in SQLite. The
+// scheduled-run sweeper (src/lib/scheduler.ts, started from
+// instrumentation.ts) claims due rows and runs the workflow through the same
+// execution lane as manual runs (runWorkflowById). Rows survive restarts —
+// a schedule whose runAt passed while the server was down fires on boot.
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-
-// In-memory schedule store (mock — would be a DB table in production).
-// Keyed by workflowId. Each value is an array of schedules for that workflow.
-type Schedule = {
-  id: string;
-  workflowId: string;
-  runAt: string;
-  label: string;
-  createdAt: string;
-};
-
-// Use a stable global so HMR in dev doesn't blow away the schedules between
-// hot reloads. Without this, every file edit during `bun run dev` would
-// re-evaluate this module and wipe the in-memory map.
-const globalForSchedules = globalThis as unknown as {
-  __workflowSchedules?: Map<string, Schedule[]>;
-};
-const scheduledRuns: Map<string, Schedule[]> =
-  globalForSchedules.__workflowSchedules ?? new Map();
-if (!globalForSchedules.__workflowSchedules) {
-  globalForSchedules.__workflowSchedules = scheduledRuns;
-}
 
 export interface ScheduleDTO {
   id: string;
   workflowId: string;
   runAt: string;
   label: string;
+  status: "scheduled" | "firing" | "fired" | "failed" | "cancelled";
+  firedAt: string | null;
+  error: string | null;
+  started: number;
+  completed: number;
   createdAt: string;
 }
 
-// GET — list schedules for a workflow.
+function toDTO(s: {
+  id: string;
+  workflowId: string;
+  runAt: Date;
+  label: string;
+  status: string;
+  firedAt: Date | null;
+  error: string | null;
+  started: number;
+  completed: number;
+  createdAt: Date;
+}): ScheduleDTO {
+  return {
+    id: s.id,
+    workflowId: s.workflowId,
+    runAt: s.runAt.toISOString(),
+    label: s.label,
+    status: s.status as ScheduleDTO["status"],
+    firedAt: s.firedAt ? s.firedAt.toISOString() : null,
+    error: s.error,
+    started: s.started,
+    completed: s.completed,
+    createdAt: s.createdAt.toISOString(),
+  };
+}
+
+// GET — list schedules for a workflow (pending first by runAt, then history
+// newest-first so the UI's upcoming-runs list is what matters).
 export async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  // Touch the DB to ensure the workflow exists (mirrors the versions route).
   const workflow = await db.workflow.findUnique({ where: { id } });
   if (!workflow) {
     return NextResponse.json(
@@ -57,10 +66,18 @@ export async function GET(
     );
   }
 
-  const schedules = scheduledRuns.get(id) ?? [];
-  // Newest-first by runAt so the UI's optimistic prepend is a no-op on next fetch.
-  const sorted = [...schedules].sort((a, b) => a.runAt.localeCompare(b.runAt));
-  return NextResponse.json({ schedules: sorted });
+  const rows = await db.workflowSchedule.findMany({
+    where: { workflowId: id },
+    orderBy: [{ runAt: "desc" }],
+  });
+  const upcoming = rows
+    .filter((r) => r.status === "scheduled" || r.status === "firing")
+    .sort((a, b) => a.runAt.getTime() - b.runAt.getTime())
+    .map(toDTO);
+  const history = rows
+    .filter((r) => r.status !== "scheduled" && r.status !== "firing")
+    .map(toDTO);
+  return NextResponse.json({ schedules: upcoming, history });
 }
 
 // POST — schedule a new run.
@@ -96,26 +113,30 @@ export async function POST(
       { status: 400 },
     );
   }
+  if (runAtDate.getTime() <= Date.now()) {
+    return NextResponse.json(
+      { error: "runAt must be in the future" },
+      { status: 400 },
+    );
+  }
 
-  const schedule: Schedule = {
-    id: `sch_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-    workflowId: id,
-    runAt: runAtDate.toISOString(),
-    label:
-      typeof label === "string" && label.trim().length > 0
-        ? label.trim()
-        : `Run at ${runAtDate.toLocaleString()}`,
-    createdAt: new Date().toISOString(),
-  };
+  const row = await db.workflowSchedule.create({
+    data: {
+      workflowId: id,
+      runAt: runAtDate,
+      label:
+        typeof label === "string" && label.trim().length > 0
+          ? label.trim()
+          : `Run at ${runAtDate.toLocaleString()}`,
+      status: "scheduled",
+    },
+  });
 
-  const existing = scheduledRuns.get(id) ?? [];
-  scheduledRuns.set(id, [...existing, schedule]);
-
-  return NextResponse.json({ schedule });
+  return NextResponse.json({ schedule: toDTO(row) });
 }
 
-// DELETE — cancel one schedule (?scheduleId=<id>) or all schedules for the
-// workflow (no query param).
+// DELETE — cancel one schedule (?scheduleId=<id>) or all PENDING schedules
+// for the workflow (no query param). Fired history rows are kept.
 export async function DELETE(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> },
@@ -125,16 +146,30 @@ export async function DELETE(
   const scheduleId = url.searchParams.get("scheduleId");
 
   if (scheduleId) {
-    const existing = scheduledRuns.get(id) ?? [];
-    const next = existing.filter((s) => s.id !== scheduleId);
-    if (next.length === 0) {
-      // Drop the key entirely so GET returns an empty list cleanly.
-      scheduledRuns.delete(id);
-    } else {
-      scheduledRuns.set(id, next);
+    const existing = await db.workflowSchedule.findUnique({
+      where: { id: scheduleId },
+    });
+    if (!existing || existing.workflowId !== id) {
+      return NextResponse.json(
+        { error: "Schedule not found" },
+        { status: 404 },
+      );
     }
+    if (existing.status === "fired" || existing.status === "firing") {
+      return NextResponse.json(
+        { error: "This run already fired and cannot be cancelled" },
+        { status: 409 },
+      );
+    }
+    await db.workflowSchedule.update({
+      where: { id: scheduleId },
+      data: { status: "cancelled" },
+    });
   } else {
-    scheduledRuns.delete(id);
+    await db.workflowSchedule.updateMany({
+      where: { workflowId: id, status: "scheduled" },
+      data: { status: "cancelled" },
+    });
   }
 
   return NextResponse.json({ ok: true });

@@ -14,7 +14,11 @@ and run **real computational algorithms** — never simulations.
   pipelines, comp tools, AlphaFold prediction, bio queries) with live progress
   streaming, minimap, undo/redo, grouping, export/import.
 - **Agent layer** — LLM agents with knowledge configs, tool-calling loops,
-  team meetings, multi-round research pipelines, and a PI Copilot.
+  team meetings, multi-round research pipelines, and a PI Copilot. Every
+  agent carries REAL persisted runtime settings (fine-tune dialog:
+  temperature / max-tokens / top-p / extra system instructions / verbose /
+  streaming) applied to every LLM call it makes; chat streams tokens from
+  the live model (true SSE, chunked-emit only as fallback).
 - **Comp tools** — RFdiffusion, RFantibody, ProteinMPNN, LigandMPNN,
   SolubleMPNN, Rosetta, PyRosetta, RF3, ESMFold, ColabFold: each a standalone
   canvas node / command with its own param surface, native CLI grammar,
@@ -39,6 +43,12 @@ and run **real computational algorithms** — never simulations.
   search, PubMed EUtils, and UniProt REST, with honest error reporting.
 - **3D output viewer** — three.js molecular viewer (cartoon / ball-stick /
   space-filling) over the real PDB artifacts each run produces.
+- **Workflow versioning + scheduling** — snapshot the canvas into the DB
+  and restore any snapshot transactionally (POST
+  `/api/workflows/:id/versions/:versionId/restore`); schedule runs for a
+  future time and a DB-backed sweeper (started from `instrumentation.ts`)
+  fires them through the SAME execution lane as manual runs — schedules
+  survive restarts and fire on boot if their time passed while down.
 
 ## The Environment panel
 
@@ -77,7 +87,10 @@ scripts/algorithms/     # the real algorithm engines (pure numpy Python)
   score_engine.py       # rosetta / pyrosetta — knowledge-based scoring
   antibody_engine.py    # rfantibody — germline Fv builder
 src/lib/                # execution engine, registries, workflow runtime
+  workflow-runner.ts    # shared run lane (manual + scheduled runs)
+  scheduler.ts          # DB-backed scheduled-run sweeper
+src/instrumentation.ts  # boots the scheduler with the server process
 src/app/api/            # REST API (tools run/scan/install, workflow, agents…)
 src/components/         # canvas, panels, 3D viewers
-prisma/                 # SQLite schema
+prisma/                 # SQLite schema (incl. WorkflowVersion + WorkflowSchedule)
 ```
