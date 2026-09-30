@@ -21,6 +21,7 @@ import {
   selfTestEngines,
   resolveEnginePython,
 } from "@/lib/real-executor";
+import { getFoundryStatus } from "@/lib/foundry";
 import { listInstallJobs } from "@/lib/install-jobs";
 
 export async function GET() {
@@ -88,6 +89,10 @@ export async function GET() {
 
   const tools = scanAllTools();
 
+  // Foundry platform status (official RosettaCommons rc-foundry stack:
+  // version, torch/device, installed checkpoints, real capabilities).
+  const foundry = getFoundryStatus();
+
   const runtimeOk = runtime.every((r) => r.installed || r.key === "scipy" || r.key === "biopython");
   const coreRuntimeOk = runtime
     .filter((r) => r.key === "python3" || r.key === "numpy")
@@ -99,6 +104,7 @@ export async function GET() {
     runtime,
     engines,
     tools,
+    foundry,
     summary: {
       runtime: {
         installed: runtime.filter((r) => r.installed).length,

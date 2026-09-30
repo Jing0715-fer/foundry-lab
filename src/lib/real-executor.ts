@@ -25,6 +25,12 @@ import {
   BUILTIN_ENGINES,
   TOOL_REGISTRY,
 } from "./tool-registry";
+import {
+  FOUNDRY_MPNN_TOOLS,
+  foundryMpnnVariant,
+  isFoundryMpnnReady,
+  resolveFoundryPython,
+} from "./foundry";
 import { getCompTool, buildCommand, buildArgs } from "./tools";
 
 export interface ExecutionResult {
@@ -90,7 +96,10 @@ export function isToolInstalled(key: string): boolean {
       return true;
     }
     if (entry.detect.type === "path" && entry.detect.path) {
-      return existsSync(join(process.cwd(), entry.detect.path));
+      // Absolute paths (e.g. the foundry venv) check directly; relative
+      // paths resolve under the project root.
+      const p = entry.detect.path;
+      return existsSync(p.startsWith("/") ? p : join(process.cwd(), p));
     }
   } catch {
     return false;
@@ -115,7 +124,9 @@ export function isEntryInstalled(
       return true;
     }
     if (detect.type === "path" && detect.path) {
-      return existsSync(join(process.cwd(), detect.path));
+      // Absolute paths (foundry venv) check directly; relative under root.
+      const p = detect.path;
+      return existsSync(p.startsWith("/") ? p : join(process.cwd(), p));
     }
   } catch {
     return false;
@@ -238,6 +249,34 @@ export async function executeCompToolReal(
   // Relative input paths → project-root absolute (see normalizePathParams).
   params = normalizePathParams(def, params);
 
+  // FOUNDRY TIER — the official RosettaCommons foundry platform
+  // (rc-foundry wheel: the MPNN re-implementation maintained by the IPD).
+  // It takes priority over the legacy dauparas repos and the built-in
+  // statistical engine: when the platform is installed with weights, MPNN
+  // family jobs run the REAL trained network.
+  if (FOUNDRY_MPNN_TOOLS.has(toolKey) && isFoundryMpnnReady()) {
+    try {
+      return await runFoundryMpnn(toolKey, params, workDir, Date.now());
+    } catch (e) {
+      // Foundry failed to spawn (never a tool-level result) — fall through
+      // to the native/built-in tiers with a clear notice.
+      const notice =
+        `[FOUNDRY UNAVAILABLE — ${e instanceof Error ? e.message : String(e)}]\n` +
+        `Falling back to native/built-in execution.\n\n`;
+      const next = await executeNativeOrEngine(toolKey, params, workDir);
+      return { ...next, stdout: notice + next.stdout };
+    }
+  }
+
+  return executeNativeOrEngine(toolKey, params, workDir);
+}
+
+/** Native-then-builtin dispatch (the pre-foundry execution flow). */
+async function executeNativeOrEngine(
+  toolKey: string,
+  params: Record<string, unknown>,
+  workDir: string,
+): Promise<ExecutionResult> {
   const entry = getToolRegistryEntry(toolKey);
   const installed = isToolInstalled(toolKey);
 
@@ -287,6 +326,76 @@ export async function executeCompToolReal(
 
   // BUILT-IN ENGINE (real algorithm, no upstream tool needed).
   return runBuiltinEngine(toolKey, params, workDir, startedAt);
+}
+
+/**
+ * Execute an MPNN-family job through the OFFICIAL foundry platform:
+ * `<foundry-python> scripts/foundry/run_mpnn.py …` — real trained network
+ * (legacy official weights) via foundry's MPNNInferenceEngine.
+ */
+async function runFoundryMpnn(
+  toolKey: string,
+  params: Record<string, unknown>,
+  workDir: string,
+  startedAt: number,
+): Promise<ExecutionResult> {
+  const py = resolveFoundryPython();
+  if (!py) throw new Error("foundry python not resolvable");
+
+  const variant = foundryMpnnVariant(toolKey, params);
+
+  // Map the app param surface onto the runner's flags.
+  const args: string[] = [
+    join(process.cwd(), "scripts", "foundry", "run_mpnn.py"),
+  ];
+  const pdb = typeof params.pdb_path === "string" ? params.pdb_path : "";
+  if (!pdb) {
+    throw new Error("pdb_path is required for foundry MPNN execution");
+  }
+  args.push("--pdb_path", pdb);
+
+  const numSeq = Number(params.num_seq ?? 8) || 8;
+  args.push("--num_seq", String(Math.max(1, Math.min(64, numSeq))));
+
+  const temp = Number(params.sampling_temp ?? 0.1);
+  args.push("--sampling_temp", String(Number.isFinite(temp) && temp > 0 ? temp : 0.1));
+
+  args.push("--model", variant.model);
+  if (variant.soluble) args.push("--soluble");
+
+  const seed = Number(params.seed ?? 42);
+  args.push("--seed", String(Number.isFinite(seed) ? Math.abs(Math.trunc(seed)) : 42));
+
+  // FASTA output: the param surface's path_to_fasta, else the job workDir.
+  const outFasta =
+    typeof params.path_to_fasta === "string" && params.path_to_fasta.trim()
+      ? params.path_to_fasta
+      : join(workDir, "seqs.fa");
+  args.push("--out_fasta", outFasta);
+
+  const displayCommand =
+    `# foundry (RosettaCommons rc-foundry) — REAL trained ${
+      variant.soluble ? "SolubleMPNN" : variant.model === "protein_mpnn" ? "ProteinMPNN" : "LigandMPNN"
+    } network\n` +
+    `${py} scripts/foundry/run_mpnn.py --pdb_path <backbone> --num_seq ${
+      Math.max(1, Math.min(64, numSeq))
+    } --sampling_temp ${args[args.indexOf("--sampling_temp") + 1]}`;
+
+  await fs.mkdir(workDir, { recursive: true }).catch(() => {});
+  // First run pays the torch import cost (~10-30s on CPU) — allow headroom.
+  const res = await runProcess(
+    py,
+    args,
+    workDir,
+    displayCommand,
+    startedAt,
+    10 * 60 * 1000,
+  );
+  return {
+    ...res,
+    executor: "native",
+    realToolUsed: true,
+  };
 }
 
 /** Run the native upstream tool via child_process, honoring the registry's
@@ -366,7 +475,7 @@ async function runNativeTool(
     return { ...res, executor: "native", realToolUsed: true };
   }
   if (mode.mode === "executable") {
-    const exePath = join(process.cwd(), mode.path);
+    const exePath = mode.path.startsWith("/") ? mode.path : join(process.cwd(), mode.path);
     const res = await runProcess(
       exePath,
       [...argTokens, ...fixed, ...outTokens],

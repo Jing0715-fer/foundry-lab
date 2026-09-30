@@ -22,7 +22,8 @@ export type ToolCategory =
   | "inverse-folding"
   | "scoring"
   | "structure-prediction"
-  | "bio";
+  | "bio"
+  | "platform";
 
 export type DetectType = "binary" | "python" | "path";
 export type InstallMethod = "pip" | "github" | "binary" | "runtime";
@@ -448,6 +449,36 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
       docs: "https://github.com/dauparas/ProteinMPNN",
       oneClick: true,
       sizeHint: "~50 MB",
+    },
+    builtinEngine: "engine-mpnn",
+  },
+  {
+    key: "foundry",
+    label: "Foundry (RosettaCommons)",
+    category: "platform",
+    description:
+      "Official platform for biomolecular foundation models (RFD3, ProteinMPNN/LigandMPNN, RF3) unified through atomworks. When installed, MPNN-family jobs run the REAL trained network through foundry's MPNNInferenceEngine; RFD3/RF3 light up with their checkpoints (GPU recommended).",
+    // Absolute path detect: the one-click install target venv (see
+    // src/lib/foundry.ts for the full candidate list incl. $FOUNDRY_PYTHON).
+    detect: { type: "path", path: "/home/z/.venv-foundry/bin/foundry" },
+    nativeExecution: {
+      mode: "executable",
+      path: "/home/z/.venv-foundry/bin/foundry",
+      timeoutMs: 10 * 60 * 1000,
+    },
+    install: {
+      method: "pip",
+      command:
+        "uv venv /home/z/.venv-foundry --python 3.12 && " +
+        "uv pip install --python /home/z/.venv-foundry/bin/python torch --index-url https://download.pytorch.org/whl/cpu && " +
+        'uv pip install --python /home/z/.venv-foundry/bin/python "rc-foundry[rfd3,rfd3na]" && ' +
+        "/home/z/.venv-foundry/bin/foundry install proteinmpnn ligandmpnn solublempnn && " +
+        "echo 'foundry ready: rc-foundry + CPU torch + MPNN family checkpoints (rfd3/rf3 need GPU + their own weights: foundry install rfd3 rf3)'",
+      label:
+        "Create dedicated venv + install CPU torch + rc-foundry wheel + MPNN-family checkpoints",
+      docs: "https://github.com/RosettaCommons/foundry",
+      oneClick: true,
+      sizeHint: "~1.9 GB (CPU torch + rc-foundry; MPNN weights ~25 MB)",
     },
     builtinEngine: "engine-mpnn",
   },

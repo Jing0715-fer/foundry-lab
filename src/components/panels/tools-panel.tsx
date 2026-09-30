@@ -35,6 +35,7 @@ import {
   FlaskConical,
   BookOpen,
   Info,
+  Layers,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -96,11 +97,25 @@ interface ToolRow {
   executorReady: boolean;
 }
 
+interface FoundryStatusDTO {
+  installed: boolean;
+  python: string | null;
+  cli: string | null;
+  version: string | null;
+  torch: string | null;
+  cuda: boolean;
+  checkpoints: { name: string; path: string; size: string }[];
+  capabilities: { mpnn: boolean; rfd3: boolean; rf3: boolean };
+  selftestOk: boolean;
+  selftestDetail: string;
+}
+
 interface ScanResponse {
   scannedAt: string;
   runtime: RuntimeRow[];
   engines: EngineRow[];
   tools: ToolRow[];
+  foundry: FoundryStatusDTO | null;
   summary: {
     runtime: { installed: number; total: number; coreReady: boolean; allReady: boolean };
     engines: { ok: number; total: number };
@@ -125,12 +140,14 @@ interface InstallJobDTO {
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const TOOL_CATEGORY_LABELS: Record<string, string> = {
+  platform: "Foundry Platform & Model Stack",
   design: "De-novo Design",
   "inverse-folding": "Inverse Folding",
   "structure-prediction": "Structure Prediction",
   scoring: "Scoring & Analysis",
 };
 const TOOL_CATEGORY_ORDER = [
+  "platform",
   "design",
   "inverse-folding",
   "structure-prediction",
@@ -412,6 +429,15 @@ export function ToolsPanel() {
             ))}
           </div>
         </section>
+      )}
+
+      {/* ── ②½ Foundry platform (official RosettaCommons model stack) ──── */}
+      {scan && scan.foundry && (
+        <FoundryPlatformCard
+          foundry={scan.foundry}
+          onInstall={() => void startInstall("foundry", "Foundry (RosettaCommons)")}
+          installing={startingInstall === "foundry"}
+        />
       )}
 
       {/* ── ③ External tools ────────────────────────────────────────────── */}
@@ -861,6 +887,208 @@ function ToolCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+// ── Foundry platform card ───────────────────────────────────────────────────
+
+function FoundryPlatformCard({
+  foundry,
+  onInstall,
+  installing,
+}: {
+  foundry: FoundryStatusDTO;
+  onInstall: () => void;
+  installing: boolean;
+}) {
+  const { installed } = foundry;
+  return (
+    <section className="space-y-3" aria-labelledby="foundry-heading">
+      <SectionHeader
+        id="foundry-heading"
+        icon={<Layers className="size-4" />}
+        title="Foundry Platform (RosettaCommons)"
+        count={foundry.checkpoints.length}
+        hint="Official biomolecular foundation-model platform — RFD3 / MPNN family / RF3 unified through atomworks. When ready, MPNN-family jobs execute the REAL trained network."
+      />
+      <Card className="overflow-hidden">
+        <CardContent className="space-y-3 p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="text-sm font-medium">rc-foundry</p>
+            {installed ? (
+              <Badge
+                variant="outline"
+                className="gap-1 border-emerald-500/40 bg-emerald-500/10 text-[10px] text-emerald-700 dark:text-emerald-400"
+              >
+                <CheckCircle2 className="size-3" />
+                installed
+              </Badge>
+            ) : (
+              <Badge
+                variant="outline"
+                className="gap-1 border-amber-500/40 bg-amber-500/10 text-[10px] text-amber-700 dark:text-amber-400"
+              >
+                <XCircle className="size-3" />
+                not installed
+              </Badge>
+            )}
+            {foundry.version && (
+              <Badge variant="secondary" className="font-mono text-[10px]">
+                v{foundry.version}
+              </Badge>
+            )}
+            {foundry.torch && (
+              <Badge variant="outline" className="font-mono text-[10px]">
+                torch {foundry.torch}
+                {foundry.cuda ? " · CUDA" : " · CPU"}
+              </Badge>
+            )}
+            <Button size="sm" variant="ghost" asChild className="ml-auto">
+              <a
+                href="https://github.com/RosettaCommons/foundry"
+                target="_blank"
+                rel="noreferrer"
+              >
+                <ExternalLink className="size-3.5" />
+                Docs
+              </a>
+            </Button>
+          </div>
+
+          {installed ? (
+            <>
+              {/* Capabilities */}
+              <div className="grid gap-2 sm:grid-cols-3">
+                <FoundryCapability
+                  label="MPNN family"
+                  ready={foundry.capabilities.mpnn}
+                  readyText="REAL trained network — LigandMPNN / ProteinMPNN / SolubleMPNN via foundry's MPNNInferenceEngine (official legacy weights)."
+                  notReadyText={
+                    foundry.selftestOk
+                      ? "Engine imports OK but no MPNN checkpoints — run `foundry install proteinmpnn ligandmpnn solublempnn`."
+                      : `Self-test failed: ${foundry.selftestDetail}`
+                  }
+                />
+                <FoundryCapability
+                  label="RFD3 (design)"
+                  ready={foundry.capabilities.rfd3}
+                  readyText="Checkpoint present — de-novo backbone generation available (GPU strongly recommended; diffusion is slow on CPU)."
+                  notReadyText="Weights not downloaded — `foundry install rfd3` (needs ~1–2 GB + GPU for practical runtimes)."
+                />
+                <FoundryCapability
+                  label="RF3 (folding)"
+                  ready={foundry.capabilities.rf3}
+                  readyText="Checkpoint present — structure prediction & designability validation."
+                  notReadyText="Weights not downloaded — `foundry install rf3` (needs cuEquivariance + CUDA GPU)."
+                />
+              </div>
+
+              {/* Checkpoints */}
+              {foundry.checkpoints.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {foundry.checkpoints.map((c) => (
+                    <Badge
+                      key={c.path}
+                      variant="outline"
+                      className="font-mono text-[10px]"
+                      title={c.path}
+                    >
+                      {c.name} · {c.size}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+
+              <p className="break-all rounded bg-muted px-2 py-1 font-mono text-[10px] text-muted-foreground">
+                venv: {foundry.python}
+              </p>
+
+              <div className="flex items-start gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-2.5 py-2">
+                <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                <p className="text-[11px] leading-relaxed text-muted-foreground">
+                  Execution tier active: ProteinMPNN / LigandMPNN / SolubleMPNN
+                  jobs on this host now run the real trained network through
+                  foundry (priority over legacy repos and the built-in
+                  statistical engine). Sequences land in the job workDir as
+                  FASTA with a JSON result blob (incl. recovery metrics) in
+                  stdout.
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <p className="text-xs text-muted-foreground">
+                RosettaCommons&apos; central platform for biomolecular
+                foundation models. One-click installs the rc-foundry wheel
+                (CPU torch) plus the MPNN-family checkpoints — instantly
+                upgrading inverse-folding jobs from the built-in statistical
+                engine to the real trained networks. RFD3/RF3 weights can be
+                added later with{" "}
+                <span className="font-mono text-[10px]">
+                  foundry install rfd3 rf3
+                </span>{" "}
+                (GPU required).
+              </p>
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" onClick={onInstall} disabled={installing}>
+                  {installing ? (
+                    <Loader2 className="size-3.5 animate-spin" />
+                  ) : (
+                    <Download className="size-3.5" />
+                  )}
+                  Install
+                  <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">
+                    ~1.9 GB
+                  </span>
+                </Button>
+                <span className="text-[11px] text-muted-foreground">
+                  Already have foundry elsewhere? Point{" "}
+                  <span className="font-mono text-[10px]">$FOUNDRY_PYTHON</span>{" "}
+                  at that venv&apos;s python.
+                </span>
+              </div>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </section>
+  );
+}
+
+function FoundryCapability({
+  label,
+  ready,
+  readyText,
+  notReadyText,
+}: {
+  label: string;
+  ready: boolean;
+  readyText: string;
+  notReadyText: string;
+}) {
+  return (
+    <div
+      className={`rounded-lg border p-2.5 ${
+        ready
+          ? "border-emerald-500/40 bg-emerald-500/5"
+          : "border-dashed bg-muted/30"
+      }`}
+    >
+      <div className="mb-1 flex items-center gap-1.5">
+        {ready ? (
+          <CheckCircle2 className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
+        ) : (
+          <XCircle className="size-3 shrink-0 text-muted-foreground" />
+        )}
+        <p className="text-[11px] font-medium">{label}</p>
+        <span className="ml-auto text-[10px] font-medium text-muted-foreground">
+          {ready ? "ready" : "missing weights"}
+        </span>
+      </div>
+      <p className="text-[10px] leading-relaxed text-muted-foreground">
+        {ready ? readyText : notReadyText}
+      </p>
+    </div>
   );
 }
 

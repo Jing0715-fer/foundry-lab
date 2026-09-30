@@ -517,10 +517,10 @@ export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
   opts: { cluster?: ClusterRunTarget } = {},
-): Promise<{ summary: string; stdout: string; files: string[]; command: string }> {
+): Promise<{ summary: string; stdout: string; files: string[]; command: string; exitCode: number }> {
   const def = getCompTool(toolKey);
   if (!def) {
-    return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "" };
+    return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "", exitCode: 1 };
   }
   if (opts.cluster) {
     return executeCompToolOnCluster(def, toolKey, params, opts.cluster);
@@ -528,11 +528,19 @@ export async function executeCompTool(
   const workDir = resolve(process.cwd(), "outputs", toolKey, `wf-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
   const res = await executeCompToolReal(toolKey, params, workDir);
   const summary = def.resultSummary(params, res.stdout);
+  // Honest failure surfacing: non-zero exits carry stderr + a clear banner
+  // so the node logs show the REAL error (never a silent success).
+  const stdout =
+    res.exitCode === 0
+      ? `$ ${res.command}\n${res.executor === "builtin-engine" ? "\n[built-in real algorithm engine]\n" : ""}${res.stdout}`
+      : `$ ${res.command}\n\n[exit ${res.exitCode} — TOOL FAILED]\n${res.stdout}` +
+        `${res.stderr ? `\n\n[stderr]\n${res.stderr}` : ""}`;
   return {
     summary,
-    stdout: `$ ${res.command}\n${res.executor === "builtin-engine" ? "\n[built-in real algorithm engine]\n" : ""}${res.stdout}`,
+    stdout,
     files: res.outputFiles.map((f) => f),
     command: res.command,
+    exitCode: res.exitCode,
   };
 }
 
@@ -597,6 +605,7 @@ async function executeCompToolOnCluster(
       stdout: `Cluster dispatch failed: ${started.error}\n`,
       files: [],
       command: "",
+      exitCode: 1,
     };
   }
 
@@ -630,7 +639,13 @@ async function executeCompToolOnCluster(
             : row.status === "cancelled"
               ? `Cluster run cancelled (job ${jobId}).`
               : `Cluster run failed${row.exitCode != null ? ` (exit ${row.exitCode})` : ""} — see logs.`;
-        return { summary, stdout, files, command: row.command ?? "" };
+        return {
+          summary,
+          stdout,
+          files,
+          command: row.command ?? "",
+          exitCode: row.status === "completed" ? 0 : (row.exitCode ?? 1),
+        };
       }
     } else {
       // Row vanished (db reset) — fall back to the run record.
@@ -646,6 +661,7 @@ async function executeCompToolOnCluster(
             stdout: `$ ${run.command}\n[cluster run · job ${jobId}]\n${run.logTailOut}`,
             files: run.syncedFiles,
             command: run.command,
+            exitCode: run.phase === "done" ? 0 : 1,
           };
         }
       }
