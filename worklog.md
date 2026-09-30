@@ -2724,3 +2724,20 @@ Stage Summary:
 - Environment & Toolchain sheet now scrolls correctly inside the fixed-height Sheet; all four sections (runtime / engines / external tools / recent installs) fully reachable.
 - Button overlap with the sheet's X close button fixed; header layout no longer wraps awkwardly.
 - Dev server restarted and stable; all APIs 200; browser-verified on desktop + mobile.
+
+---
+Task ID: push-github
+Agent: main (Z.ai Code)
+Task: Push the Environment & Toolchain UI fix to GitHub (user-provided PAT)
+
+Work Log:
+- Found 2 unpushed commits with UUID messages (auto-committed): the tools-panel.tsx UI fix + a db/custom.db binary churn.
+- Restructured history for clarity: `git reset --soft HEAD~2`, then
+  - `d5f45ec fix(ui): Environment & Toolchain sheet — content was clipped with no scrollbar` (tools-panel.tsx + worklog.md)
+  - `f9bdbf6 chore(db): sync local runtime database` (db/custom.db, already tracked in repo history)
+- Set origin URL with the user's PAT and pushed: `e92d065..f9bdbf6 main -> main`.
+- Verified with fetch: local main is up to date with origin/main; both commits visible on remote.
+
+Stage Summary:
+- Remote https://github.com/Jing0715-fer/foundry-lab now contains the sheet-scroll UI fix and the db sync on top of the earlier "real algorithms" work.
+- Working tree clean; branch in sync with origin/main.
