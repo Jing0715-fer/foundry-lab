@@ -2741,3 +2741,29 @@ Work Log:
 Stage Summary:
 - Remote https://github.com/Jing0715-fer/foundry-lab now contains the sheet-scroll UI fix and the db sync on top of the earlier "real algorithms" work.
 - Working tree clean; branch in sync with origin/main.
+
+---
+Task ID: 30-install-btn-full-e2e
+Agent: main (Z.ai Code)
+Task: Fix "install 按钮有些内容太长，显示不全" then run a full end-to-end (全链路) test across every lane.
+
+Work Log:
+- Reproduced the Install button overflow with DOM measurements in the Environment & Toolchain sheet: registry sizeHints mix size + long explanation inside one nowrap button — worst case "Install ~4 GB (CUDA torch + DGL in its own venv; NVIDIA GPU required to run designs)" measured 493px wide, extending 206px past its 304px card edge (clipped by card overflow-hidden); "~1.9 GB (CPU torch…)" +94px, "~1.1 GB (repo+deps…)" +3px.
+- Fixed tools-panel.tsx: new splitSizeHint() regex helper extracts the leading size token (~N GB/MB, license-gated, cluster-provided) for the button; the parenthetical/incl./comma explanation renders as a wrapping span beside the button (min-w-0 flex-1 basis-40, full display via natural wrap — no clamp, title tooltip). Button gets max-w-full + inner truncate as a hard guard; icons shrink-0. Same treatment for the Foundry platform card button + its $FOUNDRY_PYTHON hint span. Install dialog: log lines wrap-anywhere (merged with the ✔/✘ color classes via cn), log box overflow-x-hidden.
+- Fixed 4 pre-existing tsc errors in run-utils.ts (left over from task 28's exitCode addition): executeCompToolOnCluster return type now includes exitCode; job-row-creation failure returns exitCode 1; poll-timeout returns exitCode 0 with a comment that the honest status lives in the summary (remote job may still succeed).
+- Fixed review-issue-5 (honest node failure): workflow-engine.ts alphafold + per-tool cases now use executeCompTool's exitCode — non-zero exits set node status "failed" with result "Tool failed (exit N) — see Logs. …" instead of a silent "completed" whose failure was buried in the logs. Dashboard chart now honestly shows Completed 5 / Failed 2.
+- Discovered + fixed a REAL missing-route bug: both cluster-panel.tsx and alphafold-panel.tsx POST /api/cluster/connections/[id]/test for their Test buttons, but the route never existed in ANY commit (verified by scanning every rev) — every click 404'd into Next's HTML 404 page and surfaced as "Test failed". Created the route: probeCluster() over SSH (login identity, python3+numpy, conda, module system, Slurm partitions, GPUs, batched tool checks), persists lastProbe via persistProbe, returns {probe} with a crash-safe shaped fallback.
+- gitignore landmine: bare `test` rule (line 49) silently excluded the new route dir; brackets are character classes in gitignore too, so re-include rule needs \[id\] escaping: `!src/app/api/cluster/connections/\[id\]/test/`. Also `git add` needs `:(literal)` pathspec for [id] dirs (pathspec globs otherwise).
+- E2E full-link verified (agent-browser + VLM + API + disk):
+  ① Page: title/nav/palette clean, zero console/page errors, dark-mode toggle OK, mobile 375px bodyOverflow=0.
+  ② Install lane: LigandMPNN "Install ~50 MB" click → POST /api/tools/install → dialog live terminal (real `git clone --depth 1` logs, "✔ LigandMPNN install finished (exit 0)") → scan refresh → card badge flips to "native", repo on disk (17 files), Install button gone. All 10 remaining Install buttons: 0 overflow at 1280px AND 375px (re-verified after fresh server restart).
+  ③ Workflow lane: reset 7 nodes → Run Workflow → sequential topological execution; rfdiffusion nodes run the REAL engine (Ramachandran torsion diffusion + NeRF, 8 designs, 17 files on disk, ##OUTPUTS## trailer with absolute paths); proteinmpnn fed a fresh upstream PDB → REAL Gibbs-sampling engine run (150 residues, designed.fasta + metrics.json); stale-cluster refs + stale pdb_path nodes now fail HONESTLY (red FAILED cards on canvas + dashboard chart).
+  ④ Inspector Result tab (double-click node → Result 27): REAL·NATIVE badge, 27 output files with sizes, MolVision inline 3D canvas 301×288 rendering ranked_1.pdb in cartoon (VLM-verified: "3D protein structure rendered (ribbon/cartoon)… teal REAL · NATIVE badge… layout functional").
+  ⑤ Cluster lane: created connection (foundry/demo @127.0.0.1:3022, slurm brain2, af2 gpu05/alphafold2) → POST /test → full probe ok (python 3.13.5+numpy, slurm brain2/gpu/cpu, envmodules, 8×A100, 6 tools installed) → Cluster panel Test button now works in the UI → updated the alphafold node's stale _cluster to the new connectionId → node run: salloc granted → ssh gpu05 → module load alphafold2 → run_alphafold.py real execution (0.7s, 26 files) → outputs synced back to local outputs/ tree.
+  ⑥ Agent chat: sent a Chinese message → real streamed LLM reply listing its callable comp+bio tools; persisted to ChatMessage (INSERT in dev.log); dev.log tail clean (only scheduler sweeps + normal queries).
+- Ops: dev server died silently once during a late reload (known compile-storm OOM pattern) — restarted via .zscripts/daemon-run.py double-fork daemon (pid 7587), stable after; mock-cluster :3022 up throughout (it's an SSH server — curl returns 000, that's expected).
+
+Stage Summary:
+- 3 UI/robustness fixes + 1 missing API route: Install buttons never overflow (short size in button + full explanation wrapping beside it), tool-fail nodes fail honestly end-to-end (canvas + dashboard + result text), Cluster/AlphaFold Test buttons actually work for the first time ever, cluster lane exitCode typed end-to-end.
+- Full-link test matrix green: page/install/workflow/inspector-3D/cluster/agent-chat all verified against REAL executions (real git clone, real Python engines, real SSH+salloc+run_alphafold.py, real LLM streaming).
+- Pushed: 6c77e0e (fixes + route + gitignore) + 0b449ce (db sync) → origin/main; tree in sync.
