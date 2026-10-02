@@ -2767,3 +2767,26 @@ Stage Summary:
 - 3 UI/robustness fixes + 1 missing API route: Install buttons never overflow (short size in button + full explanation wrapping beside it), tool-fail nodes fail honestly end-to-end (canvas + dashboard + result text), Cluster/AlphaFold Test buttons actually work for the first time ever, cluster lane exitCode typed end-to-end.
 - Full-link test matrix green: page/install/workflow/inspector-3D/cluster/agent-chat all verified against REAL executions (real git clone, real Python engines, real SSH+salloc+run_alphafold.py, real LLM streaming).
 - Pushed: 6c77e0e (fixes + route + gitignore) + 0b449ce (db sync) → origin/main; tree in sync.
+---
+Task ID: 31-real-task-e2e
+Agent: main (Z.ai Code)
+Task: 继续真实任务设计测试 (real-task E2E across PI-copilot orchestration / closed-loop design pipeline / team meeting / deep research / scheduler) and fix whatever breaks.
+
+Work Log:
+- Read worklog tail; servers up (next :3000, mock-cluster :3022 SSH). DB query: ResearchReport and Meeting tables EMPTY — these lanes had never run real data; that framed the test plan.
+- REAL TASK A — PI Copilot natural-language orchestration: typed a Chinese request ("搭建 RFdiffusion→ProteinMPNN→AlphaFold 完整设计管线并自动运行") into the PI Copilot dialog. The PI (real LLM) emitted a 5-step plan, created 4 nodes (DesignParams/RFdiffusion_Design/ProteinMPNN_Design/AlphaFold_Prediction) + 3 edges, and auto-ran the workflow. RFdiffusion completed (real diffusion engine, 9 artifacts), but ProteinMPNN_Design and AlphaFold_Prediction FAILED honestly.
+- ROOT CAUSE (real chain bug): tool nodes exchange FILES, but the workflow engine only passed upstream SUMMARY TEXT (`__inputs` was never consumed by any engine). MPNN needs a real pdb_path; the PI had also invented a placeholder sequence ">design\nMKT..." for AlphaFold. The file paths live in upstream logs' ##OUTPUTS## trailers and were never propagated.
+- FIX (workflow-engine.ts): new `autoWireToolInputs()` — parses upstream ##OUTPUTS## trailers and auto-wires pdb_path (MPNN/Rosetta/RFDiffusion family) + fasta_path (alphafold/esmfold/rf3/colabfold, deleting invalid placeholder sequences so fasta_path takes effect) ONLY when the node's own params left them empty/placeholder; chain notes prepend node logs. PI prompt (pi/orchestrate) now documents chaining rules ("omit file params, never invent placeholder sequences").
+- Hit the stale-module landmine again: the long-running dev server kept serving the OLD workflow-engine even after route recompile (compile: 805ms but no [chain] note). Fixed by full dev-server restart via .zscripts/daemon-run.py (pid 3651). After restart the rerun worked immediately.
+- Verified the closed loop: ProteinMPNN_Design completed with "[chain] auto-wired pdb_path from upstream output: …/design_0.pdb"; AlphaFold_Prediction cascaded (BFS) and completed with "[chain] auto-wired fasta_path from …/designed.fasta" — real MPNN Gibbs engine + real fold engine, predicted.pdb (3840 atoms / 8 chains × 120 res) written to disk.
+- UI verification: canvas all 4 nodes green; Result tab shows REAL · ENGINE badge, 3 output files with sizes, MolVision inline 3D (teal cartoon over full canvas, VLM-confirmed after 3× upscale; pixel analysis: 3.1–4.4K colored pixels spread across canvas bbox), SASA computed (92ms, 62782 Å²), DSSP (helix 296/31%, coil 658/69%), top-exposed residues list. Initial "empty canvas" scare was a measurement artifact (VLM couldn't recognize the thin cartoon at 1×; 23K-pixel reading had included analysis-panel colors).
+- REAL TASK B — Team Meeting: created lead=PI + members=Computational Biologist/Structural Biologist, 2 rounds, realistic agenda about validating the just-designed proteins. Ran ~35s: 6 real LLM turns with genuine domain disagreement (CompBio added pLDDT>85 cutoff, Structural Biologist pushed symmetry analysis), structured Markdown summary.
+- REAL TASK C — Deep Research: topic "de novo binder design strategies for IL-7Rα", lead=PI + CompBio/Immunologist, 1 round. Ran ~2.5min through all 3 phases (7 discussion messages: planning×3 → researching×3 → compilation), produced a proper Markdown report citing UniProt P40189 / PDB 1T5J.
+- REAL TASK D — Scheduler: reset the 4 pipeline nodes to idle, POST /api/workflows/[id]/schedule for +40s. Sweeper (15s interval) fired it exactly on schedule: status fired, started 4, completed 4 — full real closed loop re-executed automatically.
+- Cross-checks: 0 browser page-errors, 0 console errors (beyond HMR), 0 dev.log errors; 375px mobile overflowX=0; `bunx tsc --noEmit` 0 app-src errors; `bun run lint` clean.
+- Committed af5112d (chain auto-wiring + PI prompt) + bfeea8a (db sync) → pushed to origin/main.
+
+Stage Summary:
+- The agent-to-tool-to-agent full product loop is now real end-to-end: natural language → PI builds the DAG → real engines execute with FILE-level dataflow (the missing link, now auto-wired) → scheduled re-runs → human-readable artifacts (3D + analysis).
+- All 4 previously-untested lanes (PI orchestrate / meetings / research / scheduler) verified against real LLM + real executions; found+fixed the last systemic chain gap (##OUTPUTS## propagation).
+- One operational note: long-lived dev servers accumulate stale module caches after lib edits — restart before verifying engine-level changes.
