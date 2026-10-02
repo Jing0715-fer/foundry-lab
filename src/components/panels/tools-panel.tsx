@@ -51,6 +51,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/lib/store";
 import { PanelSkeleton } from "@/components/empty-state";
+import { cn } from "@/lib/utils";
 
 // ── API types (mirror /api/tools/scan + /api/tools/install) ─────────────────
 
@@ -519,19 +520,20 @@ export function ToolsPanel() {
               )}
               <div
                 ref={logBoxRef}
-                className="max-h-[50vh] overflow-y-auto rounded-md border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
+                className="max-h-[50vh] overflow-y-auto overflow-x-hidden rounded-md border bg-zinc-950 p-3 font-mono text-[11px] leading-relaxed text-zinc-200"
                 aria-live="polite"
               >
                 {installJob.logs.map((line, i) => (
                   <div
                     key={i}
-                    className={
+                    className={cn(
+                      "wrap-anywhere",
                       line.includes("✔")
                         ? "text-emerald-400"
                         : line.includes("✘") || line.toLowerCase().includes("error")
                           ? "text-rose-400"
                           : undefined
-                    }
+                    )}
                   >
                     {line}
                   </div>
@@ -683,6 +685,23 @@ function RuntimeCard({
   );
 }
 
+/**
+ * Split a registry sizeHint into a short size token for the Install button
+ * and a longer human explanation shown beside it (wraps, never overflows).
+ * "~4 GB (CUDA torch + DGL…; NVIDIA GPU required)" → { size: "~4 GB", detail: "CUDA torch + DGL…" }
+ */
+function splitSizeHint(hint: string): { size: string; detail: string } {
+  const trimmed = hint.trim();
+  if (!trimmed) return { size: "", detail: "" };
+  const m = trimmed.match(
+    /^(~?\s*\d+(?:[.,]\d+)?\s*(?:KB|MB|GB|TB)|license-gated|cluster-provided)\s*(.*)$/i
+  );
+  if (!m) return { size: trimmed, detail: "" };
+  let detail = m[2].trim();
+  detail = detail.replace(/^\(\s*/, "").replace(/\s*\)$/, "").trim();
+  return { size: m[1].replace(/\s+/g, " ").trim(), detail };
+}
+
 function StatusBadge({ installed }: { installed: boolean }) {
   return installed ? (
     <Badge
@@ -810,6 +829,7 @@ function ToolCard({
   installing: boolean;
 }) {
   const engine = engines.find((e) => e.key === row.builtinEngine);
+  const { size, detail } = splitSizeHint(row.sizeHint ?? "");
   return (
     <Card className="overflow-hidden">
       <CardContent className="space-y-2 p-4">
@@ -857,21 +877,29 @@ function ToolCard({
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2 pt-1">
+        <div className="flex flex-wrap items-start gap-2 pt-1">
           {row.oneClick && !row.installed && (
-            <Button size="sm" onClick={onInstall} disabled={installing}>
+            <Button
+              size="sm"
+              onClick={onInstall}
+              disabled={installing}
+              className="max-w-full"
+            >
               {installing ? (
-                <Loader2 className="size-3.5 animate-spin" />
+                <Loader2 className="size-3.5 shrink-0 animate-spin" />
               ) : (
-                <Download className="size-3.5" />
+                <Download className="size-3.5 shrink-0" />
               )}
-              Install
-              {row.sizeHint && (
-                <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">
-                  {row.sizeHint}
-                </span>
-              )}
+              <span className="truncate">Install {size}</span>
             </Button>
+          )}
+          {row.oneClick && !row.installed && detail && (
+            <span
+              className="min-w-0 flex-1 basis-40 text-[11px] leading-snug text-muted-foreground"
+              title={detail}
+            >
+              {detail}
+            </span>
           )}
           {row.installed && (
             <Badge variant="secondary" className="text-[10px]">
@@ -1030,18 +1058,23 @@ function FoundryPlatformCard({
                 (GPU required).
               </p>
               <div className="flex flex-wrap items-center gap-2">
-                <Button size="sm" onClick={onInstall} disabled={installing}>
+                <Button
+                  size="sm"
+                  onClick={onInstall}
+                  disabled={installing}
+                  className="max-w-full"
+                >
                   {installing ? (
-                    <Loader2 className="size-3.5 animate-spin" />
+                    <Loader2 className="size-3.5 shrink-0 animate-spin" />
                   ) : (
-                    <Download className="size-3.5" />
+                    <Download className="size-3.5 shrink-0" />
                   )}
-                  Install
-                  <span className="ml-1 hidden text-[10px] opacity-70 sm:inline">
-                    ~1.9 GB
+                  <span className="truncate">
+                    Install
+                    <span className="ml-1 text-[10px] opacity-70">~1.9 GB</span>
                   </span>
                 </Button>
-                <span className="text-[11px] text-muted-foreground">
+                <span className="min-w-0 flex-1 basis-40 text-[11px] leading-snug text-muted-foreground">
                   Already have foundry elsewhere? Point{" "}
                   <span className="font-mono text-[10px]">$FOUNDRY_PYTHON</span>{" "}
                   at that venv&apos;s python.

@@ -293,7 +293,7 @@ export async function executeNode(
           // Pass upstream context as an "inputs" hint — executeCompTool ignores unknown keys.
           filtered.__inputs = inputs;
         }
-        const { summary, stdout, files } = await executeCompTool(
+        const { summary, stdout, files, exitCode } = await executeCompTool(
           toolKey,
           filtered,
           clusterTarget ? { cluster: clusterTarget } : {},
@@ -304,7 +304,17 @@ export async function executeNode(
         const logs = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
           : stdout;
-        return { result: summary, logs, status: "completed" };
+        // Honest status: a non-zero exit (native tool error, cluster dispatch
+        // failure, invalid input) fails the node instead of a silent
+        // "completed" with a failure buried in the logs.
+        const failed = exitCode !== 0;
+        return {
+          result: failed
+            ? `Tool failed (exit ${exitCode}) — see Logs. ${summary}`
+            : summary,
+          logs,
+          status: failed ? "failed" : "completed",
+        };
       }
 
       // Per-tool node types — dispatch on node.type which IS the toolKey.
@@ -329,16 +339,23 @@ export async function executeNode(
         const filtered: Record<string, unknown> = { ...node.params };
         delete filtered._cluster;
         if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
-        const { summary, stdout, files } = await executeCompTool(
+        const { summary, stdout, files, exitCode } = await executeCompTool(
           toolKey,
           filtered,
           clusterTarget ? { cluster: clusterTarget } : {},
         );
-        // Same ##OUTPUTS## trailer as the alphafold branch above.
+        // Same ##OUTPUTS## trailer + honest status as the alphafold branch above.
         const logs = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
           : stdout;
-        return { result: summary, logs, status: "completed" };
+        const failed = exitCode !== 0;
+        return {
+          result: failed
+            ? `Tool failed (exit ${exitCode}) — see Logs. ${summary}`
+            : summary,
+          logs,
+          status: failed ? "failed" : "completed",
+        };
       }
 
       case "biotool": {

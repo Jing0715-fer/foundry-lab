@@ -552,7 +552,7 @@ async function executeCompToolOnCluster(
   toolKey: string,
   params: Record<string, unknown>,
   target: ClusterRunTarget,
-): Promise<{ summary: string; stdout: string; files: string[]; command: string }> {
+): Promise<{ summary: string; stdout: string; files: string[]; command: string; exitCode: number }> {
   // (a) Job row first — its id keys the workDir, run record, and poll target.
   let jobId: string;
   try {
@@ -585,6 +585,7 @@ async function executeCompToolOnCluster(
       stdout: `Cluster dispatch failed: ${msg}\n`,
       files: [],
       command: "",
+      exitCode: 1,
     };
   }
   const workDir = resolve(process.cwd(), "outputs", toolKey, jobId);
@@ -670,6 +671,8 @@ async function executeCompToolOnCluster(
 
   // Timeout — the remote job may genuinely still be running; report honestly
   // instead of failing it (the user can watch/stop it from the Jobs panel).
+  // exitCode 0 here reflects "not a tool failure", not "done": the summary
+  // carries the honest status.
   const run = getRun(jobId);
   const tail = lastTail || run?.logTailOut || "";
   return {
@@ -679,5 +682,6 @@ async function executeCompToolOnCluster(
     stdout: `$ ${run?.command ?? ""}\n[cluster run · job ${jobId} — poll timeout]\n${tail}`,
     files: [],
     command: run?.command ?? "",
+    exitCode: 0,
   };
 }

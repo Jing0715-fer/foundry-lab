@@ -49,6 +49,9 @@ dev.out.log
 test
 prompt
 
+# …but the API route dir is literally named "test" (probe endpoint)
+!src/app/api/cluster/connections/\[id\]/test/
+
 server.log
 # Skills directory
 /skills/
