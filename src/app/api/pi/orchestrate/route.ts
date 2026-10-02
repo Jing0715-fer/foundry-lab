@@ -126,6 +126,11 @@ Available node types:
 - "biotool" — bioinformatics query (params: {bioKey: "blast|pdb|pubmed|uniprot", query: "...", maxResults: 5})
 - "output" — final result display
 
+CHAINING RULES (important):
+- Tool nodes exchange FILES automatically: each tool run publishes its artifacts (PDB/FASTA/metrics) via a ##OUTPUTS## trailer, and the engine AUTO-WIRES downstream params from them.
+- For MPNN/Rosetta-family nodes downstream of a design node, you may OMIT "pdb_path" — the first upstream .pdb output is wired in automatically.
+- For fold/prediction nodes (alphafold/esmfold/rf3/colabfold) downstream of a design or MPNN node, OMIT "sequence" — the upstream .fasta output is wired in automatically. NEVER invent a placeholder sequence ("MKT..." etc.) when the node is chained; only set "sequence" when the user provided a real amino-acid sequence.
+
 To execute actions, emit a fenced code block with JSON:
 \`\`\`actions
 {
@@ -148,7 +153,7 @@ ${currentNodeNames}
 Workflow: When the user asks for a protein design task:
 1. Create an input node with the target sequence or specification.
 2. If discussion is needed, create a meeting node + connect 2-3 agent nodes + the input.
-3. Create the appropriate design tool node(s) — RFdiffusion for de novo design, RFantibody for antibodies, ProteinMPNN for sequence design from a backbone.
+3. Create the appropriate design tool node(s) — RFdiffusion for de novo design, RFantibody for antibodies, ProteinMPNN for sequence design from a backbone. When chaining tools, omit file params (pdb_path/sequence) — they auto-wire from upstream outputs.
 4. For structure prediction, use "alphafold" (the GPU-cluster tutorial flow) or RF3/ESMFold/ColabFold for local prediction.
 5. For validation, use Rosetta/PyRosetta.
 6. Connect the nodes into a pipeline.

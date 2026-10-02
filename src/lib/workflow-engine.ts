@@ -12,6 +12,7 @@ import {
   extractClusterTarget,
 } from "@/lib/run-utils";
 import { runBio } from "@/lib/bio-tools";
+import { parseFastaInput } from "@/lib/tools";
 import type {
   NodeDTO,
   EdgeDTO,
@@ -117,6 +118,123 @@ export function gatherInputs(
     }
   }
   return parts.join("\n\n");
+}
+
+// ── Chained-tool file wiring ─────────────────────────────────────────────────
+// Real tool nodes exchange FILES (PDB backbones, FASTA sequences), not prose.
+// Upstream nodes advertise their artifacts via the ##OUTPUTS## trailer the
+// engine stamps at the end of every successful tool run. These helpers read
+// those trailers and auto-wire the downstream tool's file params when the
+// user (or the PI Copilot) left them empty/placeholder.
+
+/** Tool nodes that consume a backbone PDB (pdb_path param). */
+const PDB_INPUT_TOOLS = new Set([
+  "rfdiffusion",
+  "rfantibody",
+  "proteinmpnn",
+  "ligandmpnn",
+  "solublempnn",
+  "rosetta",
+  "pyrosetta",
+]);
+
+/** Fold/structure-prediction tool nodes that consume a FASTA sequence. */
+const FOLD_TOOLS = new Set(["alphafold", "esmfold", "rf3", "colabfold"]);
+
+/** Parse the ##OUTPUTS## ["…"] trailer from a node's logs → file paths. */
+function parseOutputsTrailer(logs: string): string[] {
+  const m = logs.match(/##OUTPUTS## (\[[\s\S]*?\])/);
+  if (!m) return [];
+  try {
+    const arr = JSON.parse(m[1]);
+    return Array.isArray(arr) ? arr.filter((x) => typeof x === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Collect output-file paths declared by upstream nodes (##OUTPUTS##). */
+async function collectUpstreamFiles(
+  nodeId: string,
+  workflowId: string,
+): Promise<string[]> {
+  const wf = await db.workflow.findUnique({
+    where: { id: workflowId },
+    include: { nodes: true, edges: true },
+  });
+  if (!wf) return [];
+  const incomingIds = new Set(
+    wf.edges.filter((e) => e.toNodeId === nodeId).map((e) => e.fromNodeId),
+  );
+  const files: string[] = [];
+  for (const src of wf.nodes) {
+    if (incomingIds.has(src.id) && src.logs) {
+      files.push(...parseOutputsTrailer(src.logs));
+    }
+  }
+  return files;
+}
+
+/** True when the `sequence` param is absent, empty, or not a valid protein
+ * sequence (e.g. the PI Copilot's ">design\nMKT…" placeholder). */
+function sequenceMissingOrInvalid(seq: unknown): boolean {
+  if (typeof seq !== "string" || !seq.trim()) return true;
+  return parseFastaInput(seq) === null;
+}
+
+/**
+ * Auto-wire a tool node's file params from upstream ##OUTPUTS## artifacts.
+ * Mutates `filtered` in place; returns human-readable chain notes to prepend
+ * to the node's logs. Explicit user input always wins:
+ *   - pdb_path  ← first upstream .pdb  (only when pdb_path is empty)
+ *   - fasta_path ← first upstream .fasta (only when the fold node has no
+ *     valid sequence, no fasta_path, and no feature_file; an invalid
+ *     placeholder sequence is deleted so fasta_path takes effect — the fold
+ *     engine prefers `sequence` over `fasta_path`)
+ */
+export async function autoWireToolInputs(
+  toolKey: string,
+  nodeId: string,
+  workflowId: string,
+  filtered: Record<string, unknown>,
+): Promise<string[]> {
+  const notes: string[] = [];
+  let files: string[];
+  try {
+    files = await collectUpstreamFiles(nodeId, workflowId);
+  } catch {
+    return notes;
+  }
+  if (files.length === 0) return notes;
+
+  if (PDB_INPUT_TOOLS.has(toolKey)) {
+    const pdb = files.find((f) => /\.pdb$/i.test(f));
+    if (pdb && !String(filtered.pdb_path ?? "").trim()) {
+      filtered.pdb_path = pdb;
+      notes.push(`[chain] auto-wired pdb_path from upstream output: ${pdb}`);
+    }
+  }
+
+  if (FOLD_TOOLS.has(toolKey)) {
+    const fasta = files.find((f) => /\.(fasta|fa|aln)$/i.test(f));
+    const hasFastaPath = String(filtered.fasta_path ?? "").trim() !== "";
+    const hasFeature = String(filtered.feature_file ?? "").trim() !== "";
+    if (
+      fasta &&
+      !hasFastaPath &&
+      !hasFeature &&
+      sequenceMissingOrInvalid(filtered.sequence)
+    ) {
+      // Delete the invalid/absent sequence so fasta_path is honored (the
+      // fold engine checks `sequence` FIRST, then fasta_path).
+      delete filtered.sequence;
+      filtered.fasta_path = fasta;
+      notes.push(
+        `[chain] auto-wired fasta_path from upstream output: ${fasta}`,
+      );
+    }
+  }
+  return notes;
 }
 
 /** Helper: fetch connected agent DTOs for a meeting/research node. */
@@ -293,6 +411,14 @@ export async function executeNode(
           // Pass upstream context as an "inputs" hint — executeCompTool ignores unknown keys.
           filtered.__inputs = inputs;
         }
+        // Chained pipelines: auto-wire pdb_path/fasta_path from upstream
+        // ##OUTPUTS## artifacts when the node's own params left them empty.
+        const chainNotes = await autoWireToolInputs(
+          toolKey,
+          node.id,
+          workflowId,
+          filtered,
+        );
         const { summary, stdout, files, exitCode } = await executeCompTool(
           toolKey,
           filtered,
@@ -301,9 +427,12 @@ export async function executeNode(
         // ##OUTPUTS## trailer: the built-in engines print it themselves, native
         // upstream tools do not — append it from the executor's file list so
         // the inspector's Outputs button works for BOTH executors.
-        const logs = files.length
+        const body = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
           : stdout;
+        const logs = chainNotes.length
+          ? `${chainNotes.join("\n")}\n${body}`
+          : body;
         // Honest status: a non-zero exit (native tool error, cluster dispatch
         // failure, invalid input) fails the node instead of a silent
         // "completed" with a failure buried in the logs.
@@ -339,15 +468,26 @@ export async function executeNode(
         const filtered: Record<string, unknown> = { ...node.params };
         delete filtered._cluster;
         if (inputs) (filtered as Record<string, unknown>).__inputs = inputs;
+        // Chained pipelines: auto-wire pdb_path/fasta_path from upstream
+        // ##OUTPUTS## artifacts when the node's own params left them empty.
+        const chainNotes = await autoWireToolInputs(
+          toolKey,
+          node.id,
+          workflowId,
+          filtered,
+        );
         const { summary, stdout, files, exitCode } = await executeCompTool(
           toolKey,
           filtered,
           clusterTarget ? { cluster: clusterTarget } : {},
         );
         // Same ##OUTPUTS## trailer + honest status as the alphafold branch above.
-        const logs = files.length
+        const body = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
           : stdout;
+        const logs = chainNotes.length
+          ? `${chainNotes.join("\n")}\n${body}`
+          : body;
         const failed = exitCode !== 0;
         return {
           result: failed
