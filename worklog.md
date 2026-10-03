@@ -2863,3 +2863,123 @@ Stage Summary:
 - Screening UI complete and e2e-verified against the live backend: full browse/filter/sort/paginate surface (60+ candidates smooth via useMemo + pagination), live client-side composite re-scoring with 4 presets + persisted weights, star/shortlist/reject/promote lifecycle with optimistic updates, 3D structure drawer (reused InlineResults), 2–4-way compare with tie-aware highlighting, CSV export, canvas promotion wired to upsertNode/select/setActivePanel.
 - 5 contract/spec deltas fixed on the recovered code (sort tri-state, compare ties, export-all semantics, provenance summary, controls extraction); tsc + lint clean; no console errors; mobile card list confirmed overflow-free.
 - Note for orchestrator: the screening list orders by createdAt desc so the panel defaults to the NEWEST campaign (currently AF2 Model Ranking) — switching is one dropdown click; only demo-source screenings exist so the Rescan button is correctly hidden for both.
+
+---
+Task ID: 30-install-btn-full-e2e
+Agent: main (Z.ai Code)
+Task: Fix "install 按钮有些内容太长，显示不全" then run a full end-to-end (全链路) test across every lane.
+
+Work Log:
+- Reproduced the Install button overflow with DOM measurements in the Environment & Toolchain sheet: registry sizeHints mix size + long explanation inside one nowrap button — worst case "Install ~4 GB (CUDA torch + DGL in its own venv; NVIDIA GPU required to run designs)" measured 493px wide, extending 206px past its 304px card edge (clipped by card overflow-hidden); "~1.9 GB (CPU torch…)" +94px, "~1.1 GB (repo+deps…)" +3px.
+- Fixed tools-panel.tsx: new splitSizeHint() regex helper extracts the leading size token (~N GB/MB, license-gated, cluster-provided) for the button; the parenthetical/incl./comma explanation renders as a wrapping span beside the button (min-w-0 flex-1 basis-40, full display via natural wrap — no clamp, title tooltip). Button gets max-w-full + inner truncate as a hard guard; icons shrink-0. Same treatment for the Foundry platform card button + its $FOUNDRY_PYTHON hint span. Install dialog: log lines wrap-anywhere (merged with the ✔/✘ color classes via cn), log box overflow-x-hidden.
+- Fixed 4 pre-existing tsc errors in run-utils.ts (left over from task 28's exitCode addition): executeCompToolOnCluster return type now includes exitCode; job-row-creation failure returns exitCode 1; poll-timeout returns exitCode 0 with a comment that the honest status lives in the summary (remote job may still succeed).
+- Fixed review-issue-5 (honest node failure): workflow-engine.ts alphafold + per-tool cases now use executeCompTool's exitCode — non-zero exits set node status "failed" with result "Tool failed (exit N) — see Logs. …" instead of a silent "completed" whose failure was buried in the logs. Dashboard chart now honestly shows Completed 5 / Failed 2.
+- Discovered + fixed a REAL missing-route bug: both cluster-panel.tsx and alphafold-panel.tsx POST /api/cluster/connections/[id]/test for their Test buttons, but the route never existed in ANY commit (verified by scanning every rev) — every click 404'd into Next's HTML 404 page and surfaced as "Test failed". Created the route: probeCluster() over SSH (login identity, python3+numpy, conda, module system, Slurm partitions, GPUs, batched tool checks), persists lastProbe via persistProbe, returns {probe} with a crash-safe shaped fallback.
+- gitignore landmine: bare `test` rule (line 49) silently excluded the new route dir; brackets are character classes in gitignore too, so re-include rule needs \[id\] escaping: `!src/app/api/cluster/connections/\[id\]/test/`. Also `git add` needs `:(literal)` pathspec for [id] dirs (pathspec globs otherwise).
+- E2E full-link verified (agent-browser + VLM + API + disk):
+  ① Page: title/nav/palette clean, zero console/page errors, dark-mode toggle OK, mobile 375px bodyOverflow=0.
+  ② Install lane: LigandMPNN "Install ~50 MB" click → POST /api/tools/install → dialog live terminal (real `git clone --depth 1` logs, "✔ LigandMPNN install finished (exit 0)") → scan refresh → card badge flips to "native", repo on disk (17 files), Install button gone. All 10 remaining Install buttons: 0 overflow at 1280px AND 375px (re-verified after fresh server restart).
+  ③ Workflow lane: reset 7 nodes → Run Workflow → sequential topological execution; rfdiffusion nodes run the REAL engine (Ramachandran torsion diffusion + NeRF, 8 designs, 17 files on disk, ##OUTPUTS## trailer with absolute paths); proteinmpnn fed a fresh upstream PDB → REAL Gibbs-sampling engine run (150 residues, designed.fasta + metrics.json); stale-cluster refs + stale pdb_path nodes now fail HONESTLY (red FAILED cards on canvas + dashboard chart).
+  ④ Inspector Result tab (double-click node → Result 27): REAL·NATIVE badge, 27 output files with sizes, MolVision inline 3D canvas 301×288 rendering ranked_1.pdb in cartoon (VLM-verified: "3D protein structure rendered (ribbon/cartoon)… teal REAL · NATIVE badge… layout functional").
+  ⑤ Cluster lane: created connection (foundry/demo @127.0.0.1:3022, slurm brain2, af2 gpu05/alphafold2) → POST /test → full probe ok (python 3.13.5+numpy, slurm brain2/gpu/cpu, envmodules, 8×A100, 6 tools installed) → Cluster panel Test button now works in the UI → updated the alphafold node's stale _cluster to the new connectionId → node run: salloc granted → ssh gpu05 → module load alphafold2 → run_alphafold.py real execution (0.7s, 26 files) → outputs synced back to local outputs/ tree.
+  ⑥ Agent chat: sent a Chinese message → real streamed LLM reply listing its callable comp+bio tools; persisted to ChatMessage (INSERT in dev.log); dev.log tail clean (only scheduler sweeps + normal queries).
+- Ops: dev server died silently once during a late reload (known compile-storm OOM pattern) — restarted via .zscripts/daemon-run.py double-fork daemon (pid 7587), stable after; mock-cluster :3022 up throughout (it's an SSH server — curl returns 000, that's expected).
+
+Stage Summary:
+- 3 UI/robustness fixes + 1 missing API route: Install buttons never overflow (short size in button + full explanation wrapping beside it), tool-fail nodes fail honestly end-to-end (canvas + dashboard + result text), Cluster/AlphaFold Test buttons actually work for the first time ever, cluster lane exitCode typed end-to-end.
+- Full-link test matrix green: page/install/workflow/inspector-3D/cluster/agent-chat all verified against REAL executions (real git clone, real Python engines, real SSH+salloc+run_alphafold.py, real LLM streaming).
+- Pushed: 6c77e0e (fixes + route + gitignore) + 0b449ce (db sync) → origin/main; tree in sync.
+---
+Task ID: 31-real-task-e2e
+Agent: main (Z.ai Code)
+Task: 继续真实任务设计测试 (real-task E2E across PI-copilot orchestration / closed-loop design pipeline / team meeting / deep research / scheduler) and fix whatever breaks.
+
+Work Log:
+- Read worklog tail; servers up (next :3000, mock-cluster :3022 SSH). DB query: ResearchReport and Meeting tables EMPTY — these lanes had never run real data; that framed the test plan.
+- REAL TASK A — PI Copilot natural-language orchestration: typed a Chinese request ("搭建 RFdiffusion→ProteinMPNN→AlphaFold 完整设计管线并自动运行") into the PI Copilot dialog. The PI (real LLM) emitted a 5-step plan, created 4 nodes (DesignParams/RFdiffusion_Design/ProteinMPNN_Design/AlphaFold_Prediction) + 3 edges, and auto-ran the workflow. RFdiffusion completed (real diffusion engine, 9 artifacts), but ProteinMPNN_Design and AlphaFold_Prediction FAILED honestly.
+- ROOT CAUSE (real chain bug): tool nodes exchange FILES, but the workflow engine only passed upstream SUMMARY TEXT (`__inputs` was never consumed by any engine). MPNN needs a real pdb_path; the PI had also invented a placeholder sequence ">design\nMKT..." for AlphaFold. The file paths live in upstream logs' ##OUTPUTS## trailers and were never propagated.
+- FIX (workflow-engine.ts): new `autoWireToolInputs()` — parses upstream ##OUTPUTS## trailers and auto-wires pdb_path (MPNN/Rosetta/RFDiffusion family) + fasta_path (alphafold/esmfold/rf3/colabfold, deleting invalid placeholder sequences so fasta_path takes effect) ONLY when the node's own params left them empty/placeholder; chain notes prepend node logs. PI prompt (pi/orchestrate) now documents chaining rules ("omit file params, never invent placeholder sequences").
+- Hit the stale-module landmine again: the long-running dev server kept serving the OLD workflow-engine even after route recompile (compile: 805ms but no [chain] note). Fixed by full dev-server restart via .zscripts/daemon-run.py (pid 3651). After restart the rerun worked immediately.
+- Verified the closed loop: ProteinMPNN_Design completed with "[chain] auto-wired pdb_path from upstream output: …/design_0.pdb"; AlphaFold_Prediction cascaded (BFS) and completed with "[chain] auto-wired fasta_path from …/designed.fasta" — real MPNN Gibbs engine + real fold engine, predicted.pdb (3840 atoms / 8 chains × 120 res) written to disk.
+- UI verification: canvas all 4 nodes green; Result tab shows REAL · ENGINE badge, 3 output files with sizes, MolVision inline 3D (teal cartoon over full canvas, VLM-confirmed after 3× upscale; pixel analysis: 3.1–4.4K colored pixels spread across canvas bbox), SASA computed (92ms, 62782 Å²), DSSP (helix 296/31%, coil 658/69%), top-exposed residues list. Initial "empty canvas" scare was a measurement artifact (VLM couldn't recognize the thin cartoon at 1×; 23K-pixel reading had included analysis-panel colors).
+- REAL TASK B — Team Meeting: created lead=PI + members=Computational Biologist/Structural Biologist, 2 rounds, realistic agenda about validating the just-designed proteins. Ran ~35s: 6 real LLM turns with genuine domain disagreement (CompBio added pLDDT>85 cutoff, Structural Biologist pushed symmetry analysis), structured Markdown summary.
+- REAL TASK C — Deep Research: topic "de novo binder design strategies for IL-7Rα", lead=PI + CompBio/Immunologist, 1 round. Ran ~2.5min through all 3 phases (7 discussion messages: planning×3 → researching×3 → compilation), produced a proper Markdown report citing UniProt P40189 / PDB 1T5J.
+- REAL TASK D — Scheduler: reset the 4 pipeline nodes to idle, POST /api/workflows/[id]/schedule for +40s. Sweeper (15s interval) fired it exactly on schedule: status fired, started 4, completed 4 — full real closed loop re-executed automatically.
+- Cross-checks: 0 browser page-errors, 0 console errors (beyond HMR), 0 dev.log errors; 375px mobile overflowX=0; `bunx tsc --noEmit` 0 app-src errors; `bun run lint` clean.
+- Committed af5112d (chain auto-wiring + PI prompt) + bfeea8a (db sync) → pushed to origin/main.
+
+Stage Summary:
+- The agent-to-tool-to-agent full product loop is now real end-to-end: natural language → PI builds the DAG → real engines execute with FILE-level dataflow (the missing link, now auto-wired) → scheduled re-runs → human-readable artifacts (3D + analysis).
+- All 4 previously-untested lanes (PI orchestrate / meetings / research / scheduler) verified against real LLM + real executions; found+fixed the last systemic chain gap (##OUTPUTS## propagation).
+- One operational note: long-lived dev servers accumulate stale module caches after lib edits — restart before verifying engine-level changes.
+
+---
+Task ID: 1
+Agent: main-orchestrator (Z.ai Code)
+Task: Foundation for the new feature — "large-scale screening result evaluation & ranking" (大规模筛选结果评估与排序) UI + system.
+
+Work Log:
+- Read worklog tail + project state: dev server healthy, all real-task lanes verified previously. `outputs/` dir is currently EMPTY (DB has stale ##OUTPUTS## references — harvest logic must check file existence on disk).
+- Mapped real metric sources: diffusion_engine.py metrics.json = {designs:[{design,length,helical,extended,clashes,rama_ll,symmetry_units}],seed,length,symmetry}; mpnn_engine.py = {mean_recovery,diversity,…}; fold_engine.py = {plddt_style_confidence,ptm_proxy}; AF2 ranking_debug.json = {plddts:[…]} per ranked_N.pdb.
+- prisma/schema.prisma: added Screening (weights/metricDefs JSON, sourceType/sourceRef/sourceLabel) + ScreeningCandidate (pdbPath/fastaPath/sequence/length/metrics JSON, starred/status new|shortlisted|rejected|promoted, tags/notes, @@unique([screeningId,name])) — ran `bun run db:push` (in sync, client regenerated).
+- src/lib/types.ts: added ScreeningCandidateStatus, ScreeningMetricDef (higherIsBetter, domain [min,max], good/warn thresholds, hint), ScreeningCandidateDTO, ScreeningDTO (weights Record<string,number 0–5>, metricDefs, counts), PromoteResultDTO.
+- src/lib/store.ts: activePanel union now includes "screening".
+- API CONTRACT fixed (both subagents build against this, byte-exact):
+  * GET  /api/screening → { screenings: ScreeningDTO[] }
+  * POST /api/screening body { source: {kind:"node",nodeId}|{kind:"job",jobId}|{kind:"demo",demo:"scaffold"|"models"}, name?, description? } → 201 { screening: ScreeningDTO }
+  * GET  /api/screening/[id] → { screening: ScreeningDTO, candidates: ScreeningCandidateDTO[] }
+  * PATCH /api/screening/[id] body { name?, description?, weights? } → { screening: ScreeningDTO }
+  * DELETE /api/screening/[id] → { ok: true }
+  * POST /api/screening/[id]/rescan → { screening, candidates, added: number }
+  * PATCH /api/screening/[id]/candidates body { ids: string[], patch: { starred?, status?, addTags?, removeTags?, notes? } } → { updated: number, candidates: ScreeningCandidateDTO[] (ALL, fresh) }
+  * POST /api/screening/[id]/promote body { ids: string[], nodeName? } → PromoteResultDTO { node: NodeDTO (type input, status completed, logs embed ##OUTPUTS## [fasta…,pdb…]), promotedIds, files } — downstream tool nodes auto-wire pdb_path/fasta_path from that trailer (workflow-engine.ts autoWireToolInputs).
+  * Candidate pdbPath/fastaPath MUST be servable via GET /api/tools/file?path=<encodeURIComponent(abs)> (only paths under <cwd>/outputs/) — harvest copies cluster-side files into outputs/screening/<id>/ when needed.
+  * Composite score = 100 · Σ(wᵢ·normᵢ)/Σwᵢ, norm = (v−min)/(max−min) within observed domain (inverted for lower-is-better); computed CLIENT-side from metrics+weights (live re-rank), weights persisted server-side. Default weights: primary metrics (plddt|recovery|rama_ll|clashes) = 2, others = 1.
+
+Stage Summary:
+- DB + types + store union ready; contract frozen. Next: Task 2-a (backend: src/lib/screening.ts + /api/screening* routes + real-engine demo runs) and Task 2-b (frontend: screening panel) in parallel; then Task 3 integration + agent-browser e2e.
+
+---
+Task ID: 2-a
+Agent: backend-subagent (glm-5.3)
+Task: Screening backend — src/lib/screening.ts + 5 API routes + real-engine demo campaigns.
+
+Work Log:
+- Implemented/reviewed 1432-line src/lib/screening.ts + routes (route.ts, [id], rescan, candidates, promote).
+- Harvester: ##OUTPUTS## trailer parse, metrics.json schemas (diffusion designs[] / fold plddt_style_confidence / ranking_debug.json plddts+order), PDB fallback structural parse, outputs/-copy for external files, run-prefixed unique names, rescan dedup.
+- Demo campaigns (REAL engines): scaffold = 3 diffusion runs (seeds 42/C3-137/D2-2024 × 20 designs) → 60 candidates; models = 4 sequences × 5 fold-engine seeds → 20 candidates (plddt+ptm).
+- Promote: input node (completed, refId=screeningId) whose logs embed ##OUTPUTS## [fasta-first files]; toNodeDTO shared with /api/workflow/nodes.
+- Verified via curl: 201 creates, ≥55 candidates with on-disk files, weights/candidates PATCH, promote trailer JSON.parse-able, /api/tools/file 200, error contract, rescan added:0.
+- Left 2 demo screenings in DB: Scaffold Campaign cmurtt8te0009iwntuakrrr41 (60), AF2 Model Ranking cmurttxi2001yiwntq52r41gz (20). Worklog appended.
+
+Stage Summary:
+- API live against frozen contract, zero deviations; real engine runs flow through the same harvest path as node/job sources.
+
+---
+Task ID: 2-b
+Agent: frontend-subagent (glm-5.3)
+Task: Screening panel UI — the user-facing evaluation & ranking surface.
+
+Work Log:
+- Created src/components/screening/{scoring,screening-table,stats-strip,controls-column,candidate-detail,compare-dialog,new-screening-dialog,promote-dialog} + panels/screening-panel.tsx; wired sidebar NAV item (BarChart3, after AlphaFold) + page.tsx case.
+- UX: campaign selector + New/Rescan/Export/Delete; stats cards + CSS 12-bin quality-colored histograms; xl two-column controls (search, status/source chips, per-metric min/max, weight sliders 0–5 + 4 presets + save/unsaved dot); sortable tri-state table (score bars, metric mini-bars, quality colors, 25/50/100 pagination, max-h scroll); mobile card list; selection bar (Star/Shortlist/Reject/Compare/Promote/Export); detail Sheet (metrics grid, colored sequence, tags/notes, InlineResults→MolVision 3D); compare dialog w/ tie-aware best highlighting; promote dialog → upsertNode + select + canvas switch.
+- Verified in browser: 60-row table, 3-click sort cycle, live re-rank on slider, star persisted across reload, drawer w/ 3D, compare, CSV blob (61 lines), promote e2e, 375px no-overflow card list, 0 console errors. DB left clean (2 demo screenings, fresh state).
+
+Stage Summary:
+- Full UI live; contract honored; all golden-path interactions browser-verified by the subagent.
+
+---
+Task ID: 3
+Agent: main-orchestrator (Z.ai Code)
+Task: Integration + final agent-browser e2e of the screening feature; cleanup; commit.
+
+Work Log:
+- tsc --noEmit: 0 app errors (only pre-existing examples/skills noise). bun run lint: clean.
+- agent-browser golden path on live dev server: skipped onboarding tour → Screening nav → AF2 Model Ranking (20) → switched to Scaffold Campaign (60): rank #1 run3/design_16 score 83.0 w/ helix/strand/clashes/rama/sym columns → Designability preset re-ranked live (85.5, sliders 2/1/5/4/1) → Save persisted server-side (reload + API check) → selected 2 rows → bulk Shortlist (API: shortlisted=2) → Compare dialog side-by-side (score 85.5 vs 81.8, tie-aware) → detail drawer: metrics grid + 90-res colored sequence + tags/notes + STRUCTURE FILES w/ real MolVision mount (DSSP: helix 192/53%, 360 residues; VLM-confirmed cartoon ribbon after scrollIntoView) → CSV export blob (1366 B) → Promote to Canvas: dialog → node created → auto-switched to canvas w/ inspector showing promotion summary.
+- FULL CLOSED-LOOP CHAIN TEST: connected promoted node → fresh ProteinMPNN node via edges API, ran it → logs show "[chain] auto-wired pdb_path from upstream output: /home/z/my-project/outputs/screening/…/runs/run3/design_16.pdb" and the real MPNN engine sampled 8 sequences from that 360-res backbone (the stale-pdb_path old node correctly refused — explicit-input-wins is by design).
+- Mobile 375px: overflowX=false, desktop table hidden (w=0), card list + stats cards; VLM-confirmed. 0 console errors, 0 page errors, dev.log clean (scheduler queries only).
+- Cleanup: deleted test nodes/edges (MPNN_from_screening, Screening Picks, test edge), reset 2 candidates to new/unstarred, weights back to defaults. Demo DB: exactly 2 fresh screenings.
+- Committed 5fb05f1 "feat(screening): large-scale screening result evaluation & ranking system" → pushed origin/main.
+
+Stage Summary:
+- The screening system is done and end-to-end real: harvest real artifacts → metric table → live weighted ranking → compare/shortlist → 3D inspection → promote back onto the canvas → downstream tools auto-wire the promoted files (verified with a real MPNN run). Large-scale UX verified at 60 candidates + 20 model rankings, mobile-safe, zero errors.
