@@ -227,3 +227,59 @@ model Edge {
   @@unique([workflowId, fromNodeId, toNodeId, fromPort, toPort])
   @@index([workflowId])
 }
+
+// ─── Screening (large-scale result evaluation & ranking) ─────────────────────
+// A Screening is one evaluation campaign over a harvested set of design
+// candidates (PDB/FASTA artifacts + numeric metrics). Candidates come from
+// completed workflow nodes, tool jobs, or demo engine runs. Composite ranking
+// is computed client-side from metrics + persisted weights.
+
+model Screening {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  // node | job | demo
+  sourceType  String   @default("node")
+  // node id / tool job id / demo kind ("scaffold" | "models")
+  sourceRef   String?
+  // Human label for the source, e.g. "RFdiffusion_Design" / "demo scaffold"
+  sourceLabel String?
+  // JSON: Record<metricKey, weight 0–5>
+  weights     String   @default("{}")
+  // JSON: ScreeningMetricDef[] — derived at harvest time from real metrics
+  metricDefs  String   @default("[]")
+  status      String   @default("ready") // ready | harvesting | failed
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  candidates  ScreeningCandidate[]
+}
+
+model ScreeningCandidate {
+  id          String   @id @default(cuid())
+  screeningId String
+  // Unique candidate label inside the screening, e.g. "run1/design_03"
+  name        String
+  // Tool family the artifact came from: rfdiffusion | alphafold | proteinmpnn | rosetta | ...
+  source      String   @default("manual")
+  // Sub-label, e.g. seed/symmetry of the run or model rank
+  sourceLabel String?
+  pdbPath     String?
+  fastaPath   String?
+  sequence    String?
+  length      Int?
+  // JSON: Record<metricKey, number> — raw metric values
+  metrics     String   @default("{}")
+  starred     Boolean  @default(false)
+  status      String   @default("new") // new | shortlisted | rejected | promoted
+  tags        String?  // JSON: string[]
+  notes       String?
+  fileCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  screening   Screening @relation(onDelete: Cascade, fields: [screeningId], references: [id])
+
+  @@unique([screeningId, name])
+  @@index([screeningId])
+  @@index([screeningId, status])
+  @@index([screeningId, starred])
+}

@@ -2790,3 +2790,76 @@ Stage Summary:
 - The agent-to-tool-to-agent full product loop is now real end-to-end: natural language → PI builds the DAG → real engines execute with FILE-level dataflow (the missing link, now auto-wired) → scheduled re-runs → human-readable artifacts (3D + analysis).
 - All 4 previously-untested lanes (PI orchestrate / meetings / research / scheduler) verified against real LLM + real executions; found+fixed the last systemic chain gap (##OUTPUTS## propagation).
 - One operational note: long-lived dev servers accumulate stale module caches after lib edits — restart before verifying engine-level changes.
+
+---
+Task ID: 1
+Agent: main-orchestrator (Z.ai Code)
+Task: Foundation for the new feature — "large-scale screening result evaluation & ranking" (大规模筛选结果评估与排序) UI + system.
+
+Work Log:
+- Read worklog tail + project state: dev server healthy, all real-task lanes verified previously. `outputs/` dir is currently EMPTY (DB has stale ##OUTPUTS## references — harvest logic must check file existence on disk).
+- Mapped real metric sources: diffusion_engine.py metrics.json = {designs:[{design,length,helical,extended,clashes,rama_ll,symmetry_units}],seed,length,symmetry}; mpnn_engine.py = {mean_recovery,diversity,…}; fold_engine.py = {plddt_style_confidence,ptm_proxy}; AF2 ranking_debug.json = {plddts:[…]} per ranked_N.pdb.
+- prisma/schema.prisma: added Screening (weights/metricDefs JSON, sourceType/sourceRef/sourceLabel) + ScreeningCandidate (pdbPath/fastaPath/sequence/length/metrics JSON, starred/status new|shortlisted|rejected|promoted, tags/notes, @@unique([screeningId,name])) — ran `bun run db:push` (in sync, client regenerated).
+- src/lib/types.ts: added ScreeningCandidateStatus, ScreeningMetricDef (higherIsBetter, domain [min,max], good/warn thresholds, hint), ScreeningCandidateDTO, ScreeningDTO (weights Record<string,number 0–5>, metricDefs, counts), PromoteResultDTO.
+- src/lib/store.ts: activePanel union now includes "screening".
+- API CONTRACT fixed (both subagents build against this, byte-exact):
+  * GET  /api/screening → { screenings: ScreeningDTO[] }
+  * POST /api/screening body { source: {kind:"node",nodeId}|{kind:"job",jobId}|{kind:"demo",demo:"scaffold"|"models"}, name?, description? } → 201 { screening: ScreeningDTO }
+  * GET  /api/screening/[id] → { screening: ScreeningDTO, candidates: ScreeningCandidateDTO[] }
+  * PATCH /api/screening/[id] body { name?, description?, weights? } → { screening: ScreeningDTO }
+  * DELETE /api/screening/[id] → { ok: true }
+  * POST /api/screening/[id]/rescan → { screening, candidates, added: number }
+  * PATCH /api/screening/[id]/candidates body { ids: string[], patch: { starred?, status?, addTags?, removeTags?, notes? } } → { updated: number, candidates: ScreeningCandidateDTO[] (ALL, fresh) }
+  * POST /api/screening/[id]/promote body { ids: string[], nodeName? } → PromoteResultDTO { node: NodeDTO (type input, status completed, logs embed ##OUTPUTS## [fasta…,pdb…]), promotedIds, files } — downstream tool nodes auto-wire pdb_path/fasta_path from that trailer (workflow-engine.ts autoWireToolInputs).
+  * Candidate pdbPath/fastaPath MUST be servable via GET /api/tools/file?path=<encodeURIComponent(abs)> (only paths under <cwd>/outputs/) — harvest copies cluster-side files into outputs/screening/<id>/ when needed.
+  * Composite score = 100 · Σ(wᵢ·normᵢ)/Σwᵢ, norm = (v−min)/(max−min) within observed domain (inverted for lower-is-better); computed CLIENT-side from metrics+weights (live re-rank), weights persisted server-side. Default weights: primary metrics (plddt|recovery|rama_ll|clashes) = 2, others = 1.
+
+Stage Summary:
+- DB + types + store union ready; contract frozen. Next: Task 2-a (backend: src/lib/screening.ts + /api/screening* routes + real-engine demo runs) and Task 2-b (frontend: screening panel) in parallel; then Task 3 integration + agent-browser e2e.
+
+---
+Task ID: 2-a
+Agent: backend-subagent
+Task: Screening backend — src/lib/screening.ts + /api/screening* routes (list/create/detail/patch/delete/rescan/candidates/promote) with REAL demo engine runs, canonical metric registry, harvester, and canvas promotion via ##OUTPUTS## trailer.
+
+Work Log:
+- Found the full backend already on disk from an interrupted earlier pass of this same task (src/lib/screening.ts + 5 route files, all untracked, no worklog entry). Reviewed the 1432-line lib line-by-line against the frozen Task-1 contract + the 3 engine schemas (diffusion/fold/mpnn metrics.json keys, payload shape `{params, workdir}`, ##OUTPUTS## emission) and the workflow-engine parseOutputsTrailer/autoWireToolInputs wiring — implementation matched; NO code edits were needed, so none were made (route/module state on the running dev server stayed clean; no stale-module restart required).
+- The interrupted pass left dirty state: 2 scaffold candidates stuck in status "promoted", 2 models candidates starred+tagged ["top"], a leftover "Screening Picks — Scaffold Campaign" input node on the canvas, and scaffold weights patched (helix_pct:2). Reset all of it to contract defaults (candidate PATCH status/starred/removeTags, node DELETE via /api/workflow/nodes/[id], weights PATCH back to {helix_pct:1,strand_pct:1,clashes:2,rama_ll:2,symmetry_units:1}).
+- `bunx tsc --noEmit`: 0 errors in the new files (remaining errors are pre-existing examples/ + skills/ only). `bun run lint`: clean.
+- POST /api/screening demo scaffold → 201 in ~16s (3 REAL diffusion engine runs, seeds 42/C3-137/D2-2024, 20 designs each): 60 candidates, every pdbPath+fastaPath exists on disk under outputs/screening/<id>/runs/runN/, metrics helix_pct/strand_pct/clashes/rama_ll/symmetry_units with populated metricDefs domains ([24.4,82] / [0,5] / [-26.9,-8.49] / [1,4]). Deleted the fresh duplicate afterwards (files dir removed) to keep exactly one campaign.
+- POST demo models → 201 in ~7s (20 REAL fold engine runs, seqA–seqD × seeds 0–4): 20 candidates named seqX/model_sN, all with plddt+ptm, paired model_sN.pdb+fasta, domains plddt [55.1,64.1] ptm [0.64,0.7]. Also deleted the fresh duplicate.
+- PATCH /api/screening/<id> {"weights":{"plddt":5}} → reflected; restored defaults. Weights PATCH is REPLACE semantics (full map) — matches the frontend panel which saves its whole local weights copy; missing keys are treated as 1 by the client and re-defaulted on rescan.
+- PATCH /api/screening/<id>/candidates {"ids":[2],"patch":{starred,addTags}} → {updated:2, candidates:ALL(20)}; then reset (status "new", removeTags ["top"], starred false) → clean.
+- POST /api/screening/<id>/promote {"ids":[2],"nodeName":…} → node {type:"input", status:"completed", progress:100, refId:<screeningId>, x=max+340/y=60, params.text markdown per candidate, result summary}; logs trailer `##OUTPUTS## [fasta…,pdb…]` JSON.parse-able, 4 files all exist (fastaPath-first ordering for AF2/MPNN chaining). Deleted the test node + reset candidates afterwards — canvas clean.
+- GET /api/tools/file?path=<url-encoded pdb> → 200, chemical/x-pdb, 23690 bytes, 296 ATOM lines.
+- POST rescan on both demos → {added:0} (no duplicate (screeningId,name) rows — stable run labels via existing-dir mapping). Node-source create → 201 with 0 candidates (stale ##OUTPUTS## refs skipped silently per contract). Job-source create with a synthetic ToolJob pointing at /tmp files → external files COPIED into outputs/screening/<id>/ (basename kept), metrics.json designs[] parsed, fasta paired, default name "rfdiffusion run"; rescan idempotent; cleaned up (screening + files + ToolJob row).
+- Error contract verified: bad demo/kind/missing nodeId/invalid JSON → 400 {error}; GET/DELETE/rescan missing id, nonexistent node/job source → 404 {error}.
+- Final DB state for the e2e: 2 screenings left — Scaffold Campaign id=cmurtt8te0009iwntuakrrr41 (60 candidates, status ready) and AF2 Model Ranking id=cmurttxi2001yiwntq52r41gz (20 candidates, status ready); all 80 candidates status "new", none starred/tagged, default weights, outputs/screening/ holds exactly their 2 dirs, no leftover input nodes.
+
+Stage Summary:
+- Screening backend contract is live and byte-exact on the running dev server (no restarts, no stale modules): list/create/201, detail, patch, delete, rescan (dedup-safe), candidates bulk-patch, promote (##OUTPUTS## trailer compatible with workflow-engine autoWireToolInputs) + {error}+4xx/5xx semantics.
+- Demo screenings are REAL algorithm runs flowing through the exact harvester path (engine ##OUTPUTS## → outputs/screening/<id>/runs/… → metrics.json/ranking_debug parsing → canonical metric registry with domains); composite scoring stays client-side per contract.
+- Handoff to Task 3 (integration/e2e): use screening ids cmurtt8te0009iwntuakrrr41 (scaffold, 60) and cmurttxi2001yiwntq52r41gz (models, 20) — both in "ready" state with clean candidate flags; promote → input node → downstream tool wiring is verified end-to-end.
+
+---
+Task ID: 2-b
+Agent: frontend-subagent
+Task: Screening panel UI — 大规模筛选结果评估与排序 (browse/filter/live re-weight/compare/star/inspect 3D/export CSV/promote to canvas), sidebar + page.tsx wiring.
+
+Work Log:
+- Found the full frontend already on disk from an interrupted earlier pass of this same task (8 untracked files: panels/screening-panel.tsx + 7 screening/* modules; sidebar NAV_ITEMS + page.tsx panel case already wired; store union + types already in from Task 1). Reviewed every file line-by-line against the frozen contract + spec, then fixed the deltas rather than rewriting (same recovery pattern as Task 2-a).
+- Spec fixes applied on top of the recovered code:
+  ① Sort cycle is now the full three-state desc → asc → none (spec; was two-state). "none" returns the view to the default rank ordering (rank always = composite score desc over ALL candidates, filter-independent); SortableHead shows ArrowUpDown + aria-sort "none" in that state.
+  ② Compare dialog: best-per-row now highlights ALL tied cells (spec "ties → all highlighted"; was first-index-only).
+  ③ Export CSV: selection when rows are checked, else ALL candidates in global rank order (spec wording; was filtered view).
+  ④ Candidate drawer InlineResults summary = one-line provenance "Harvested from <source> · <sourceLabel> · N file(s)" (spec; was notes-or-provenance).
+  ⑤ Extracted ControlsColumn (~300 lines: search, status/source chips, per-metric range filters, weight sliders + presets + save/reset + unsaved amber dot) into src/components/screening/controls-column.tsx — main panel now 1019 lines of state/mutation logic only.
+- Verified the API shapes against the LIVE routes before trusting the code: GET list {screenings}, detail {screening,candidates}, PATCH weights REPLACE semantics, candidates bulk-patch returns ALL, promote returns PromoteResultDTO (node+promotedIds+files), /api/tools/jobs returns a bare array, /api/tools/file?path= serves PDB/FASTA.
+- `bunx tsc --noEmit` → 0 errors in app source (only pre-existing examples/ + skills/ noise). `bun run lint` → clean.
+- REAL browser e2e (agent-browser on the running dev server, screenshots /tmp/screen-*.png): Screening nav → both demo screenings load; Scaffold Campaign selected via dropdown → 60-row table with score bars + 5 metric columns, "Showing 1–25 of 60", 25 DOM rows; Helix header 3-click cycle desc(82 top)→asc(24.4 top)→none(rank#1 top, all aria-sort="none"); Clashes weight slider 2→5 re-ranked LIVE (top score 83.0→88.1) + unsaved amber dot → Reset restores {1,1,2,2,1}; star toggle → full page reload → star persisted (run3/design_16) → unstarred again (API check: 0 starred of 60); detail drawer opens (metrics grid with domains, 90-residue colored sequence, tags/notes/quick actions, InlineResults mounting the MolVision canvas 523×288, Escape closes); 2-row selection → sticky selection bar "2 selected" → Compare dialog (Score/Rank/Length/5 metrics/Status, emerald best-per-row, 2 Open buttons, "Best composite: run3/design_16 (83.0)"); Export CSV captured via blob patch → 61 lines, exact header rank,name,source,sourceLabel,status,starred,score,length,<5 metric keys>,tags,notes + escaped rows; Promote e2e: dialog → POST → toast "Promoted 1 candidates to canvas", canvas auto-switch with "Screening Picks — AF2 Model Ranking" input node selected → CLEANED UP (node deleted via API, candidate status reset to "new"); mobile 375px: desktop table rect width 0, 20-card mobile list visible, overflowX=false (scrollWidth 375 = clientWidth 375); New Screening dialog shows all 4 source lanes (2 demo buttons + completed canvas nodes list + completed tool jobs list); 0 console/page errors on every step.
+- DB left pristine for Task 3: exactly 2 screenings (Scaffold Campaign 60 + AF2 Model Ranking 20, sourceType demo, 0 starred), all 80 candidates status "new"/no tags/notes, default weights, outputs/screening/ holds exactly the 2 campaign dirs, no leftover Screening Picks nodes.
+
+Stage Summary:
+- Screening UI complete and e2e-verified against the live backend: full browse/filter/sort/paginate surface (60+ candidates smooth via useMemo + pagination), live client-side composite re-scoring with 4 presets + persisted weights, star/shortlist/reject/promote lifecycle with optimistic updates, 3D structure drawer (reused InlineResults), 2–4-way compare with tie-aware highlighting, CSV export, canvas promotion wired to upsertNode/select/setActivePanel.
+- 5 contract/spec deltas fixed on the recovered code (sort tri-state, compare ties, export-all semantics, provenance summary, controls extraction); tsc + lint clean; no console errors; mobile card list confirmed overflow-free.
+- Note for orchestrator: the screening list orders by createdAt desc so the panel defaults to the NEWEST campaign (currently AF2 Model Ranking) — switching is one dropdown click; only demo-source screenings exist so the Rescan button is correctly hidden for both.

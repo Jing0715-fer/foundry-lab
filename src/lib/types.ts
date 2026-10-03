@@ -284,3 +284,82 @@ export interface ToolJobDTO {
    *  SSH-reachable cluster (connection, mode, phase, tails, synced files). */
   cluster?: ClusterJobInfoDTO | null;
 }
+
+// --- Screening (large-scale result evaluation & ranking) ----------------------
+
+export type ScreeningCandidateStatus =
+  | "new" | "shortlisted" | "rejected" | "promoted";
+
+/** One metric column of a screening (derived from real harvested metrics). */
+export interface ScreeningMetricDef {
+  /** Canonical metric key, e.g. plddt | ptm | recovery | diversity | helix_pct | clashes | rama_ll … */
+  key: string;
+  /** Human label, e.g. "pLDDT". */
+  label: string;
+  unit?: string;
+  /** Direction — clashes is the main lower-is-better metric. */
+  higherIsBetter: boolean;
+  /** Observed domain across this screening's candidates: [min, max]. */
+  domain: [number, number];
+  /** Quality thresholds in RAW units. For higherIsBetter: v ≥ good → emerald,
+   *  v ≥ warn → amber, else rose. For lower-is-better: v ≤ good → emerald,
+   *  v ≤ warn → amber, else rose. Optional — metrics without thresholds are neutral. */
+  good?: number;
+  warn?: number;
+  /** Short explanation for tooltips (e.g. "predicted lDDT per-residue mean"). */
+  hint?: string;
+}
+
+export interface ScreeningCandidateDTO {
+  id: string;
+  screeningId: string;
+  name: string;
+  /** Tool family: rfdiffusion | alphafold | proteinmpnn | rosetta | manual … */
+  source: string;
+  /** Sub-label (run seed/symmetry, model rank, …). */
+  sourceLabel: string | null;
+  pdbPath: string | null;
+  fastaPath: string | null;
+  sequence: string | null;
+  length: number | null;
+  /** Raw metric values keyed by canonical metric key. */
+  metrics: Record<string, number>;
+  starred: boolean;
+  status: ScreeningCandidateStatus;
+  tags: string[];
+  notes: string | null;
+  fileCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ScreeningDTO {
+  id: string;
+  name: string;
+  description: string | null;
+  /** node | job | demo */
+  sourceType: string;
+  sourceRef: string | null;
+  sourceLabel: string | null;
+  /** metricKey → weight (0–5). Composite = 100 · Σ(w·norm)/Σw. */
+  weights: Record<string, number>;
+  metricDefs: ScreeningMetricDef[];
+  status: string;
+  candidateCount: number;
+  starredCount: number;
+  shortlistedCount: number;
+  rejectedCount: number;
+  promotedCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/screening/[id]/promote response. */
+export interface PromoteResultDTO {
+  /** The created canvas node (type "input", status "completed") whose logs
+   *  embed the promoted files in a ##OUTPUTS## trailer — downstream tool
+   *  nodes auto-wire pdb_path/fasta_path from it. */
+  node: NodeDTO;
+  promotedIds: string[];
+  files: string[];
+}

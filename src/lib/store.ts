@@ -34,7 +34,7 @@ interface AppState {
   agentsLoading: boolean;
 
   // ui
-  activePanel: "canvas" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "dashboard";
+  activePanel: "canvas" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "screening" | "dashboard";
   paletteQuery: string;
   inspectorTab: string;
   toasts: ToastItem[];

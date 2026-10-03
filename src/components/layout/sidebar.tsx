@@ -2,6 +2,7 @@
 
 import * as React from "react";
 import {
+  BarChart3,
   Bot,
   BookOpen,
   LayoutDashboard,
@@ -54,6 +55,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "meetings", label: "Meetings", icon: Users },
   { key: "research", label: "Research", icon: BookOpen },
   { key: "alphafold", label: "AlphaFold", icon: Boxes },
+  { key: "screening", label: "Screening", icon: BarChart3 },
 ];
 
 /**

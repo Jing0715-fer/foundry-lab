@@ -18,6 +18,7 @@ import { TasksPanel } from "@/components/panels/tasks-panel";
 import { MeetingsPanel } from "@/components/panels/meetings-panel";
 import { ResearchPanel } from "@/components/panels/research-panel";
 import AlphaFoldPanel from "@/components/panels/alphafold-panel";
+import { ScreeningPanel } from "@/components/panels/screening-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
 import { ClusterPanel } from "@/components/panels/cluster-panel";
@@ -300,6 +301,7 @@ export default function Home() {
           {activePanel === "meetings" && <div className="min-h-0 flex-1 overflow-y-auto"><MeetingsPanel /></div>}
           {activePanel === "research" && <div className="min-h-0 flex-1 overflow-y-auto"><ResearchPanel /></div>}
           {activePanel === "alphafold" && <div className="min-h-0 flex-1 overflow-y-auto"><AlphaFoldPanel /></div>}
+          {activePanel === "screening" && <div className="min-h-0 flex-1 overflow-y-auto"><ScreeningPanel /></div>}
         </main>
       </div>
       <Footer />
