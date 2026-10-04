@@ -3001,3 +3001,14 @@ Work Log:
 
 Stage Summary:
 - 交付 docs/images/(23 截图) + README.md(中文重写) + docs/tutorial.md(完整攻略)；演示工作流（6 节点 5 边全 completed）保留在 DB 作为文档实景；DB 其余状态未动（2 个 demo screening、权重已存 Designability 修改前默认值——权重在验证 preset 后点了 Save 存了 2/1/5/4/1，如需还原可 PATCH 回默认）。
+
+---
+Task ID: 4 (补记)
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾 — 还原演示数据权重。
+
+Work Log:
+- PATCH /api/screening/cmurtt8te0009iwntuakrrr41 将 Scaffold Campaign 权重从截图时保存的 Designability(2/1/5/4/1) 还原为代码默认值 {helix_pct:1, strand_pct:1, clashes:2, rama_ll:2, symmetry_units:1}（PRIMARY_METRICS=2 其余=1），与上一 agent 收尾状态一致。
+
+Stage Summary:
+- 演示 DB 状态：2 个 fresh screening（默认权重）+ 6 节点 5 边全 completed 的演示工作流（文档实景来源）。
