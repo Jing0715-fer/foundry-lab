@@ -36,6 +36,8 @@ interface AppState {
   // ui
   activePanel: "canvas" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "screening" | "dashboard";
   paletteQuery: string;
+  /** Mobile-only: node palette shown as an overlay over the canvas (<md). */
+  mobilePaletteOpen: boolean;
   inspectorTab: string;
   toasts: ToastItem[];
   sidebarCollapsed: boolean;
@@ -73,6 +75,7 @@ interface AppState {
   // actions: ui
   setActivePanel: (p: AppState["activePanel"]) => void;
   setPaletteQuery: (q: string) => void;
+  setMobilePaletteOpen: (b: boolean) => void;
   setInspectorTab: (t: string) => void;
   setSidebarCollapsed: (b: boolean) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
@@ -97,6 +100,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   activePanel: "canvas",
   paletteQuery: "",
+  mobilePaletteOpen: false,
   inspectorTab: "params",
   toasts: [],
   sidebarCollapsed: false,
@@ -227,6 +231,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setActivePanel: (p) => set({ activePanel: p }),
   setPaletteQuery: (q) => set({ paletteQuery: q }),
+  setMobilePaletteOpen: (b) => set({ mobilePaletteOpen: b }),
   setInspectorTab: (t) => set({ inspectorTab: t }),
   setSidebarCollapsed: (b) => set({ sidebarCollapsed: b }),
 

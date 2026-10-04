@@ -23,9 +23,11 @@ import {
 } from "@/lib/real-executor";
 import { getFoundryStatus } from "@/lib/foundry";
 import { listInstallJobs } from "@/lib/install-jobs";
+import { getPlatformInfo, resolveInstallSpec } from "@/lib/platform-env";
 
 export async function GET() {
   const py = resolveEnginePython();
+  const platform = getPlatformInfo();
 
   const runtime = RUNTIME_ENTRIES.map((entry) => {
     const installed = isEntryInstalled(entry.detect);
@@ -33,8 +35,10 @@ export async function GET() {
     if (installed) {
       try {
         if (entry.detect.type === "binary" && entry.detect.versionFlag) {
+          // stdio:"pipe" captures stderr — no shell redirection needed, so
+          // this works under cmd.exe on Windows too.
           version =
-            execSync(`${entry.detect.binary} ${entry.detect.versionFlag} 2>/dev/null`, {
+            execSync(`${entry.detect.binary} ${entry.detect.versionFlag}`, {
               stdio: "pipe",
               timeout: 8000,
             })
@@ -46,7 +50,7 @@ export async function GET() {
             entry.detect.pythonModule === "Bio" ? "Bio" : entry.detect.pythonModule;
           version =
             execSync(
-              `${py} -c "import ${mod}; print(getattr(${mod}, '__version__', 'ok'))" 2>/dev/null`,
+              `${py ?? "python3"} -c "import ${mod}; print(getattr(${mod}, '__version__', 'ok'))"`,
               { stdio: "pipe", timeout: 8000 },
             )
               .toString()
@@ -56,6 +60,9 @@ export async function GET() {
         version = null;
       }
     }
+    // Effective install spec on THIS machine (per-OS variant / system
+    // package manager / default) — what the UI shows = what the button runs.
+    const spec = resolveInstallSpec(entry);
     return {
       key: entry.key,
       label: entry.label,
@@ -63,10 +70,11 @@ export async function GET() {
       installed,
       version,
       installMethod: entry.install.method,
-      installCommand: entry.install.command,
-      installLabel: entry.install.label,
+      installCommand: spec.command,
+      installLabel: spec.label,
+      installError: spec.error ?? null,
       docs: entry.install.docs,
-      oneClick: entry.install.oneClick,
+      oneClick: spec.oneClick,
       sizeHint: entry.install.sizeHint ?? null,
       category: entry.category,
     };
@@ -101,6 +109,23 @@ export async function GET() {
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
+    platform: {
+      os: platform.os,
+      osLabel: platform.osLabel,
+      arch: platform.arch,
+      shell: platform.shell,
+      wsl: platform.wsl,
+      python: {
+        command: platform.python.command,
+        version: platform.python.version,
+      },
+      packageManagers: platform.packageManagers.map((p) => ({
+        key: p.key,
+        label: p.label,
+        kind: p.kind,
+        available: p.available,
+      })),
+    },
     runtime,
     engines,
     tools,

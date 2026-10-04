@@ -3012,3 +3012,24 @@ Work Log:
 
 Stage Summary:
 - 演示 DB 状态：2 个 fresh screening（默认权重）+ 6 节点 5 边全 completed 的演示工作流（文档实景来源）。
+
+---
+Task ID: 5
+Agent: main-orchestrator (Z.ai Code)
+Task: 修复 README 移动端图片误用 + 优化外部软件调用的跨系统检测与安装。
+
+Work Log:
+- 环境恢复：沙箱被回滚到旧快照（HEAD f7144cf，screening/docs 代码与提交全部丢失）→ git fetch 发现远端保有全部新提交 → git reset --hard origin/main (f3d0bf8) 完整恢复（screening 组件、docs/images 23 张截图、README/tutorial、worklog）→ bun run db:generate 重新生成含 Screening model 的 Prisma client → 重启 dev server（screening API 200）。
+- 图片误用诊断（用户反馈"两张移动端的图被错误使用"）：20-mobile-screening.png 实际内容是统计卡/过滤器（候选卡片列表在折叠线以下）→ 滚动重拍为真正的候选卡片（#排名/评分条/pLDDT/pTM，VLM 验证）；21-mobile-canvas.png 实际是节点目录列表而非画布 —— 根因：NodePalette 固定 w-64 在 375px 只给画布留 ~60px。
+- 移动端画布修复：store 增加 mobilePaletteOpen；NodePalette <md 变为 overlay（absolute z-40 + 滑入动画 + 遮罩 + X 关闭 + 点选节点自动收起）；画布容器 relative；CanvasToolbar 新增 PanelLeft 按钮（md:hidden）。修复两个 bug：JSX 注释缺右括号；关闭态 translate 后仍遮挡图标导航 → invisible + transition-[transform,visibility]。桌面回归验证 palette 仍为静态列（x=224 w=256 static visible）。
+- 重拍/新拍移动端截图：20-mobile-screening（卡片列表）、21-mobile-canvas（14 节点画布+工具栏+minimap）、22-mobile-palette（目录浮层）——均 VLM 验证；17-environment 更新为新平台横幅版。
+- 跨平台检测与安装（新模块 src/lib/platform-env.ts）：OS 探测（os-release/sw_vers/ver 含发行版名）、无 shell 的 PATH+PATHEXT 二进制解析（替代 which）、包管理器探测（apt/dnf/yum/pacman/zypper/apk/nix/brew/winget/choco/scoop + conda/mamba/uv/pixi + pip）、WSL 探测、Python 解析（venv→python3→python→py -3，numpy 校验）、SYSTEM_INSTALL_COMMANDS（python3/git × 11 个包管理器）、resolveInstallLane（bash/cmd/WSL bash）+ isPosixFlavored 启发式、resolveInstallSpec（commandByOs 变体 → system 级 PM 命令 → 默认）。
+- 接入：real-executor（isEntryInstalled/isToolInstalled/scanAllTools 全部跨平台化，去掉全部 which/2>/dev/null；resolveEnginePython 走 platform-env；runProcess 支持带参命令如 "py -3"）；tool-registry（InstallMethod + "system"；install 增 commandByOs/systemKey；python3/git 改 system 级）；scan 路由（版本探测去重定向；runtime 行返回解析后的 installCommand/installError/oneClick；响应新增 platform 块）；install-jobs（按 OS 选执行通道；python/pip token 重写仅本机通道 —— 修复关键顺序 bug：lane args 先于重写构建导致 pip 落到系统 pip 触发 PEP-668）；foundry.ts 清理 4 处 POSIX 重定向/tail 管道。
+- UI：tools-panel 顶部平台横幅卡（OS/架构/shell/Python/PM chips/WSL 状态徽章）+ RuntimeCard 显示解析后的安装命令与错误。
+- E2E 验证：scan API 返回 Debian 13 + bash + /home/z/.venv/bin/python3 + apt-get/uv/pip；system 级 python3/git 解析出真实 apt 命令且 oneClick=true；POST install numpy → lane bash → 重写为 /home/z/.venv/bin/python3 -m pip install numpy → exit 0 "Requirement already satisfied"（顺序 bug 修复后）；ESMFold 引擎作业 completed（runProcess 改动回归通过）；移动端 palette 开→点选 Input→节点 14→15→浮层自动收起（translate -100% + hidden）；screening/canvas 桌面回归 OK。tsc 0 错误、lint 干净。
+- 文档：README 环境章节改写为跨平台版 + 新 FAQ；tutorial 第 8 章重写（平台横幅/检测原理/安装通道表/system 级安装）+ TOC 更新 + 第 12 章移动端重写（新截图 + 浮层说明）。
+- 收尾：删除测试 Input 节点（nodes 回到 14）。
+
+Stage Summary:
+- 两项交付：① 移动端图片误用已修复（根因是 palette 占屏，顺手把它做成可折叠浮层 —— 移动画布从 60px 残条变为全屏可用，3 张新截图 VLM 验证）；② 外部软件检测/安装跨系统化（Linux/macOS/Windows 原生 + WSL 通道 + 11 种包管理器 + system 级一键装），bash 通道真实安装 E2E 通过，平台横幅 UI 上线。
+- 架构注记：resolveInstallSpec 由 scan 与 install 共享（UI 显示 = 按钮执行）；WSL 通道不重写 python token（目标是 WSL 侧环境）；scanAllTools/scan route/install-jobs 三处口径一致。

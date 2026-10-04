@@ -19,6 +19,7 @@
 import { spawn, execSync } from "child_process";
 import { promises as fs, existsSync } from "fs";
 import { join, resolve } from "path";
+import { resolveEnginePythonCmd, resolveCommandPath, osKey, resolveInstallSpec } from "./platform-env";
 import {
   getToolRegistryEntry,
   engineForTool,
@@ -47,28 +48,16 @@ export interface ExecutionResult {
 
 // ── Python resolution ───────────────────────────────────────────────────────
 
-const PYTHON_CANDIDATES = [
-  "python3",
-  "/home/z/.venv/bin/python3",
-  "/usr/bin/python3",
-];
-
 let cachedPython: string | null | undefined;
 
-/** Resolve a python3 that can import numpy (the engine runtime requirement). */
+/** Resolve a python3 that can import numpy (the engine runtime requirement).
+ *  Cross-platform: python3 / venv / python / py -3 (Windows launcher). */
 export function resolveEnginePython(): string | null {
   if (cachedPython !== undefined) return cachedPython;
-  for (const cand of PYTHON_CANDIDATES) {
-    try {
-      execSync(`${cand} -c "import numpy" 2>/dev/null`, { stdio: "pipe" });
-      cachedPython = cand;
-      return cand;
-    } catch {
-      /* try next */
-    }
-  }
-  cachedPython = null;
-  return null;
+  // platform-env caches its own probe; cache here too for hot paths.
+  const resolved = resolveEnginePythonCmd().command;
+  cachedPython = resolved;
+  return resolved;
 }
 
 const ALGORITHMS_DIR = resolve(process.cwd(), "scripts", "algorithms");
@@ -77,29 +66,38 @@ const ALGORITHMS_DIR = resolve(process.cwd(), "scripts", "algorithms");
 
 /**
  * Check if the NATIVE external tool is installed on the host.
- *   - binary: `which <binary>` succeeds
+ *   - binary: resolved on PATH without a shell (works on Linux/macOS/Windows)
  *   - python: the engine python can `import <module>`
+ *   - path:   exists on disk (absolute or project-relative)
  */
 export function isToolInstalled(key: string): boolean {
   const entry = getToolRegistryEntry(key);
   if (!entry) return false;
+  return checkDetect(entry.detect);
+}
+
+/** Shared detection core — shell-less so it is identical on every OS. */
+function checkDetect(detect: {
+  type: string;
+  binary?: string;
+  pythonModule?: string;
+  path?: string;
+}): boolean {
   try {
-    if (entry.detect.type === "binary" && entry.detect.binary) {
-      execSync(`which ${entry.detect.binary} 2>/dev/null`, { stdio: "pipe" });
-      return true;
+    if (detect.type === "binary" && detect.binary) {
+      return resolveCommandPath(detect.binary) !== null;
     }
-    if (entry.detect.type === "python" && entry.detect.pythonModule) {
+    if (detect.type === "python" && detect.pythonModule) {
       const py = resolveEnginePython() ?? "python3";
-      execSync(`${py} -c "import ${entry.detect.pythonModule}" 2>/dev/null`, {
-        stdio: "pipe",
-      });
+      const mod = detect.pythonModule === "Bio" ? "Bio" : detect.pythonModule;
+      execSync(`${py} -c "import ${mod}"`, { stdio: "pipe", timeout: 15000 });
       return true;
     }
-    if (entry.detect.type === "path" && entry.detect.path) {
+    if (detect.type === "path" && detect.path) {
       // Absolute paths (e.g. the foundry venv) check directly; relative
       // paths resolve under the project root.
-      const p = entry.detect.path;
-      return existsSync(p.startsWith("/") ? p : join(process.cwd(), p));
+      const p = detect.path;
+      return existsSync(p.startsWith("/") || p.startsWith("\\") || /^[A-Za-z]:[\\/]/.test(p) ? p : join(process.cwd(), p));
     }
   } catch {
     return false;
@@ -111,27 +109,7 @@ export function isToolInstalled(key: string): boolean {
 export function isEntryInstalled(
   detect: { type: string; binary?: string; pythonModule?: string; path?: string },
 ): boolean {
-  try {
-    if (detect.type === "binary" && detect.binary) {
-      execSync(`which ${detect.binary} 2>/dev/null`, { stdio: "pipe" });
-      return true;
-    }
-    if (detect.type === "python" && detect.pythonModule) {
-      const py = resolveEnginePython() ?? "python3";
-      execSync(`${py} -c "import ${detect.pythonModule}" 2>/dev/null`, {
-        stdio: "pipe",
-      });
-      return true;
-    }
-    if (detect.type === "path" && detect.path) {
-      // Absolute paths (foundry venv) check directly; relative under root.
-      const p = detect.path;
-      return existsSync(p.startsWith("/") ? p : join(process.cwd(), p));
-    }
-  } catch {
-    return false;
-  }
-  return false;
+  return checkDetect(detect);
 }
 
 // ── Engine self-test ────────────────────────────────────────────────────────
@@ -579,7 +557,14 @@ async function runProcess(
     const stderrChunks: string[] = [];
     let proc: ReturnType<typeof spawn>;
     try {
-      proc = spawn(cmd, args, { cwd, shell: false, env });
+      // `cmd` may carry leading arguments (e.g. the Windows launcher
+      // "py -3") — split it so spawn gets a clean file + argv.
+      const cmdParts = cmd.trim().split(/\s+/);
+      proc = spawn(cmdParts[0], [...cmdParts.slice(1), ...args], {
+        cwd,
+        shell: false,
+        env,
+      });
     } catch (e) {
       resolvePromise({
         stdout: "",
@@ -675,8 +660,10 @@ export interface ScanRow {
 /** One-shot scan of external tools: native status + engine fallback status. */
 export function scanAllTools(): ScanRow[] {
   const py = resolveEnginePython();
+  const os = osKey();
   return TOOL_REGISTRY.map((entry) => {
     const engine = engineForTool(entry.key);
+    const spec = resolveInstallSpec(entry);
     return {
       key: entry.key,
       label: entry.label,
@@ -684,10 +671,10 @@ export function scanAllTools(): ScanRow[] {
       description: entry.description,
       installed: isToolInstalled(entry.key),
       installMethod: entry.install.method,
-      installCommand: entry.install.command,
-      installLabel: entry.install.label,
+      installCommand: spec.command || entry.install.commandByOs?.[os] || entry.install.command,
+      installLabel: spec.label,
       docs: entry.install.docs,
-      oneClick: entry.install.oneClick,
+      oneClick: spec.oneClick,
       sizeHint: entry.install.sizeHint,
       builtinEngine: entry.builtinEngine,
       executorReady: !!py && !!engine,

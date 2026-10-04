@@ -286,7 +286,7 @@ export default function Home() {
         />
         <main className="flex min-h-0 flex-1 flex-col">
           {activePanel === "canvas" && (
-            <div className="flex min-h-0 flex-1">
+            <div className="relative flex min-h-0 flex-1">
               <NodePalette />
               <div className="relative flex min-h-0 flex-1 flex-col">
                 <WorkflowCanvas />

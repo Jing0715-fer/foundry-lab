@@ -79,7 +79,7 @@ export function resolveFoundryPython(): string | null {
     if (!existsSync(cand)) continue;
     try {
       execSync(
-        `${cand} -c "import foundry, mpnn" 2>/dev/null`,
+        `${cand} -c "import foundry, mpnn"`,
         { stdio: "pipe", timeout: 30000 },
       );
       cachedPython = cand;
@@ -142,7 +142,7 @@ export function getFoundryStatus(): FoundryStatus {
 
   // Wheel version + torch build + cuda in one process (imports are heavy).
   const meta = sh(
-    `${py} -c "import importlib.metadata as im, torch; print(im.version('rc-foundry')); print(torch.__version__); print(torch.cuda.is_available())" 2>/dev/null`,
+    `${py} -c "import importlib.metadata as im, torch; print(im.version('rc-foundry')); print(torch.__version__); print(torch.cuda.is_available())"`,
     45000,
   );
   if (meta) {
@@ -153,7 +153,7 @@ export function getFoundryStatus(): FoundryStatus {
   }
 
   // Checkpoints via the official CLI (honors FOUNDRY_CHECKPOINT_DIRS).
-  const listing = sh(`${status.cli} list-installed 2>/dev/null`, 60000);
+  const listing = sh(`${status.cli} list-installed`, 60000);
   if (listing) {
     for (const line of listing.split("\n")) {
       const m = line.match(/\s*(\/\S+\.pt)\s+([\d.]+\s*GB)/);
@@ -177,8 +177,9 @@ export function getFoundryStatus(): FoundryStatus {
   status.capabilities.rf3 = hasCkpt(/rf3/i);
 
   // Fast import selftest of the runner bridge (no weights touched).
+  // (No `| tail` pipe — that is POSIX-only; slice the output in JS instead.)
   const st = sh(
-    `${py} ${join(process.cwd(), "scripts", "foundry", "run_mpnn.py")} --selftest 2>/dev/null | tail -3`,
+    `${py} ${join(process.cwd(), "scripts", "foundry", "run_mpnn.py")} --selftest`,
     90000,
   );
   status.selftestOk = !!st && st.includes("SELFTEST OK");

@@ -14,6 +14,7 @@ import {
   Map as MapIcon,
   Download,
   FileImage,
+  PanelLeft,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -98,6 +99,10 @@ export function CanvasToolbar() {
   // react to the same toggle without lifting state up).
   const minimapOpen = useMinimapStore((s) => s.open);
   const toggleMinimap = useMinimapStore((s) => s.toggle);
+
+  // Mobile node palette overlay (shared with NodePalette via the app store).
+  const mobilePaletteOpen = useAppStore((s) => s.mobilePaletteOpen);
+  const setMobilePaletteOpen = useAppStore((s) => s.setMobilePaletteOpen);
 
   // Reactive subscriptions for undo/redo availability.
   const pastCount = useHistoryStore((s) => s.past.length);
@@ -294,6 +299,19 @@ export function CanvasToolbar() {
           "flex items-center gap-1 rounded-lg border bg-card p-1 shadow-sm",
         )}
       >
+        {/* Mobile-only: toggle the node palette overlay. On phones the
+            palette no longer eats the canvas — it slides in on demand. */}
+        <ToolButton
+          label={mobilePaletteOpen ? "Hide node palette" : "Show node palette"}
+          variant="ghost"
+          size="icon"
+          className="size-8 md:hidden"
+          onClick={() => setMobilePaletteOpen(!mobilePaletteOpen)}
+          aria-expanded={mobilePaletteOpen}
+        >
+          <PanelLeft className="size-4" />
+        </ToolButton>
+
         {/* Undo */}
         <ToolButton
           label="Undo (Ctrl+Z)"

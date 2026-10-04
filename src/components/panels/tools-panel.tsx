@@ -36,11 +36,13 @@ import {
   BookOpen,
   Info,
   Layers,
+  Monitor,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
   DialogContent,
@@ -64,6 +66,7 @@ interface RuntimeRow {
   installMethod: string;
   installCommand: string;
   installLabel: string;
+  installError: string | null;
   docs: string;
   oneClick: boolean;
   sizeHint: string | null;
@@ -111,8 +114,19 @@ interface FoundryStatusDTO {
   selftestDetail: string;
 }
 
+interface PlatformDTO {
+  os: "linux" | "macos" | "windows";
+  osLabel: string;
+  arch: string;
+  shell: "bash" | "cmd";
+  wsl: boolean;
+  python: { command: string | null; version: string | null };
+  packageManagers: { key: string; label: string; kind: string; available: boolean }[];
+}
+
 interface ScanResponse {
   scannedAt: string;
+  platform: PlatformDTO;
   runtime: RuntimeRow[];
   engines: EngineRow[];
   tools: ToolRow[];
@@ -360,6 +374,64 @@ export function ToolsPanel() {
             <Button size="sm" variant="outline" onClick={() => void runScan()}>
               Retry
             </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Platform banner (cross-OS detection & install lanes) ───── */}
+      {scan && (
+        <Card className="border-border/60 bg-gradient-to-br from-card to-muted/30">
+          <CardContent className="flex flex-wrap items-center gap-x-5 gap-y-2 p-4 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <Monitor className="size-4 text-primary" />
+              {scan.platform.osLabel}
+              <span className="text-xs font-normal text-muted-foreground">
+                {scan.platform.arch} · {scan.platform.shell}
+              </span>
+            </div>
+            <Separator orientation="vertical" className="hidden h-5 bg-border/60 sm:block" />
+            <div className="text-sm">
+              <span className="text-muted-foreground">Python: </span>
+              <span className="font-mono text-xs">
+                {scan.platform.python.command
+                  ? `${scan.platform.python.command}${scan.platform.python.version ? ` (${scan.platform.python.version})` : ""}`
+                  : "not found"}
+              </span>
+            </div>
+            <Separator orientation="vertical" className="hidden h-5 bg-border/60 sm:block" />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm text-muted-foreground">Package managers:</span>
+              {scan.platform.packageManagers.filter((p) => p.available).length === 0 ? (
+                <span className="text-xs text-muted-foreground">none detected</span>
+              ) : (
+                scan.platform.packageManagers
+                  .filter((p) => p.available)
+                  .map((p) => (
+                    <span
+                      key={p.key}
+                      className="rounded-full border bg-background px-2 py-0.5 text-xs"
+                      title={p.label}
+                    >
+                      {p.key}
+                    </span>
+                  ))
+              )}
+            </div>
+            {scan.platform.os === "windows" && (
+              <div className="flex items-center gap-1.5">
+                <Separator orientation="vertical" className="hidden h-5 bg-border/60 sm:block" />
+                <span
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-xs",
+                    scan.platform.wsl
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                      : "border-muted bg-muted/50 text-muted-foreground",
+                  )}
+                >
+                  {scan.platform.wsl ? "WSL available (POSIX install lane)" : "no WSL — POSIX installs unavailable"}
+                </span>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -660,6 +732,18 @@ function RuntimeCard({
           <p className="line-clamp-2 text-xs text-muted-foreground">
             {row.description}
           </p>
+          {/* Resolved cross-OS install info: the command shown is exactly
+              what the button runs (per-OS variant / system package manager). */}
+          {!row.installed && row.installCommand && (
+            <p className="truncate font-mono text-[10px] text-muted-foreground/80">
+              {row.installCommand}
+            </p>
+          )}
+          {!row.installed && row.installError && (
+            <p className="text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+              {row.installError}
+            </p>
+          )}
         </div>
         <div className="shrink-0">
           {!row.installed && row.oneClick ? (
