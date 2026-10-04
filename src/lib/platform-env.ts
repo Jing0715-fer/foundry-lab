@@ -261,6 +261,14 @@ export function getPlatformInfo(): PlatformInfo {
   return info;
 }
 
+/** Reset the cached platform info (incl. the python/package-manager
+ *  resolution). Called after a SUCCESSFUL one-click install — the install
+ *  may have added python/numpy/pip that the cached negative resolution
+ *  still denies. The next getPlatformInfo() call re-probes everything. */
+export function resetPlatformInfoCache(): void {
+  globalStore.__foundryPlatformInfo = undefined;
+}
+
 // ── System-tier install hints (per package manager) ─────────────────────────
 
 /** Per-package-manager install commands for system-managed runtime deps. */

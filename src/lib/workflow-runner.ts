@@ -7,11 +7,20 @@
 //   3. Set all idle nodes to pending, save.
 //   4. For each node in topo order (sequential):
 //      - Skip if not pending or idle.
-//      - Set running, save.
+//      - ATOMIC claim pending/idle → running (scheduler.ts pattern) — a
+//        concurrent run lane loses the race and skips the node instead of
+//        double-executing it.
 //      - gatherInputs from already-completed upstream nodes.
 //      - executeNode.
-//      - Set completed/failed, save result + logs.
+//      - Set completed/failed (progress 100, completedAt) — or leave the
+//        node running when executeNode reports the poll-ceiling outcome
+//        (remote cluster job still executing; the node's SSE stream route
+//        reconciles it against the ToolJob row the cluster sweep updates).
 //   5. Return { started, completed, error? }.
+//
+// A node that ends the loop in "running" state does NOT count as completed,
+// and its downstream nodes never see it completed so nothing cascades on a
+// lie — that's the whole point of the poll-ceiling honesty fix.
 
 import { db } from "@/lib/db";
 import {
@@ -83,15 +92,22 @@ export async function runWorkflowById(
       continue;
     }
 
-    // Set running.
-    await db.node.update({
-      where: { id: nodeId },
+    // Set running — ATOMIC claim (scheduler.ts updateMany pattern): only a
+    // row still in pending/idle flips; a concurrent run (double-clicked Run,
+    // scheduler overlap) that raced us to this node sees count 0 and skips
+    // it instead of double-executing.
+    const claimed = await db.node.updateMany({
+      where: { id: nodeId, status: { in: ["pending", "idle"] } },
       data: {
         status: "running",
         progress: 10,
         startedAt: nodeRow.startedAt ?? new Date(),
       },
     });
+    if (claimed.count === 0) {
+      // Another lane already claimed (or finished) this node.
+      continue;
+    }
 
     // Gather inputs from already-completed upstream nodes.
     const freshWf = await db.workflow.findUnique({
@@ -110,6 +126,17 @@ export async function runWorkflowById(
       inputs,
       workflowId,
     );
+
+    if (status === "running") {
+      // Poll-ceiling outcome (cluster job still running remotely): persist
+      // the honest in-progress result/logs but NO completedAt and NO
+      // progress-100 — the node legitimately stays running.
+      await db.node.update({
+        where: { id: nodeId },
+        data: { status, result, logs, progress: 90 },
+      });
+      continue;
+    }
 
     await db.node.update({
       where: { id: nodeId },

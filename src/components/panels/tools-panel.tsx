@@ -55,6 +55,16 @@ import { useAppStore } from "@/lib/store";
 import { PanelSkeleton } from "@/components/empty-state";
 import { cn } from "@/lib/utils";
 
+/** External tools that have a dedicated usage surface (workbench panel)
+ *  beyond the canvas node. Maps registry key → sidebar panel. Lets the
+ *  management layer deep-link into the usage layer so the two stay visibly
+ *  connected (e.g. AlphaFold2's card links to the prediction workbench). */
+const TOOL_WORKBENCH: Partial<
+  Record<string, ReturnType<typeof useAppStore.getState>["activePanel"]>
+> = {
+  alphafold: "alphafold",
+};
+
 // ── API types (mirror /api/tools/scan + /api/tools/install) ─────────────────
 
 interface RuntimeRow {
@@ -912,6 +922,9 @@ function ToolCard({
   onInstall: () => void;
   installing: boolean;
 }) {
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const setEnvironmentSheetOpen = useAppStore((s) => s.setEnvironmentSheetOpen);
+  const workbenchPanel = TOOL_WORKBENCH[row.key];
   const engine = engines.find((e) => e.key === row.builtinEngine);
   const { size, detail } = splitSizeHint(row.sizeHint ?? "");
   return (
@@ -989,6 +1002,22 @@ function ToolCard({
             <Badge variant="secondary" className="text-[10px]">
               native execution active
             </Badge>
+          )}
+          {workbenchPanel && (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                // Deep-link from the management layer (this Environment
+                // sheet) into the usage layer (the tool's workbench panel).
+                setEnvironmentSheetOpen(false);
+                setActivePanel(workbenchPanel);
+              }}
+              className="gap-1"
+            >
+              <Boxes className="size-3.5 shrink-0" />
+              <span className="truncate">Open workbench</span>
+            </Button>
           )}
           <Button size="sm" variant="ghost" asChild>
             <a href={row.docs} target="_blank" rel="noreferrer">

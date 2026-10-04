@@ -134,6 +134,9 @@ async function createNodeAtCenter(spec: NodeSpec): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        // Target the CURRENT workflow (multi-workflow contract) — without
+        // this the server creates the node in its first-workflow default.
+        workflowId: workflow?.id,
         type: spec.type,
         name: spec.label,
         x,

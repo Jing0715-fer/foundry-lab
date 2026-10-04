@@ -35,22 +35,51 @@ import {
 
 import { useAppStore } from "@/lib/store";
 import { useChatStore } from "@/lib/chat-store";
+import { useHistoryStore } from "@/lib/history-store";
+import { withHistorySuppressed } from "@/lib/history-apply";
 import {
   useKeyboardShortcuts,
   type ShortcutConfig,
 } from "@/lib/keyboard-shortcuts";
 import type { WorkflowDTO } from "@/lib/types";
 
+/** True while a dialog / alertdialog / menu is open — those components own
+ *  their own Escape/Delete handling, and a global Delete here would remove
+ *  canvas nodes from BEHIND the dialog. */
+function anyOverlayDialogOpen(): boolean {
+  return !!document.querySelector(
+    '[role="dialog"][data-state="open"], [role="alertdialog"][data-state="open"], [role="menu"][data-state="open"]',
+  );
+}
+
 /**
  * Delete every node in the current multi-selection. Bound to both Delete and
  * Backspace (so it works on Mac keyboards where Backspace is the primary
  * "delete" key). Reads from the store at call time so it always operates on
  * the latest selection state.
+ *
+ * A history snapshot is pushed BEFORE the delete loop (a single Ctrl+Z then
+ * restores the whole batch); the store removals run capture-suppressed so
+ * the canvas subscription doesn't add a second, identical entry. Nodes are
+ * only removed locally when their server DELETE actually succeeded — no
+ * rollback needed, failed nodes honestly stay on the canvas.
  */
 async function deleteSelectedNodes(): Promise<void> {
   const st = useAppStore.getState();
-  const { selectedIds, removeNode, select, toast } = st;
+  const { selectedIds, select, toast, workflow } = st;
   if (selectedIds.length === 0) return;
+  // Skip when a dialog / sheet / menu is open (the Escape handler's guard,
+  // applied to the destructive keys too — Backspace must never delete
+  // canvas nodes from behind an open dialog).
+  if (anyOverlayDialogOpen()) return;
+  // One snapshot for the whole batch (before ANY deletion).
+  if (workflow) {
+    useHistoryStore.getState().push({
+      nodes: workflow.nodes,
+      edges: workflow.edges,
+      viewport: st.viewport,
+    });
+  }
   const results = await Promise.allSettled(
     selectedIds.map((id) =>
       fetch(`/api/workflow/nodes/${id}`, { method: "DELETE" }),
@@ -65,7 +94,10 @@ async function deleteSelectedNodes(): Promise<void> {
       failCount += 1;
     }
   });
-  okIds.forEach((id) => removeNode(id));
+  // Suppressed: the inline push above is the single capture for the batch.
+  withHistorySuppressed(() => {
+    okIds.forEach((id) => useAppStore.getState().removeNode(id));
+  });
   select(null);
   if (failCount === 0) {
     toast({
@@ -102,6 +134,7 @@ export default function Home() {
   const setAgents = useAppStore((s) => s.setAgents);
   const setAgentsLoading = useAppStore((s) => s.setAgentsLoading);
   const setLoading = useAppStore((s) => s.setLoading);
+  const setError = useAppStore((s) => s.setError);
   const toast = useAppStore((s) => s.toast);
 
   const chatAgentId = useChatStore((s) => s.chatAgentId);
@@ -112,16 +145,21 @@ export default function Home() {
   // Sidebar's "PI Copilot" button.
   const [piCopilotOpen, setPiCopilotOpen] = React.useState(false);
 
-  // Environment Sheet — same pattern as PI Copilot. The store's activePanel
-  // union doesn't include "environment", so the panel floats over the canvas
-  // as a Sheet. Toggled from the Sidebar's "Environment" button.
-  const [environmentOpen, setEnvironmentOpen] = React.useState(false);
+  // Environment Sheet — state lives in the Zustand store (not local) so any
+  // component can deep-link into the tool-management layer from a usage
+  // surface (e.g. the AlphaFold workbench header's "Environment" button,
+  // the Environment panel's "Open workbench" reverse link). Toggled from
+  // the Sidebar's "Environment" button as before.
+  const environmentOpen = useAppStore((s) => s.environmentSheetOpen);
+  const setEnvironmentSheetOpen = useAppStore((s) => s.setEnvironmentSheetOpen);
 
-  // Cluster Sheet — same pattern as Environment. Hosts the Cluster Execution
-  // panel (SSH/HPC connections, probe, tool launcher, cluster jobs). Toggled
-  // from the Sidebar's "Cluster" button. Wider than Environment (sm:max-w-2xl)
-  // because the cluster panel shows probe grids + live job logs.
-  const [clusterOpen, setClusterOpen] = React.useState(false);
+  // Cluster Sheet — store-backed for the same cross-link reason. Hosts the
+  // Cluster Execution panel (SSH/HPC connections, probe, tool launcher,
+  // cluster jobs). Toggled from the Sidebar's "Cluster" button. Wider than
+  // Environment (sm:max-w-2xl) because the cluster panel shows probe grids +
+  // live job logs.
+  const clusterOpen = useAppStore((s) => s.clusterSheetOpen);
+  const setClusterSheetOpen = useAppStore((s) => s.setClusterSheetOpen);
 
   // Boot sequence — runs once.
   React.useEffect(() => {
@@ -146,15 +184,35 @@ export default function Home() {
           if (!cancelled) setAgentsLoading(false);
         }
 
-        // 3. Fetch workflow.
+        // 3. Fetch workflow. Failures now setError (they used to be
+        //    swallowed, which left the canvas spinner running forever) —
+        //    the canvas renders an error + Retry card from store.error, and
+        //    the toast below fires directly from this catch.
         try {
           const wRes = await fetch("/api/workflow");
           if (wRes.ok) {
             const w: WorkflowDTO = await wRes.json();
             if (!cancelled) setWorkflow(w);
+          } else {
+            if (!cancelled) {
+              setError(`HTTP ${wRes.status} while loading the workflow.`);
+              toast({
+                title: "Load error",
+                description: `Couldn't load the workflow (HTTP ${wRes.status}). Retry from the canvas.`,
+                variant: "destructive",
+              });
+            }
           }
-        } catch {
-          /* swallow */
+        } catch (e) {
+          if (!cancelled) {
+            const msg = e instanceof Error ? e.message : "network error";
+            setError(`Couldn't reach the server: ${msg}`);
+            toast({
+              title: "Load error",
+              description: "Couldn't load the workflow — the server may be down. Retry from the canvas.",
+              variant: "destructive",
+            });
+          }
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -164,9 +222,13 @@ export default function Home() {
     return () => {
       cancelled = true;
     };
-  }, [setAgents, setAgentsLoading, setWorkflow, setLoading]);
+  }, [setAgents, setAgentsLoading, setWorkflow, setLoading, setError, toast]);
 
   // Polling: refresh workflow when any node is running or pending.
+  // The poll fetches the CURRENT workflow by id (multi-workflow contract)
+  // and merges BOTH nodes and edges so server-side deletions and edge
+  // changes flow in (see store.mergeNodes for the dirty-field protection
+  // and optimistic-edge handling).
   React.useEffect(() => {
     const interval = setInterval(async () => {
       const st = useAppStore.getState();
@@ -177,11 +239,12 @@ export default function Home() {
       );
       if (!busy) return;
       try {
-        const res = await fetch("/api/workflow");
+        const res = await fetch(`/api/workflows/${wf.id}`);
         if (!res.ok) return;
         const incoming: WorkflowDTO = await res.json();
-        // Merge so server-side status updates land without losing local edits.
-        useAppStore.getState().mergeNodes(incoming.nodes);
+        // Merge so server-side status updates land without losing local
+        // edits (mergeNodes protects dirty nodes' name/params).
+        useAppStore.getState().mergeNodes(incoming.nodes, incoming.edges);
       } catch {
         /* swallow polling errors */
       }
@@ -189,18 +252,6 @@ export default function Home() {
 
     return () => clearInterval(interval);
   }, []);
-
-  // Surface boot failures as a toast (best-effort, not blocking).
-  React.useEffect(() => {
-    const st = useAppStore.getState();
-    if (st.error) {
-      toast({
-        title: "Load error",
-        description: st.error,
-        variant: "destructive",
-      });
-    }
-  }, [toast]);
 
   // --- Onboarding tour auto-start ------------------------------------------
   // On first visit (no localStorage flag), open the tour after an 800ms delay
@@ -243,28 +294,31 @@ export default function Home() {
       },
       {
         key: "Escape",
+        // Escape must keep its native meaning inside text fields (blur /
+        // clear the input) instead of cancelling canvas connections or the
+        // selection — so it skips inputs AND only preventDefaults when the
+        // handler actually acts.
+        skipInputs: true,
+        preventDefault: false,
         description: "Cancel connection / close inspector",
-        handler: () => {
+        handler: (e) => {
           // Skip if a dialog / sheet / menu is open — those handle Esc themselves.
-          if (
-            document.querySelector(
-              '[role="dialog"][data-state="open"], [role="menu"][data-state="open"]',
-            )
-          ) {
+          if (anyOverlayDialogOpen()) {
             return;
           }
           const st = useAppStore.getState();
+          let acted = false;
           if (st.pendingFrom) {
             st.cancelConnect();
-            return;
-          }
-          if (st.inspectId) {
+            acted = true;
+          } else if (st.inspectId) {
             st.inspect(null);
-            return;
-          }
-          if (st.selectedId) {
+            acted = true;
+          } else if (st.selectedId) {
             st.select(null);
+            acted = true;
           }
+          if (acted) e.preventDefault();
         },
       },
     ],
@@ -280,9 +334,9 @@ export default function Home() {
           piCopilotOpen={piCopilotOpen}
           onTogglePiCopilot={() => setPiCopilotOpen((o) => !o)}
           environmentOpen={environmentOpen}
-          onToggleEnvironment={() => setEnvironmentOpen((o) => !o)}
+          onToggleEnvironment={() => setEnvironmentSheetOpen(!environmentOpen)}
           clusterOpen={clusterOpen}
-          onToggleCluster={() => setClusterOpen((o) => !o)}
+          onToggleCluster={() => setClusterSheetOpen(!clusterOpen)}
         />
         <main className="flex min-h-0 flex-1 flex-col">
           {activePanel === "canvas" && (
@@ -333,7 +387,7 @@ export default function Home() {
           external tool status + one-click installs). Wider than the old
           environment viewer because it hosts engine provenance cards and
           streaming install terminals. */}
-      <Sheet open={environmentOpen} onOpenChange={setEnvironmentOpen}>
+      <Sheet open={environmentOpen} onOpenChange={setEnvironmentSheetOpen}>
         <SheetContent
           side="left"
           className="w-full gap-0 p-0 sm:max-w-2xl"
@@ -350,7 +404,7 @@ export default function Home() {
       live remote log tails need the room). Hosts the Cluster Execution panel:
       SSH connections, environment probe, the on-cluster tool launcher, and the
       cluster job list with live polling. */}
-      <Sheet open={clusterOpen} onOpenChange={setClusterOpen}>
+      <Sheet open={clusterOpen} onOpenChange={setClusterSheetOpen}>
         <SheetContent
           side="left"
           className="w-full gap-0 p-0 sm:max-w-2xl"

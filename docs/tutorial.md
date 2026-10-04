@@ -471,6 +471,14 @@ score = 100 · Σ(wᵢ · normᵢ) / Σwᵢ     norm = (v−min)/(max−min)
 
 ![AlphaFold 面板](images/16-alphafold-panel.png)
 
+> **为什么 AlphaFold2 有独立页面？** 它分两层各司其职：
+> **Environment（环境面板）= 管理层** —— AlphaFold2 与其他外部工具一样
+> 登记在"Structure Prediction"分类下，负责检测/安装/回退状态；
+> **本页 = 使用层（工作台）** —— 面向"粘贴序列 → 出结构"的高频单步操作。
+> 两层已交叉链接：环境面板的 AlphaFold2 卡片带 **Open workbench**
+> 按钮直达本页，本页头部带 **Environment / Cluster** 入口返回管理层。
+> 它同时也可以作为画布节点嵌入自动化工作流（见第 3 章）。
+
 两条执行通道：
 
 | 通道 | 条件 | 流程 |

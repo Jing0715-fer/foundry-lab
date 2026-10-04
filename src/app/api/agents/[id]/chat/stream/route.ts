@@ -3,6 +3,9 @@ import { db } from "@/lib/db";
 import { toAgentDTO } from "@/lib/run-utils";
 import { generateAgentSystemPrompt } from "@/lib/agents";
 import { chatStream, type ChatMessage } from "@/lib/llm";
+import { extractToolCalls } from "@/lib/tools";
+import { runBio } from "@/lib/bio-tools";
+import type { ToolCall } from "@/lib/types";
 
 export const runtime = "nodejs";
 
@@ -14,13 +17,31 @@ export const runtime = "nodejs";
  *
  *   event: start  data: { agentId }
  *   event: delta  data: { delta }            (one chunk of text)
- *   event: done   data: { content, messageId }
+ *   event: done   data: { content, messageId, toolCalls? }
  *   event: error  data: { error }            (terminal — connection closes)
  *
  * chatStream performs REAL SDK streaming (SSE deltas decoded as they
  * arrive); the deterministic chunked-emit path is only a fallback when the
  * upstream refuses streaming. LLM sampling options come from the agent's
  * saved runtime config (fine-tune dialog).
+ *
+ * History window: the LATEST 50 messages (desc + take, then reversed) —
+ * mirroring the non-stream POST /chat route. (The old asc+take query loaded
+ * the OLDEST 50, so once a chat exceeded 50 turns the agent answered with
+ * ancient context.)
+ *
+ * Tool-calling loop (pragmatic streaming version): after the first streamed
+ * reply completes, parse it with the SAME extractToolCalls helper the
+ * non-stream lane uses. When tool fences are present:
+ *   - BIO tool calls execute immediately (fast HTTP queries) and their
+ *     results are recorded as ToolCalls;
+ *   - COMP tool fences are NOT executed inline (they can run for minutes —
+ *     the model is told to point the user at the canvas/Tools panel);
+ *   - ONE follow-up streamed completion runs with the tool results appended
+ *     to the conversation, streaming its deltas into this same SSE response
+ *     (what the user sees = exactly what gets persisted);
+ *   - the parsed+executed toolCalls are persisted on the assistant message
+ *     so the chat UI renders them like the non-stream lane's.
  */
 export async function POST(
   request: NextRequest,
@@ -62,14 +83,17 @@ export async function POST(
     ...(rt?.topP != null ? { topP: rt.topP } : {}),
   };
 
-  // Fetch last 50 messages (ascending) for context. We slice off the final
-  // user message because we already append it explicitly below — but the
-  // saved user row above means it IS in the history query result.
-  const history = await db.chatMessage.findMany({
+  // LATEST 50 messages for context (desc + take → reverse, like the
+  // non-stream route). The saved user row above means our message IS the
+  // last element — slice it off and append it explicitly below (kept
+  // identical to the old shape so the follow-up loop below can reuse the
+  // array).
+  const recent = await db.chatMessage.findMany({
     where: { agentId: id },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: 50,
   });
+  const history = [...recent].reverse();
   const priorHistory = history.slice(0, -1);
 
   const messages: ChatMessage[] = [
@@ -126,11 +150,97 @@ export async function POST(
         return;
       }
 
-      // Save the final assistant message.
+      // ── Tool-calling round (pragmatic streaming version) ────────────────
+      // Parse the streamed reply with the same fence parser the non-stream
+      // lane uses; execute the FAST bio tools and run ONE follow-up streamed
+      // completion folding the results in. Everything streamed into this SSE
+      // response is what gets persisted (content === what the user saw).
+      const toolCalls: ToolCall[] = [];
+      let content = fullText;
+      try {
+        const { comp, bio } = extractToolCalls(fullText);
+        if (bio.length > 0 || comp.length > 0) {
+          const followUps: string[] = [];
+          for (const b of bio) {
+            try {
+              const res = await runBio(
+                b.type as "blast" | "pdb" | "pubmed" | "uniprot",
+                b as Record<string, unknown>,
+              );
+              const summary = res.hits
+                .map((h) => `- ${h.id}: ${h.title}`)
+                .join("\n");
+              toolCalls.push({
+                kind: "bio",
+                tool: b.type,
+                params: b as Record<string, unknown>,
+                result: summary,
+                status: "completed",
+              });
+              followUps.push(
+                `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,
+              );
+            } catch (e) {
+              toolCalls.push({
+                kind: "bio",
+                tool: b.type,
+                params: b as Record<string, unknown>,
+                result: `Error: ${(e as Error).message}`,
+                status: "failed",
+              });
+              followUps.push(
+                `[Bio tool ${b.type} failed: ${(e as Error).message}]`,
+              );
+            }
+          }
+          if (comp.length > 0) {
+            // Comp tools (real engines) can run for minutes — they are NOT
+            // executed inline in the streaming lane. Tell the model honestly
+            // so its revised answer points the user at the right surface.
+            followUps.push(
+              `[Note: ${comp.length} computational tool request(s) cannot be executed in the streaming chat lane — ` +
+                "tell the user to run them via the workflow canvas or the Tools panel.]",
+            );
+          }
+
+          // ONE follow-up streamed completion with the tool results appended.
+          const followUpMessages: ChatMessage[] = [
+            ...messages,
+            { role: "assistant", content: fullText },
+            {
+              role: "user",
+              content: `${followUps.join("\n\n")}\n\nRevise your answer using these results.`,
+            },
+          ];
+          const followUpText = await chatStream(
+            followUpMessages,
+            (delta) => {
+              send("delta", { delta });
+            },
+            llmOpts,
+          );
+          content = followUpText
+            ? `${fullText}\n\n${followUpText}`
+            : fullText;
+        }
+      } catch (err) {
+        // Tool round failed — the first reply is still complete and useful;
+        // persist it without toolCalls and note the error on the stream.
+        send("error", { error: `Tool round failed: ${(err as Error).message}` });
+      }
+
+      // Save the final assistant message (with the parsed/executed tool calls).
       let savedId: string | undefined;
       try {
         const saved = await db.chatMessage.create({
-          data: { agentId: id, role: "assistant", content: fullText },
+          data: {
+            agentId: id,
+            role: "assistant",
+            content,
+            ...(toolCalls.length > 0
+              ? { toolCalls: JSON.stringify(toolCalls) }
+              : {}),
+          },
         });
         savedId = saved.id;
       } catch (err) {
@@ -139,7 +249,11 @@ export async function POST(
         return;
       }
 
-      send("done", { content: fullText, messageId: savedId });
+      send("done", {
+        content,
+        messageId: savedId,
+        ...(toolCalls.length > 0 ? { toolCalls } : {}),
+      });
       controller.close();
     },
   });

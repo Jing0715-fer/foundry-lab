@@ -12,6 +12,7 @@ import {
   Wrench,
   Loader2,
   ExternalLink,
+  FileWarning,
 } from "lucide-react";
 import {
   Dialog,
@@ -139,6 +140,12 @@ export function OutputViewerDialog({
   const [pdbContent, setPdbContent] = React.useState<string | null>(null);
   const [fastaContent, setFastaContent] = React.useState<string | null>(null);
   const [loadingContent, setLoadingContent] = React.useState(false);
+  // Fetch failures (HTTP status / network error). A failure is now an
+  // HONEST inline error card showing the real file path — the old .catch
+  // silently swapped in SAMPLE_PDB while the header kept showing the real
+  // pdbFile path, mislabeling the sample structure as the job's output.
+  const [pdbError, setPdbError] = React.useState<string | null>(null);
+  const [fastaError, setFastaError] = React.useState<string | null>(null);
 
   // Reset to the "summary" tab whenever a new job is opened.
   React.useEffect(() => {
@@ -146,9 +153,9 @@ export function OutputViewerDialog({
   }, [open, job?.id]);
 
   // Fetch real PDB / FASTA content for the first matching output file
-  // whenever the dialog opens (or the job changes). Falls back to the
-  // synthetic SAMPLE_* content if the fetch fails so the viewer is never
-  // empty.
+  // whenever the dialog opens (or the job changes). The SAMPLE_* fallback
+  // is only used when the job genuinely has NO output file of that type —
+  // fetch failures surface as error states instead.
   React.useEffect(() => {
     if (!open || !job) return;
     const pdbFile = job.outputFiles.find((f) => f.endsWith(".pdb"));
@@ -158,38 +165,48 @@ export function OutputViewerDialog({
 
     if (pdbFile) {
       setLoadingContent(true);
+      setPdbError(null);
       fetch(fileUrl(pdbFile))
-        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((text) => {
           if (!cancelled) setPdbContent(text);
         })
-        .catch(() => {
-          if (!cancelled) setPdbContent(SAMPLE_PDB);
+        .catch((e) => {
+          if (!cancelled) {
+            setPdbContent(null);
+            setPdbError(e instanceof Error ? e.message : String(e));
+          }
         })
         .finally(() => {
           if (!cancelled) setLoadingContent(false);
         });
     } else {
       setPdbContent(null);
+      setPdbError(null);
     }
 
     if (fastaFile) {
+      setFastaError(null);
       fetch(fileUrl(fastaFile))
-        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`${r.status}`))))
+        .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((text) => {
           if (!cancelled) setFastaContent(text);
         })
-        .catch(() => {
-          if (!cancelled) setFastaContent(SAMPLE_FASTA);
+        .catch((e) => {
+          if (!cancelled) {
+            setFastaContent(null);
+            setFastaError(e instanceof Error ? e.message : String(e));
+          }
         });
     } else {
       setFastaContent(null);
+      setFastaError(null);
     }
 
     return () => {
       cancelled = true;
     };
-  }, [open, job?.id, job?.outputFiles]);
+  }, [open, job?.id, job?.outputFiles, fileUrl]);
 
   const handleCopyFile = async (path: string) => {
     try {
@@ -365,7 +382,24 @@ export function OutputViewerDialog({
                   </Button>
                 )}
               </div>
-              {loadingContent && !pdbContent ? (
+              {pdbFile && pdbError ? (
+                // Honest failure state — the real path + the HTTP/network
+                // error (pattern from inline-results.tsx), never the sample
+                // structure mislabeled as this job's output.
+                <div className="flex h-72 flex-col items-center justify-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-center">
+                  <FileWarning className="size-5 text-rose-600 dark:text-rose-400" />
+                  <p className="text-sm font-medium text-rose-700 dark:text-rose-300">
+                    Failed to load the structure ({pdbError})
+                  </p>
+                  <code className="max-w-full truncate rounded bg-muted/60 px-2 py-1 font-mono text-xs text-muted-foreground">
+                    {pdbFile}
+                  </code>
+                  <p className="text-xs text-muted-foreground">
+                    The file exists in the job record but couldn&apos;t be
+                    fetched — try the Download button or reopen the dialog.
+                  </p>
+                </div>
+              ) : loadingContent && !pdbContent ? (
                 <div className="flex h-72 items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground">
                   <Loader2 className="mr-2 size-4 animate-spin" />
                   Loading structure…
@@ -385,7 +419,9 @@ export function OutputViewerDialog({
             </TabsContent>
           )}
 
-          {/* Sequence tab — FASTA viewer (real fetched FASTA, falls back to sample) */}
+          {/* Sequence tab — FASTA viewer (real fetched FASTA; the sample is
+              only shown when the job has no FASTA output — fetch failures
+              render an honest error card with the real path). */}
           {hasSequence && (
             <TabsContent
               value="sequence"
@@ -416,7 +452,19 @@ export function OutputViewerDialog({
                   </Button>
                 )}
               </div>
-              {loadingContent && !fastaContent ? (
+              {fastaFile && fastaError ? (
+                // Honest failure state — the real path + the error, mirroring
+                // the Structure tab.
+                <div className="flex h-60 flex-col items-center justify-center gap-2 rounded-lg border border-rose-500/30 bg-rose-500/5 p-4 text-center">
+                  <FileWarning className="size-5 text-rose-600 dark:text-rose-400" />
+                  <p className="text-sm font-medium text-rose-700 dark:text-rose-300">
+                    Failed to load the sequence ({fastaError})
+                  </p>
+                  <code className="max-w-full truncate rounded bg-muted/60 px-2 py-1 font-mono text-xs text-muted-foreground">
+                    {fastaFile}
+                  </code>
+                </div>
+              ) : loadingContent && !fastaContent ? (
                 <div className="flex h-60 items-center justify-center rounded-lg border border-dashed bg-muted/30 text-sm text-muted-foreground">
                   <Loader2 className="mr-2 size-4 animate-spin" />
                   Loading sequence…

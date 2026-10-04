@@ -31,6 +31,7 @@ import {
 } from "@/lib/workflow-catalog";
 import { canConnect, useAppStore, type PendingFrom } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
+import { withHistorySuppressed } from "@/lib/history-apply";
 import { computeAllEdgeGeoms, setLiveDrag } from "@/lib/canvas-utils";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
@@ -344,7 +345,11 @@ function NodeCardImpl({ node }: NodeCardProps) {
         toPort,
         createdAt: new Date().toISOString(),
       };
-      addEdgeOptimistic(optimistic);
+      // The store write is capture-suppressed: the inline push above is the
+      // single history entry for this operation (without the guard, the
+      // canvas subscription would capture the same pre-connect state again
+      // and undo would need two presses to leave the spot).
+      withHistorySuppressed(() => addEdgeOptimistic(optimistic));
       try {
         const res = await fetch("/api/workflow/edges", {
           method: "POST",
@@ -364,7 +369,10 @@ function NodeCardImpl({ node }: NodeCardProps) {
         const real: EdgeDTO = await res.json();
         confirmEdge(tempId, real);
       } catch (err) {
-        rollbackEdge(tempId);
+        // Rollback is suppressed too: capturing the broken mid-state (with
+        // the doomed temp edge) as history would let Ctrl+Z re-create an
+        // edge the server just refused.
+        withHistorySuppressed(() => rollbackEdge(tempId));
         toast({
           title: "Connection failed",
           description: err instanceof Error ? err.message : String(err),
@@ -437,6 +445,8 @@ function NodeCardImpl({ node }: NodeCardProps) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // Target the node's own workflow (multi-workflow contract).
+          workflowId: node.workflowId,
           type: node.type,
           name: `${node.name} copy`,
           x: node.x + 40,
@@ -455,22 +465,50 @@ function NodeCardImpl({ node }: NodeCardProps) {
   }, [node, upsertNode, toast]);
 
   const handleDelete = React.useCallback(async () => {
-    // Push history before removing the node.
+    // Push history + remove optimistically — and RESTORE the node if the
+    // server DELETE actually fails (an HTTP failure used to leave the node
+    // deleted locally while it still existed server-side, with only a toast
+    // to explain the lie).
     const s = useAppStore.getState();
-    if (s.workflow) {
+    const before = s.workflow;
+    if (before) {
       useHistoryStore.getState().push({
-        nodes: s.workflow.nodes,
-        edges: s.workflow.edges,
+        nodes: before.nodes,
+        edges: before.edges,
         viewport: s.viewport,
       });
     }
-    removeNode(node.id);
+    // Suppressed: the inline push above is the single capture for this op.
+    withHistorySuppressed(() => removeNode(node.id));
     try {
       const res = await fetch(`/api/workflow/nodes/${node.id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("delete failed");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       toast({ title: "Node deleted" });
     } catch {
-      toast({ title: "Delete failed", variant: "destructive" });
+      // Rollback: put the node (and its edges) back exactly as they were.
+      const cur = useAppStore.getState().workflow;
+      if (cur && before) {
+        const nodeRow = before.nodes.find((n) => n.id === node.id);
+        const lostEdges = before.edges.filter(
+          (e) =>
+            (e.fromNodeId === node.id || e.toNodeId === node.id) &&
+            !cur.edges.some((x) => x.id === e.id),
+        );
+        if (nodeRow) {
+          withHistorySuppressed(() => {
+            useAppStore.getState().setWorkflow({
+              ...cur,
+              nodes: [...cur.nodes, nodeRow],
+              edges: [...cur.edges, ...lostEdges],
+            });
+          });
+        }
+      }
+      toast({
+        title: "Delete failed",
+        description: "The node is still on the server — restored locally.",
+        variant: "destructive",
+      });
     }
   }, [node.id, removeNode, toast]);
 
@@ -637,7 +675,13 @@ function NodeCardImpl({ node }: NodeCardProps) {
               />
             </motion.div>
 
-            {/* Input ports */}
+            {/* Input ports — 28px transparent hit pads centered on the port
+                point (the visible dot stays 14px). The old 14px button was a
+                title-only mouse target; the pad quadruples the clickable area
+                and carries an aria-label for screen readers. The pads stay
+                smaller than the minimum vertical port spacing (29px for 3
+                ports on a 116px card) so adjacent ports can't shadow each
+                other. */}
             {inputs.map((port, i) => {
               const compatible = isInputCompatible(port);
               return (
@@ -645,28 +689,32 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   key={`in-${port.name}`}
                   data-port="in"
                   title={port.label}
+                  aria-label={`Connect ${port.label} input`}
                   onPointerDown={onInputPortPointerDown(port)}
-                  className={cn(
-                    "absolute flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-background bg-card shadow-sm transition",
-                    "hover:scale-125 hover:z-10",
-                    compatible && "animate-pulse ring-2 ring-primary",
-                  )}
+                  className="absolute flex h-7 w-7 items-center justify-center hover:z-10"
                   style={{
-                    left: -7,
-                    top: portY(i, inputs.length) - 7,
+                    left: -14,
+                    top: portY(i, inputs.length) - 14,
                   }}
                 >
                   <span
                     className={cn(
-                      "h-1.5 w-1.5 rounded-full",
-                      PORT_COLORS[(port.kind ?? "*") as PortKind]?.dot ?? "bg-slate-500",
+                      "flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-background bg-card shadow-sm transition hover:scale-125",
+                      compatible && "animate-pulse ring-2 ring-primary",
                     )}
-                  />
+                  >
+                    <span
+                      className={cn(
+                        "h-1.5 w-1.5 rounded-full",
+                        PORT_COLORS[(port.kind ?? "*") as PortKind]?.dot ?? "bg-slate-500",
+                      )}
+                    />
+                  </span>
                 </button>
               );
             })}
 
-            {/* Output ports */}
+            {/* Output ports — same 28px hit-pad treatment as the inputs. */}
             {outputs.map((port, i) => {
               const compatible = isOutputCompatible(port);
               const dotColor = PORT_COLORS[(port.kind ?? "*") as PortKind]?.dot ?? "bg-slate-500";
@@ -675,18 +723,22 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   key={`out-${port.name}`}
                   data-port="out"
                   title={port.label}
+                  aria-label={`Connect ${port.label} output`}
                   onPointerDown={onOutputPortPointerDown(port)}
-                  className={cn(
-                    "absolute flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-background shadow-sm transition",
-                    "hover:scale-125 hover:z-10",
-                    compatible && "animate-pulse ring-2 ring-primary",
-                  )}
+                  className="absolute flex h-7 w-7 items-center justify-center hover:z-10"
                   style={{
-                    right: -7,
-                    top: portY(i, outputs.length) - 7,
+                    right: -14,
+                    top: portY(i, outputs.length) - 14,
                   }}
                 >
-                  <span className={cn("h-2 w-2 rounded-full", dotColor)} />
+                  <span
+                    className={cn(
+                      "flex h-3.5 w-3.5 items-center justify-center rounded-full border-2 border-background shadow-sm transition hover:scale-125",
+                      compatible && "animate-pulse ring-2 ring-primary",
+                    )}
+                  >
+                    <span className={cn("h-2 w-2 rounded-full", dotColor)} />
+                  </span>
                 </button>
               );
             })}

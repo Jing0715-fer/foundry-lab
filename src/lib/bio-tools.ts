@@ -233,22 +233,35 @@ export async function runBlast(p: BioBlastParams): Promise<BioResult> {
 export async function runPdb(p: BioPdbParams): Promise<BioResult> {
   const max = Math.min(p.maxResults ?? 5, 10);
   const q = p.id ? `${p.id.toUpperCase()}` : p.query ?? "antibody";
+  // RCSB search API v2: a bare text value needs the `full_text` service —
+  // the `text` service requires an operator (exact_match/contains_words)
+  // and 400s on a bare value. (Verified against the live API.)
   const url =
     "https://search.rcsb.org/rcsbsearch/v2/query?json=" +
     encodeURIComponent(
       JSON.stringify({
-        query: { type: "terminal", service: "text", parameters: { value: q } },
+        query: {
+          type: "terminal",
+          service: "full_text",
+          parameters: { value: q },
+        },
         return_type: "entry",
         request_options: { paginate: { start: 0, rows: max } },
       }),
     );
   const data = await safeFetchJson(url);
   if (data && typeof data === "object" && "result_set" in data) {
-    const rs = (data as { result_set?: { id: string }[] }).result_set ?? [];
-    const hits: BioHit[] = rs.map((r) => ({
-      id: r.id,
-      title: `PDB entry ${r.id}`,
-    }));
+    // RCSB result_set entries carry `identifier` (e.g. "4HRM") — not `id`.
+    const rs =
+      (data as { result_set?: { identifier?: string; id?: string }[] })
+        .result_set ?? [];
+    const hits: BioHit[] = rs
+      .map((r) => ({ id: r.identifier ?? r.id ?? "" }))
+      .filter((r) => r.id)
+      .map((r) => ({
+        id: r.id,
+        title: `PDB entry ${r.id}`,
+      }));
     return { tool: "pdb", count: hits.length, hits, raw: data, simulated: false };
   }
   return {

@@ -16,8 +16,24 @@ export async function POST(_request: Request, { params }: RouteCtx) {
       return NextResponse.json({ error: "Research report not found" }, { status: 404 });
     }
 
-    // Phase 1: planning.
-    await db.researchReport.update({ where: { id }, data: { status: "planning" } });
+    // Atomic claim (scheduler.ts updateMany pattern): only a row outside the
+    // active pipeline phases (planning/researching/writing) flips to planning
+    // — a double-clicked Run gets a 409 instead of two concurrent research
+    // pipelines writing over each other.
+    const claimed = await db.researchReport.updateMany({
+      where: { id, status: { notIn: ["planning", "researching", "writing"] } },
+      data: { status: "planning" },
+    });
+    if (claimed.count === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Research pipeline is already running — wait for the current " +
+            "run to finish before running it again.",
+        },
+        { status: 409 },
+      );
+    }
 
     // Parse member ids.
     let memberIds: string[] = [];

@@ -16,8 +16,23 @@ export async function POST(_request: Request, { params }: RouteCtx) {
       return NextResponse.json({ error: "Meeting not found" }, { status: 404 });
     }
 
-    // Mark as running and persist immediately so clients can observe state.
-    await db.meeting.update({ where: { id }, data: { status: "running" } });
+    // Atomic claim (scheduler.ts updateMany pattern): only a row NOT already
+    // running flips to running — a double-clicked Run gets a 409 instead of
+    // two concurrent multi-round LLM debates writing over each other.
+    const claimed = await db.meeting.updateMany({
+      where: { id, status: { not: "running" } },
+      data: { status: "running" },
+    });
+    if (claimed.count === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Meeting is already running — wait for the current debate to " +
+            "finish before running it again.",
+        },
+        { status: 409 },
+      );
+    }
 
     // Parse member ids.
     let memberIds: string[] = [];

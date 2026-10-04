@@ -188,6 +188,11 @@ export async function runAgentTurn(
     const { comp, bio } = extractToolCalls(reply);
     if (comp.length === 0 && bio.length === 0) break;
 
+    // Push the assistant reply ONCE per round (not once per tool call — the
+    // old duplicated pushes made the in-convo history grow N copies of the
+    // same reply whenever several fences appeared in one round).
+    convo.push({ role: "assistant", content: reply });
+
     // Execute comp tool calls (real algorithms via the execution engine).
     for (const c of comp) {
       const def = getCompTool(c.tool);
@@ -211,7 +216,6 @@ export async function runAgentTurn(
         status,
       };
       toolCalls.push(tc);
-      convo.push({ role: "assistant", content: reply });
       convo.push({
         role: "user",
         content: `[Tool result for ${c.tool}]\n${resultText}\n\nRevise your answer using these results.`,
@@ -232,7 +236,6 @@ export async function runAgentTurn(
           status: "completed",
         };
         toolCalls.push(tc);
-        convo.push({ role: "assistant", content: reply });
         convo.push({
           role: "user",
           content: `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,
@@ -512,12 +515,22 @@ export function extractClusterTarget(raw: unknown): ClusterRunTarget | null {
 /** Run a comp tool via the REAL execution engine (native → built-in real
  *  algorithm). With opts.cluster, dispatch to the HPC cluster instead and
  *  poll to completion — the workflow engine's canvas node stays "running"
- *  until the remote job finishes. Returns {summary, stdout, files, command}. */
+ *  until the remote job finishes. Returns {summary, stdout, files, command}.
+ *  `exitCode` is null + `pollCeiling: true` when the cluster poll ceiling
+ *  was reached while the remote job was still running (NOT a failure and NOT
+ *  a success — callers must keep the node running and reconcile later). */
 export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
   opts: { cluster?: ClusterRunTarget } = {},
-): Promise<{ summary: string; stdout: string; files: string[]; command: string; exitCode: number }> {
+): Promise<{
+  summary: string;
+  stdout: string;
+  files: string[];
+  command: string;
+  exitCode: number | null;
+  pollCeiling?: true;
+}> {
   const def = getCompTool(toolKey);
   if (!def) {
     return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "", exitCode: 1 };
@@ -552,7 +565,14 @@ async function executeCompToolOnCluster(
   toolKey: string,
   params: Record<string, unknown>,
   target: ClusterRunTarget,
-): Promise<{ summary: string; stdout: string; files: string[]; command: string; exitCode: number }> {
+): Promise<{
+  summary: string;
+  stdout: string;
+  files: string[];
+  command: string;
+  exitCode: number | null;
+  pollCeiling?: true;
+}> {
   // (a) Job row first — its id keys the workDir, run record, and poll target.
   let jobId: string;
   try {
@@ -669,19 +689,24 @@ async function executeCompToolOnCluster(
     }
   }
 
-  // Timeout — the remote job may genuinely still be running; report honestly
-  // instead of failing it (the user can watch/stop it from the Jobs panel).
-  // exitCode 0 here reflects "not a tool failure", not "done": the summary
-  // carries the honest status.
+  // Poll ceiling — the remote job may genuinely still be running. Report
+  // honestly: exitCode null (NOT 0 — a 0 here used to make the workflow
+  // engine mark the node completed + cascade downstream while the cluster
+  // job was still going) plus an explicit `pollCeiling: true` flag the
+  // engine maps onto a still-running node. The node's stream route
+  // reconciles the node against the ToolJob row the cluster sweep keeps
+  // updating, so the UI settles once the job actually finishes.
   const run = getRun(jobId);
   const tail = lastTail || run?.logTailOut || "";
   return {
     summary:
       `Cluster run still in progress after the poll ceiling (job ${jobId}) — ` +
-      "watch it on the AlphaFold / Jobs panel.",
-    stdout: `$ ${run?.command ?? ""}\n[cluster run · job ${jobId} — poll timeout]\n${tail}`,
+      "watch the Cluster panel / job list for completion; this node stays " +
+      "running and settles automatically when the job finishes.",
+    stdout: `$ ${run?.command ?? ""}\n[cluster run · job ${jobId} — poll ceiling reached, remote job still running]\n${tail}`,
     files: [],
     command: run?.command ?? "",
-    exitCode: 0,
+    exitCode: null,
+    pollCeiling: true,
   };
 }

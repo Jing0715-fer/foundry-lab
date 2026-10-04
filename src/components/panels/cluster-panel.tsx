@@ -158,6 +158,19 @@ function isClusterJob(j: ToolJobDTO): boolean {
   return meta?.cluster === true;
 }
 
+/** true while a cluster job is in a live (not-yet-terminal) phase — the
+ *  2.5s job poll only runs while at least one of these exists. */
+function isLiveClusterJob(j: ToolJobDTO): boolean {
+  return (
+    j.status === "queued" ||
+    j.status === "pending" ||
+    j.status === "running" ||
+    j.status === "planning" ||
+    j.status === "researching" ||
+    j.status === "writing"
+  );
+}
+
 // ── panel ───────────────────────────────────────────────────────────────────
 
 export function ClusterPanel() {
@@ -233,24 +246,46 @@ export function ClusterPanel() {
 
   const probePartitions = launchConn?.lastProbe?.slurm.partitions ?? [];
 
-  // ── jobs polling ──────────────────────────────────────────────────────────
-  React.useEffect(() => {
-    let alive = true;
-    const tick = async () => {
-      try {
-        const res = await fetch("/api/tools/jobs", { cache: "no-store" });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (alive && Array.isArray(data)) {
-          // cluster-dispatched jobs only
-          setJobs((data as ToolJobDTO[]).filter(isClusterJob));
-        }
-      } catch { /* transient */ }
-    };
-    void tick();
-    const iv = setInterval(tick, 2500);
-    return () => { alive = false; clearInterval(iv); };
+  // ── jobs polling ───────────────────────────────────────────────────────────
+  // 2.5s interval ONLY while a cluster job is live; otherwise refresh on
+  // demand (initial load, after actions, tab re-focus) — mirrors the
+  // alphafold panel's gating instead of polling forever while the sheet is
+  // open.
+  const refreshJobs = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/tools/jobs", { cache: "no-store" });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) {
+        // cluster-dispatched jobs only
+        setJobs((data as ToolJobDTO[]).filter(isClusterJob));
+      }
+    } catch {
+      /* transient — the next tick or visibility refresh retries */
+    }
   }, []);
+
+  React.useEffect(() => {
+    void refreshJobs();
+  }, [refreshJobs]);
+
+  const anyLive = React.useMemo(() => jobs.some(isLiveClusterJob), [jobs]);
+
+  React.useEffect(() => {
+    if (!anyLive) return;
+    const iv = setInterval(() => {
+      void refreshJobs();
+    }, 2500);
+    return () => clearInterval(iv);
+  }, [anyLive, refreshJobs]);
+
+  React.useEffect(() => {
+    const onVis = () => {
+      if (document.visibilityState === "visible") void refreshJobs();
+    };
+    document.addEventListener("visibilitychange", onVis);
+    return () => document.removeEventListener("visibilitychange", onVis);
+  }, [refreshJobs]);
 
   // ── actions ───────────────────────────────────────────────────────────────
   const saveConnection = async () => {
@@ -380,10 +415,8 @@ export function ClusterPanel() {
         variant: "success",
       });
       if (job?.id) setExpandedJob(job.id);
-      // immediate refresh
-      const jr = await fetch("/api/tools/jobs", { cache: "no-store" });
-      const jd = await jr.json();
-      if (Array.isArray(jd)) setJobs((jd as ToolJobDTO[]).filter(isClusterJob));
+      // immediate refresh (shared with the poll gate)
+      await refreshJobs();
     } catch (e) {
       toast({ title: "Launch failed", description: String(e), variant: "destructive" });
     } finally {

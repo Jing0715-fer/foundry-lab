@@ -17,13 +17,15 @@
 
 import { spawn } from "child_process";
 import { getAnyRegistryEntry } from "./tool-registry";
-import { resolveEnginePython } from "./real-executor";
+import { resolveEnginePython, resetEnginePythonCache } from "./real-executor";
 import {
   resolveInstallLane,
   resolveInstallSpec,
   isPosixFlavored,
   osKey,
+  resetPlatformInfoCache,
 } from "./platform-env";
+import { invalidateFoundryCache } from "./foundry";
 import { randomUUID } from "crypto";
 
 export interface InstallJob {
@@ -143,7 +145,37 @@ export function startInstall(key: string): InstallJob | { error: string } {
   };
   installJobs.set(id, job);
 
-  const proc = spawn(lane.file, lane.args, {
+  /** Invalidate every detection cache after a SUCCESSFUL install — the
+ *  platform/env caches below all hold NEGATIVE resolutions ("no engine
+ *  python", "not installed") that would keep reporting the pre-install
+ *  state until a server restart:
+ *    - foundry.ts            → resolveFoundryPython + statusCache
+ *      (invalidateFoundryCache existed but was never called);
+ *    - platform-env.ts       → globalThis.__foundryPlatformInfo (OS/python/PM
+ *      probe results); resetPlatformInfoCache clears it so the next scan
+ *      re-probes;
+ *    - real-executor.ts      → cachedPython (engine interpreter); reset so
+ *      tools/scan + engines pick up a newly installed python/numpy.
+ *  Without this, "Re-scan to verify" showed stale data. */
+function invalidateInstallCaches(): void {
+  try {
+    invalidateFoundryCache();
+  } catch {
+    /* never let cache teardown break the job */
+  }
+  try {
+    resetPlatformInfoCache();
+  } catch {
+    /* ignore */
+  }
+  try {
+    resetEnginePythonCache();
+  } catch {
+    /* ignore */
+  }
+}
+
+const proc = spawn(lane.file, lane.args, {
     cwd: process.cwd(),
     env: { ...process.env, PIP_DISABLE_PIP_VERSION_CHECK: "1" },
   });
@@ -170,9 +202,14 @@ export function startInstall(key: string): InstallJob | { error: string } {
     job.exitCode = code ?? 1;
     job.status = code === 0 ? "completed" : "failed";
     job.finishedAt = new Date().toISOString();
+    if (code === 0) {
+      // Successful install → drop every cached "not installed" detection
+      // so the immediate re-scan (and the engines) see the new state.
+      invalidateInstallCaches();
+    }
     job.logs.push(
       `[${ts()}] ${job.status === "completed"
-        ? `✔ ${job.label} install finished (exit 0). Re-scan to verify.`
+        ? `✔ ${job.label} install finished (exit 0). Detection caches invalidated — re-scan to verify.`
         : `✘ ${job.label} install failed (exit ${code}). Check the log above.`}`,
     );
   });

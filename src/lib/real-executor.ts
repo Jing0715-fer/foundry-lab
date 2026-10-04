@@ -60,6 +60,14 @@ export function resolveEnginePython(): string | null {
   return resolved;
 }
 
+/** Reset the interpreter resolution cache. Called after a SUCCESSFUL
+ *  one-click install — the install may have provisioned python/numpy that
+ *  this module's cached `null` ("no engine python") still denies. The next
+ *  resolveEnginePython() call re-probes via platform-env. */
+export function resetEnginePythonCache(): void {
+  cachedPython = undefined;
+}
+
 const ALGORITHMS_DIR = resolve(process.cwd(), "scripts", "algorithms");
 
 // ── Detection ───────────────────────────────────────────────────────────────

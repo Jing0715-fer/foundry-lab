@@ -281,6 +281,16 @@ Python，POSIX 安装脚本在 Windows 上经 WSL bash 执行。
 会。聊天中的智能体可自主发起 BLAST / PubMed 等真实 API 调用（最多 5 轮循环），
 调用过程与结果在聊天流内可见。
 
+**Q：AlphaFold2 是外部应用，为什么有独立页面而不只在"环境"里？**
+它在两层各司其职：**Environment（环境面板）是管理层** —— AlphaFold2
+与 RFdiffusion / ProteinMPNN / Rosetta 一样登记在外部工具清单中（结构预测
+分类），负责检测、安装提示与回退引擎状态；**侧边栏的 AlphaFold 页面是
+使用层（工作台）** —— 面向"粘贴序列 → 出结构"这类高频单步操作，提供
+集群连接、提交模式、作业监控与 3D 查看。RFdiffusion / ProteinMPNN 的
+使用层是画布节点，AlphaFold2 两者兼备（画布节点 + 工作台）。两层已做
+交叉链接：环境面板的 AlphaFold2 卡片带"Open workbench"按钮，工作台
+头部带"Environment / Cluster"入口。
+
 ---
 
 📅 截图与数据说明：本文档所有截图来自真实运行的应用实例，工作流为真实引擎执行完成。

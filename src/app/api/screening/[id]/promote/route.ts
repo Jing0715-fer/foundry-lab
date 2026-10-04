@@ -1,7 +1,8 @@
-// Screening promotion — POST { ids, nodeName? } → creates an "input" node on
-// the first workflow whose logs embed the promoted files in a ##OUTPUTS##
-// trailer (workflow-engine autoWireToolInputs auto-wires pdb_path/fasta_path
-// on downstream tool nodes). Candidates are marked status "promoted".
+// Screening promotion — POST { ids, nodeName?, workflowId? } → creates an
+// "input" node on the TARGET workflow (explicit workflowId, else the first
+// workflow) whose logs embed the promoted files in a ##OUTPUTS## trailer
+// (workflow-engine autoWireToolInputs auto-wires pdb_path/fasta_path on
+// downstream tool nodes). Candidates are marked status "promoted".
 
 import { NextResponse } from "next/server";
 import {
@@ -32,9 +33,20 @@ export async function POST(
     typeof body.nodeName === "string" && body.nodeName.trim()
       ? body.nodeName.trim()
       : undefined;
+  // Optional target workflow — the promote-dialog sends the CURRENT workflow
+  // from the store (multi-workflow safe). Absent → legacy first workflow.
+  const workflowId =
+    typeof body.workflowId === "string" && body.workflowId.trim()
+      ? body.workflowId.trim()
+      : undefined;
 
   try {
-    const result = await promoteCandidates(id, ids as string[], nodeName);
+    const result = await promoteCandidates(
+      id,
+      ids as string[],
+      nodeName,
+      workflowId,
+    );
     return NextResponse.json(result);
   } catch (err) {
     return NextResponse.json(

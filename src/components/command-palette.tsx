@@ -113,7 +113,14 @@ async function addNodeAtCenter(
     const res = await fetch("/api/workflow/nodes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type, name, x, y }),
+      body: JSON.stringify({
+        // Target the CURRENT workflow (multi-workflow contract).
+        workflowId: workflow?.id,
+        type,
+        name,
+        x,
+        y,
+      }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
@@ -158,7 +165,7 @@ function pickJSONFile(onText: (text: string, fileName: string) => void) {
   input.click();
 }
 
-const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "tasks" | "meetings" | "research" | "alphafold"; label: string }[] = [
+const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "screening"; label: string }[] = [
   { panel: "canvas", label: "Go to Canvas" },
   { panel: "dashboard", label: "Go to Dashboard" },
   { panel: "agents", label: "Go to Agents" },
@@ -166,6 +173,7 @@ const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "tasks" | "meeti
   { panel: "meetings", label: "Go to Meetings" },
   { panel: "research", label: "Go to Research" },
   { panel: "alphafold", label: "Go to AlphaFold" },
+  { panel: "screening", label: "Go to Screening" },
 ];
 
 const ADD_NODE_TYPES: { type: string; label: string; icon: React.ReactNode }[] = [
@@ -255,9 +263,28 @@ export function CommandPalette() {
     }
     t({ title: "Workflow started", description: `Running "${workflow.name}"…` });
     try {
-      const res = await fetch("/api/workflow/run", { method: "POST" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const res = await fetch("/api/workflow/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        // Target the CURRENT workflow; the server 409s when any node is
+        // already running (double-execution guard).
+        body: JSON.stringify({ workflowId: workflow.id }),
+      });
+      if (res.status === 409) {
+        t({ title: "Workflow is already running" });
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
       const data = await res.json();
+      // Refresh the CURRENT workflow (by id) so node statuses update.
+      const wfRes = await fetch(`/api/workflows/${workflow.id}`);
+      if (wfRes.ok) {
+        const wf = await wfRes.json();
+        useAppStore.getState().setWorkflow(wf);
+      }
       t({
         title: "Workflow complete",
         description: `Started ${data?.started ?? 0} • Completed ${
@@ -265,12 +292,6 @@ export function CommandPalette() {
         }`,
         variant: "success",
       });
-      // Refresh the workflow so node statuses update.
-      const wfRes = await fetch("/api/workflow");
-      if (wfRes.ok) {
-        const wf = await wfRes.json();
-        useAppStore.getState().setWorkflow(wf);
-      }
     } catch (e) {
       t({
         title: "Run failed",
@@ -332,7 +353,13 @@ export function CommandPalette() {
         description: `Creating ${parsed.nodes.length} nodes + ${parsed.edges.length} edges`,
       });
       try {
-        const wf = await importWorkflow(parsed);
+        // Pass the CURRENT workflow id so the import clears + rebuilds the
+        // workflow the user is looking at (multi-workflow contract) —
+        // without it the server-side fallback targets the FIRST workflow.
+        const wf = await importWorkflow(
+          parsed,
+          useAppStore.getState().workflow?.id,
+        );
         useAppStore.getState().setWorkflow(wf);
         useAppStore.getState().select(null);
         useAppStore.getState().inspect(null);

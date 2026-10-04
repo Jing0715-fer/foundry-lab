@@ -5,6 +5,17 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { toNodeDTO } from "@/lib/workflow-engine";
 
+// The NodeStatus union from src/lib/types.ts — spelled out here so an
+// unknown status string gets an honest 400 instead of silently persisting
+// a state no consumer (runner / stream / UI) knows how to handle.
+const VALID_NODE_STATUSES = [
+  "idle",
+  "pending",
+  "running",
+  "completed",
+  "failed",
+] as const;
+
 type PatchBody = {
   name?: string;
   x?: number;
@@ -37,7 +48,21 @@ export async function PATCH(
     if (body.refId !== undefined) {
       data.refId = body.refId === null ? null : String(body.refId);
     }
-    if (typeof body.status === "string") data.status = body.status;
+    if (typeof body.status === "string") {
+      // Validate against the known NodeStatus enum — an arbitrary string
+      // here would wedge the runner/stream/UI state machines.
+      if (!(VALID_NODE_STATUSES as readonly string[]).includes(body.status)) {
+        return NextResponse.json(
+          {
+            error:
+              `status must be one of ${VALID_NODE_STATUSES.join(" | ")}` +
+              ` (got "${body.status}")`,
+          },
+          { status: 400 },
+        );
+      }
+      data.status = body.status;
+    }
     if (typeof body.progress === "number") data.progress = body.progress;
     if (body.result !== undefined) {
       data.result = body.result === null ? null : String(body.result);

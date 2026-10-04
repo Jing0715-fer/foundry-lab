@@ -560,7 +560,14 @@ export function ScreeningPanel() {
       const res = await fetch(`/api/screening/${screening.id}/promote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selectedIds, nodeName }),
+        // Target the CURRENT workflow (multi-workflow contract, task 3-a):
+        // without workflowId the server promotes into its first-workflow
+        // default, which would land the node on the wrong canvas.
+        body: JSON.stringify({
+          ids: selectedIds,
+          nodeName,
+          workflowId: useAppStore.getState().workflow?.id,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
