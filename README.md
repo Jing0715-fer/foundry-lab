@@ -1,96 +1,261 @@
-# Foundry Lab — Agentic Research Workflow Studio
+# Foundry Lab · 智能体科研工作流工作室
 
-An agentic research workflow studio for computational protein design: build
-multi-agent workflows on an interactive canvas, orchestrate LLM agents,
-and run **real computational algorithms** — never simulations.
+> 面向计算蛋白质设计的智能体研究工作流平台：在交互式画布上搭建多智能体工作流，
+> 编排 LLM 智能体，并运行**真实计算算法** —— 没有任何模拟数据。
 
 ![stack](https://img.shields.io/badge/Next.js%2016-App%20Router-teal)
 ![lang](https://img.shields.io/badge/TypeScript-5-blue)
 ![db](https://img.shields.io/badge/Prisma-SQLite-orange)
+![style](https://img.shields.io/badge/Tailwind%20CSS%204-shadcn%2Fui-slate)
 
-## What's inside
+![Foundry Lab 工作流画布](docs/images/02-canvas-hero.png)
 
-- **Workflow canvas** — drag-and-drop nodes (agents, tasks, meetings, research
-  pipelines, comp tools, AlphaFold prediction, bio queries) with live progress
-  streaming, minimap, undo/redo, grouping, export/import.
-- **Agent layer** — LLM agents with knowledge configs, tool-calling loops,
-  team meetings, multi-round research pipelines, and a PI Copilot. Every
-  agent carries REAL persisted runtime settings (fine-tune dialog:
-  temperature / max-tokens / top-p / extra system instructions / verbose /
-  streaming) applied to every LLM call it makes; chat streams tokens from
-  the live model (true SSE, chunked-emit only as fallback).
-- **Comp tools** — RFdiffusion, RFantibody, ProteinMPNN, LigandMPNN,
-  SolubleMPNN, Rosetta, PyRosetta, RF3, ESMFold, ColabFold: each a standalone
-  canvas node / command with its own param surface, native CLI grammar,
-  cluster dispatch (direct / Slurm), and a built-in real-algorithm engine as
-  the local fallback. (The old generic "Comp Tool (legacy)" node is gone —
-  every tool is its own node.)
-- **AlphaFold2 structure prediction** — following the cluster tutorial
-  end-to-end:
-  - **Cluster lane (primary)**: connect the mgt login node over SSH (IP +
-    username/password), then the app runs the tutorial flow verbatim —
-    `salloc -N 1 --gres=gpu:1 -p brain2` → `ssh gpu05` →
-    `module load alphafold2` → `CUDA_VISIBLE_DEVICES="6" run_alphafold.py
-    --fasta_paths … --output_dir <name>_AF2 --max_template_date 2021-07-20`
-    (or `--feature_file` to skip the MSA stage) — with live logs and the full
-    output tree synced back (ranked_0..4.pdb by pLDDT, relaxed/unrelaxed
-    models, ranking_debug.json, features.pkl, timings.json, msas/).
-  - **Local lane (fallback)**: the built-in Structure Prediction Engine runs
-    the published Chou-Fasman algorithm offline — a classical baseline, NOT
-    the AF2 network (honest positioning everywhere).
-  - **Never simulated** — there is no fake data path anywhere in the app.
-- **Bio APIs** — live BLAST (NCBI URL-API with RID polling), RCSB PDB
-  search, PubMed EUtils, and UniProt REST, with honest error reporting.
-- **3D output viewer** — three.js molecular viewer (cartoon / ball-stick /
-  space-filling) over the real PDB artifacts each run produces.
-- **Workflow versioning + scheduling** — snapshot the canvas into the DB
-  and restore any snapshot transactionally (POST
-  `/api/workflows/:id/versions/:versionId/restore`); schedule runs for a
-  future time and a DB-backed sweeper (started from `instrumentation.ts`)
-  fires them through the SAME execution lane as manual runs — schedules
-  survive restarts and fire on boot if their time passed while down.
+上图是一条真实跑通的完整工作流：`设计简报 → RFdiffusion 骨架生成 → ProteinMPNN 序列设计 → AlphaFold 结构预测 → 最终报告`，全部节点均为真实算法引擎执行完成（6 节点 · 5 条边）。
 
-## The Environment panel
+📖 **[完整使用攻略教程（图文并茂）→ docs/tutorial.md](docs/tutorial.md)**
 
-The Environment sheet (sidebar → Environment) is a **host scan + toolchain**
-page:
+---
 
-| Tier | What it shows |
+## 目录
+
+- [核心特性](#核心特性)
+- [技术栈](#技术栈)
+- [快速开始](#快速开始)
+- [界面一览](#界面一览)
+- [大规模筛选与排序](#大规模筛选与排序)
+- [真实算法引擎](#真实算法引擎)
+- [仓库结构](#仓库结构)
+- [API 一览](#api-一览)
+- [常见问题](#常见问题)
+
+---
+
+## 核心特性
+
+### 🎨 工作流画布
+
+拖拽式节点画布（自研 SVG 渲染，无 react-flow 依赖）：节点目录、端口感知连线、
+小地图、撤销/重做、框选、自动布局、PNG/SVG 导出、乐观更新。
+双击画布空白处或从左侧目录拖入即可添加节点。
+
+![节点检查器](docs/images/03-node-inspector.png)
+
+每个节点自带检查器（右侧）：参数面板、运行日志（实时流式）、任务历史、
+产物文件入口，一键跳转 3D 查看器。
+
+### 🤖 智能体层
+
+- **9 个预置专家人格**（PI、计算生物学家、免疫学家、结构生物学家……），每个智能体带
+  知识域配置与系统提示词。
+- **工具调用循环**（最多 5 轮，并行 bio + comp 工具调用）：智能体聊天中可自主调用
+  BLAST / PDB / PubMed / UniProt 等真实 API。
+- **持久化运行时参数**：微调对话框可配置 temperature / max-tokens / top-p /
+  附加系统指令 / 流式输出，作用于该智能体的每一次 LLM 调用。
+- **团队会议**：多智能体多轮辩论，产出结构化纪要。
+- **研究管线**：规划 → 检索 → 撰写三阶段深度研究，输出 Markdown 报告。
+- **PI Copilot**：悬浮于画布之上的 PI 助手，边看工作流边讨论。
+
+![智能体聊天与工具调用](docs/images/12-agent-chat.png)
+
+### 🧬 计算工具（12 种独立节点）
+
+RFdiffusion、RFantibody、ProteinMPNN、LigandMPNN、SolubleMPNN、Rosetta、
+PyRosetta、RoseTTAFold3、ESMFold、ColabFold、AlphaFold2、Bio Tool ——
+每个工具都是独立画布节点：原生 CLI 参数面、集群派发（直连 / Slurm）、
+以及**内置真实算法引擎**作为本地回退（见下文）。
+
+AlphaFold2 面板完整复刻集群教程流程：SSH 登录 → `salloc` 申请 GPU →
+`module load alphafold2` → `run_alphafold.py`，输出树（ranked_0..4.pdb、
+ranking_debug.json、msas/…）全量同步回本地。
+
+![AlphaFold2 面板](docs/images/16-alphafold-panel.png)
+
+### 🔬 生物信息 API
+
+BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt REST ——
+全部在线真实调用，错误如实上报。
+
+### 🖼️ 3D 结构查看器
+
+基于 three.js 的分子查看器：cartoon / ball-stick / space-filling 表示、
+链/残基着色、DSSP 二级结构标注、氢键、SASA、测量工具、序列条与选取联动。
+
+![3D 结构查看器](docs/images/04-3d-structure-viewer.png)
+
+### 📊 大规模筛选与排序
+
+针对大规模批量结果（几十～上百候选）的完整评估体系：
+
+- **指标采集**：自动收割运行产物中的 metrics（pLDDT、pTM、helix%、strand%、
+  clashes、rama-LL、对称单元数……）。
+- **加权综合评分**：`score = 100 · Σ(wᵢ·normᵢ)/Σwᵢ`，滑杆实时重排序，
+  4 个预置权重方案（Balanced / Designability / 结构优先 …）可保存到服务端。
+- **多维度操作**：搜索、状态过滤、指标范围过滤、三态排序、星标 / 入围 / 淘汰、
+  批量操作、双候选并排对比（并列最优高亮）。
+- **详情 + 3D**：每个候选可打开详情抽屉 —— 指标网格、着色序列、标签/笔记、
+  真实 3D 结构。
+- **Promote 回画布**：把选中的候选提升为画布输入节点，下游工具节点
+  **自动接线** pdb/fasta 文件（已用真实 ProteinMPNN 运行验证闭环）。
+- **导出 CSV**。
+
+![筛选结果表](docs/images/06-screening-table.png)
+
+### ⏱️ 版本快照与定时调度
+
+- 画布快照存入数据库，事务性恢复任意历史版本。
+- DB 驱动的定时任务清扫器（随 `instrumentation.ts` 启动）：
+  预约运行走与手动运行**同一条执行通道**，重启后错过的计划自动补跑。
+
+### 🖥️ 环境与工具链管理
+
+Environment 面板：运行时探测（python3 / numpy / scipy / biopython）、
+5 个内置引擎自检、外部工具状态 + 一键真实安装（pip / git clone，
+流式终端输出，装完自动重扫）。
+
+![环境扫描面板](docs/images/17-environment.png)
+
+### 📱 响应式与快捷操作
+
+移动端完整可用（卡片列表替代表格）、`Ctrl+K` 命令面板、完整键盘快捷键、
+新手引导巡览。
+
+![移动端](docs/images/20-mobile-screening.png) ![命令面板](docs/images/05-command-palette.png)
+
+---
+
+## 技术栈
+
+| 层 | 技术 |
 |---|---|
-| Runtime | python3 / numpy / scipy / biopython / git — live version detection |
-| Engines | the five built-in real-algorithm engines (diffusion / folding / inverse folding / scoring / antibody) with self-test status |
-| External | RFdiffusion, ProteinMPNN, Rosetta… (native status + fallback mapping), plus AlphaFold2 — provided on the GPU cluster via `module load alphafold2` |
+| 框架 | Next.js 16（App Router）+ React 19 |
+| 语言 | TypeScript 5（严格模式） |
+| UI | Tailwind CSS 4 + shadcn/ui（New York）+ Lucide 图标 |
+| 状态 | Zustand（客户端）+ 乐观更新 |
+| 数据库 | Prisma ORM + SQLite |
+| LLM | z-ai-web-dev-sdk（仅服务端） |
+| 3D | three.js + Web Workers |
+| 实时 | socket.io（任务事件流） |
 
-Uninstalled items with an **Install** button support real one-click
-installation (pip / git clone + pip) with a live-streaming terminal and
-automatic re-scan. Installs land in the same environment the engines use.
-
-## Getting started
+## 快速开始
 
 ```bash
 bun install
-bun run db:push        # SQLite schema
+bun run db:push        # 初始化 SQLite schema
 bun run dev            # http://localhost:3000
 ```
 
-Runtime requirements for the built-in engines: `python3` with `numpy`
-(the Tools page shows exactly what's detected and installs what's missing).
+内置算法引擎的运行要求：`python3` + `numpy`（Tools/Environment 页面会实时探测，
+缺什么就一键安装什么）。
 
-## Repository layout
+> 首次进入会弹出新手引导；侧栏底部的 **Seed Data** 可一键生成 9 个智能体 + 示例工作流；
+> Screening 面板内置两个演示 campaign（60 候选骨架筛选 / 20 候选 AF2 模型排名）。
+
+## 界面一览
+
+| 视图 | 说明 | 截图 |
+|---|---|---|
+| 新手引导 | 6 步交互式巡览 | ![](docs/images/01-onboarding.png) |
+| 画布 | 节点编排 + 运行 | ![](docs/images/02-canvas-hero.png) |
+| 节点检查器 | 参数 / 日志 / 产物 | ![](docs/images/03-node-inspector.png) |
+| 3D 查看器 | 真实 PDB 渲染 | ![](docs/images/04-3d-structure-viewer.png) |
+| 命令面板 | Ctrl+K | ![](docs/images/05-command-palette.png) |
+| 筛选 | 大规模评估排序 | ![](docs/images/06-screening-table.png) |
+| 权重 | 实时加权重排 | ![](docs/images/07-screening-weights.png) |
+| 对比 | 双候选并排 | ![](docs/images/08-screening-compare.png) |
+| 候选详情 | 指标 + 3D + 标签 | ![](docs/images/09b-screening-detail-3d.png) |
+| Promote | 筛选 → 画布 | ![](docs/images/10-screening-promote.png) |
+| 智能体 | 人格与知识配置 | ![](docs/images/11-agents-panel.png) |
+| 智能体聊天 | 工具调用循环 | ![](docs/images/12-agent-chat.png) |
+| 会议 | 多智能体辩论 | ![](docs/images/13-meetings-panel.png) |
+| 研究管线 | 三阶段深度研究 | ![](docs/images/14-research-panel.png) |
+| Dashboard | 全局统计 | ![](docs/images/15-dashboard.png) |
+| 集群 | SSH / Slurm 派发 | ![](docs/images/19-cluster-panel.png) |
+| PI Copilot | 画布悬浮助手 | ![](docs/images/18-pi-copilot.png) |
+
+## 真实算法引擎
+
+`scripts/algorithms/` 下是纯 numpy 实现的真实经典算法（无网络权重依赖），
+作为外部工具未安装时的本地回退 —— **不是模拟数据，是真实计算**：
+
+| 引擎 | 覆盖工具 | 算法 |
+|---|---|---|
+| `diffusion_engine.py` | rfdiffusion | Ramachandran 盆地扭转扩散 + 回溯 + NeRF 组装 |
+| `fold_engine.py` | esmfold / rf3 / colabfold / alphafold | Chou-Fasman 预测 + 共识平滑 + 几何组装 |
+| `mpnn_engine.py` | proteinmpnn 家族 | 基于真实骨架的知识势 Gibbs 逆折叠采样 |
+| `score_engine.py` | rosetta / pyrosetta | MJ 接触势 + Rama 似然 + 溶剂化 + MC 最小化 |
+| `antibody_engine.py` | rfantibody | 种系框架 Fv 构建 + IMGT 规范 CDR 采样 |
+
+集群可用时优先走集群（原生 CLI）；不可用时自动回退引擎 —— 两条通道产物
+走同一套收割/评估路径。
+
+## 仓库结构
 
 ```
-scripts/algorithms/     # the real algorithm engines (pure numpy Python)
-  common.py             # Chou-Fasman, MJ potential, NeRF, Shrake-Rupley, …
-  diffusion_engine.py   # rfdiffusion — torsion diffusion + backtracking
-  fold_engine.py        # esmfold / rf3 / colabfold — SS prediction + assembly
-  mpnn_engine.py        # proteinmpnn family — Gibbs inverse folding
-  score_engine.py       # rosetta / pyrosetta — knowledge-based scoring
-  antibody_engine.py    # rfantibody — germline Fv builder
-src/lib/                # execution engine, registries, workflow runtime
-  workflow-runner.ts    # shared run lane (manual + scheduled runs)
-  scheduler.ts          # DB-backed scheduled-run sweeper
-src/instrumentation.ts  # boots the scheduler with the server process
-src/app/api/            # REST API (tools run/scan/install, workflow, agents…)
-src/components/         # canvas, panels, 3D viewers
-prisma/                 # SQLite schema (incl. WorkflowVersion + WorkflowSchedule)
+├─ docs/
+│  ├─ images/            # 文档截图（本 README 与教程引用）
+│  └─ tutorial.md        # 完整使用攻略教程（图文并茂）
+├─ scripts/
+│  ├─ algorithms/        # 5 个真实算法引擎（纯 numpy Python）
+│  └─ foundry/           # 辅助脚本
+├─ src/
+│  ├─ app/
+│  │  ├─ page.tsx        # 单页应用入口（唯一用户路由 /）
+│  │  └─ api/            # REST API（tools / workflow / agents / screening / …）
+│  ├─ components/
+│  │  ├─ canvas/         # 画布（节点/边/小地图/检查器/导出）
+│  │  ├─ screening/      # 大规模筛选评估与排序 UI
+│  │  ├─ panels/         # 各功能面板（agents/meetings/research/…）
+│  │  ├─ molecular/      # three.js 分子工作室
+│  │  └─ ui/             # shadcn/ui 组件
+│  ├─ lib/
+│  │  ├─ workflow-engine.ts   # 节点执行引擎 + 自动接线
+│  │  ├─ workflow-runner.ts   # 共享运行通道（手动+定时）
+│  │  ├─ scheduler.ts         # DB 定时任务清扫器
+│  │  ├─ screening.ts         # 筛选收割/评分/提升
+│  │  ├─ real-executor.ts     # 真实命令执行
+│  │  └─ molecular/           # 3D 引擎（worker/DSSP/SASA/…）
+│  └─ instrumentation.ts  # 随服务启动调度器
+├─ mini-services/        # 独立子服务（mock-cluster 集群模拟）
+├─ prisma/               # SQLite schema
+└─ outputs/              # 运行产物（PDB/FASTA/metrics，可被 file API 服务）
 ```
+
+## API 一览
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| POST | `/api/tools/run` | 运行计算工具（真实执行） |
+| GET | `/api/tools/scan` | 环境扫描 |
+| POST | `/api/tools/install` | 一键安装外部工具 |
+| GET | `/api/tools/jobs/:id` | 任务状态 / 日志 / 文件 |
+| GET/POST | `/api/workflow` | 工作流读取 / 全量运行 |
+| POST | `/api/workflow/nodes` · `/edges` | 增删节点 / 连线 |
+| POST | `/api/workflow/nodes/:id/run` | 单节点运行 |
+| POST | `/api/workflows/:id/versions/:v/restore` | 恢复版本快照 |
+| POST | `/api/workflows/:id/schedule` | 预约定时运行 |
+| GET/POST | `/api/agents` | 智能体 CRUD |
+| POST | `/api/agents/:id/chat` · `/chat/stream` | 聊天（SSE 流式） |
+| POST | `/api/meetings/:id/run` | 多智能体会议 |
+| POST | `/api/research/:id/run` | 研究管线 |
+| GET/POST | `/api/screening` | 筛选 campaign 列表 / 创建 |
+| PATCH | `/api/screening/:id` | 权重持久化 |
+| GET | `/api/screening/:id/candidates` | 候选分页 |
+| POST | `/api/screening/:id/promote` | 候选提升回画布 |
+| GET | `/api/bio-tools/:type` | BLAST / PDB / PubMed / UniProt |
+
+## 常见问题
+
+**Q：没有 GPU 集群能用吗？**
+可以。所有计算工具都有内置真实算法引擎回退，本机 `python3+numpy` 即可运行完整工作流。
+
+**Q：数据是模拟的吗？**
+不是。引擎产物（PDB/FASTA/metrics.json）由真实算法计算生成并落盘；
+筛选指标从这些真实产物收割。应用中不存在假数据路径。
+
+**Q：LLM 智能体会调用工具吗？**
+会。聊天中的智能体可自主发起 BLAST / PubMed 等真实 API 调用（最多 5 轮循环），
+调用过程与结果在聊天流内可见。
+
+---
+
+📅 截图与数据说明：本文档所有截图来自真实运行的应用实例，工作流为真实引擎执行完成。

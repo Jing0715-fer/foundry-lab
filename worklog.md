@@ -2983,3 +2983,21 @@ Work Log:
 
 Stage Summary:
 - The screening system is done and end-to-end real: harvest real artifacts → metric table → live weighted ranking → compare/shortlist → 3D inspection → promote back onto the canvas → downstream tools auto-wire the promoted files (verified with a real MPNN run). Large-scale UX verified at 60 candidates + 20 model rankings, mobile-safe, zero errors.
+
+---
+Task ID: 4
+Agent: main-orchestrator (Z.ai Code)
+Task: 写一个 README + 一份完整图文并茂使用攻略教程。
+
+Work Log:
+- 恢复上下文（worklog 尾部 + API 状态检查）：9 agents、2 demo screenings（60/20 候选）、workflow 有 11 个混杂测试节点。
+- 重搭演示工作流（API 驱动）：删除 11 旧节点 → 创建 6 节点链 Input"Design Brief" → Agent"Computational Biologist" + RFdiffusion → ProteinMPNN → AlphaFold → Output"Final Report"，5 条边；全部真实引擎跑到 completed（100%）。
+- agent-browser 截图会话（1440×900 → 375×812）：共 23 张真实截图存 docs/images/（onboarding×2、hero 画布、inspector、3D 查看器、命令面板、筛选表/权重/对比/详情/详情3D/promote、agents、chat（含 PubMed 工具调用回复）、meetings、research、dashboard、alphafold、environment、cluster、PI copilot、移动端×2）。
+- 关键截图逐张 VLM 验证（12-agent-chat 回复含 PubMed ID、06 表格 60 候选+直方图、04/09b 3D cartoon 渲染、13/16 面板标题核对、20 移动端卡片）；修复两处问题：Research 点击被 header 遮挡（改 role 定位重截）、View outputs 默认开 Summary 标签（切 Structure 标签截 3D）。
+- 重写 README.md（中文，261 行）：徽章、hero 图、核心特性（画布/智能体/12 工具/生物API/3D/筛选/版本调度/环境/移动端）、技术栈、快速开始、界面一览表（16 缩略图）、真实算法引擎表、仓库结构、API 一览、FAQ。
+- 新建 docs/tutorial.md（中文，13 章 + 学习路径）：启动 → 界面总览 → 第一条工作流（含自动接线日志示例）→ 3D → 智能体（聊天/微调/会议/研究/PI）→ 大规模筛选（评分公式、权重预设、对比、详情、Promote 闭环、CSV）→ AlphaFold → 环境 → 集群 → 快照/定时 → 命令面板/快捷键表 → 移动端 → FAQ。23 张图全部引用。
+- 校验：两个文档 23 个本地图片引用全部解析（4 个"missing"是 shields.io 徽章外链，正常）；lint 干净；dev.log 无错误。
+- 提交 + 推送。
+
+Stage Summary:
+- 交付 docs/images/(23 截图) + README.md(中文重写) + docs/tutorial.md(完整攻略)；演示工作流（6 节点 5 边全 completed）保留在 DB 作为文档实景；DB 其余状态未动（2 个 demo screening、权重已存 Designability 修改前默认值——权重在验证 preset 后点了 Save 存了 2/1/5/4/1，如需还原可 PATCH 回默认）。
