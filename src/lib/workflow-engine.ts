@@ -74,6 +74,7 @@ export function toNodeDTO(n: {
   params: string | null;
   result: string | null;
   logs: string | null;
+  sweepGroup?: string | null;
   startedAt: Date | string | null;
   completedAt: Date | string | null;
   createdAt: Date | string;
@@ -105,6 +106,7 @@ export function toNodeDTO(n: {
     params,
     result: n.result,
     logs: n.logs ?? "",
+    sweepGroup: n.sweepGroup ?? null,
     startedAt: iso(n.startedAt),
     completedAt: iso(n.completedAt),
     createdAt: iso(n.createdAt) ?? new Date().toISOString(),

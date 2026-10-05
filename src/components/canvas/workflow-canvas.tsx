@@ -327,6 +327,11 @@ export function WorkflowCanvas() {
       const prevWf = prevState.workflow;
       const curWf = state.workflow;
       if (!prevWf || !curWf) return;
+      // A workflow SWITCH is not an undoable mutation — the node/edge count
+      // delta comes from swapping the whole graph, and capturing the OLD
+      // workflow's snapshot here would let a later Ctrl+Z replay it against
+      // the NEW workflow (cross-workflow contamination, seen in e2e QA).
+      if (prevWf.id !== curWf.id) return;
       // At most ONE snapshot per subscription tick: a single transition can
       // change both node and edge counts (bulk delete, cascade) — the old
       // if-chain pushed the same pre-state twice, making undo "sticky"

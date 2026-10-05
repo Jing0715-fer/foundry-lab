@@ -153,6 +153,20 @@ const REGISTRY_ORDER = [
 /** Primary metrics default to weight 2; every other observed metric → 1. */
 const PRIMARY_METRICS = ["plddt", "recovery", "rama_ll", "clashes"];
 
+/**
+ * Sweep-axis → metric-weight presets: when a screening campaign is created
+ * from a sweep, an axis that matches a preset biases the default weights
+ * toward the metrics that axis actually moves (e.g. total_length variants →
+ * geometric metrics). Only observed metrics get the override.
+ */
+const AXIS_WEIGHT_PRESETS: Record<string, Record<string, number>> = {
+  total_length: { helix_pct: 2, strand_pct: 2, rama_ll: 2, clashes: 2 },
+  num_recycles: { plddt: 2, ptm: 2 },
+  sampling_temp: { diversity: 3, recovery: 2 },
+  num_designs: { diversity: 2 },
+  num_seq: { diversity: 2 },
+};
+
 /** Raw engine metrics.json key → canonical metric key. */
 const RAW_KEY_MAP: Record<string, string> = {
   plddt: "plddt",
@@ -604,6 +618,100 @@ function rawInMap(key: string): boolean {
   return Object.prototype.hasOwnProperty.call(RAW_KEY_MAP, key);
 }
 
+// ── Sweep comparison support (shared with the sweep-group route) ─────────────
+
+/**
+ * Aggregate ONE variant's run metrics from its output directories (the sweep
+ * compare view — no DB rows involved). Mirrors applyRunMetrics semantics:
+ *  - designs[] runs (diffusion/antibody engines): MEAN over per-design entries
+ *    (clashes/rama_ll/symmetry_units/h3_len/…), helical+length → helix_pct,
+ *    extended+length → strand_pct, energy_kT → energy_kt,
+ *    vl_vh_buried_sasa → interface_sasa.
+ *  - top-level runs (fold/mpnn/score engines): RAW_KEY_MAP + auto numeric keys
+ *    (RUN_META_SKIP excluded), ranking_debug.plddts mean → plddt.
+ * Multiple dirs (a re-run variant) are merged by re-averaging per-key means.
+ */
+export async function collectRunMetricsForDirs(
+  dirs: string[],
+): Promise<Record<string, number>> {
+  const acc = new Map<string, { sum: number; n: number }>();
+  const bump = (key: string, v: number) => {
+    if (!Number.isFinite(v)) return;
+    const cur = acc.get(key) ?? { sum: 0, n: 0 };
+    acc.set(key, { sum: cur.sum + v, n: cur.n + 1 });
+  };
+
+  for (const dir of dirs) {
+    const runJson = await readJsonIfExists(join(dir, "metrics.json"));
+    const designs =
+      runJson && Array.isArray(runJson.designs)
+        ? (runJson.designs as Record<string, unknown>[])
+        : null;
+
+    if (designs && designs.length > 0) {
+      // Per-design entry means (same extraction rules as applyRunMetrics).
+      const per = new Map<string, { sum: number; n: number }>();
+      for (const d of designs) {
+        for (const [k, v] of Object.entries(d)) {
+          const n = numOrNull(v);
+          if (n == null) continue;
+          const cur = per.get(k) ?? { sum: 0, n: 0 };
+          per.set(k, { sum: cur.sum + n, n: cur.n + 1 });
+        }
+      }
+      const mean = (k: string): number | null => {
+        const e = per.get(k);
+        return e && e.n > 0 ? e.sum / e.n : null;
+      };
+      for (const k of ["clashes", "rama_ll", "symmetry_units", "h3_len"]) {
+        const v = mean(k);
+        if (v != null) bump(k, Math.round(v * 1000) / 1000);
+      }
+      const length = mean("length");
+      const helical = mean("helical");
+      const extended = mean("extended");
+      if (length && helical != null) bump("helix_pct", Math.round((helical / length) * 1000) / 10);
+      if (length && extended != null) bump("strand_pct", Math.round((extended / length) * 1000) / 10);
+      const energy = mean("energy_kT");
+      if (energy != null) bump("energy_kt", Math.round(energy * 1000) / 1000);
+      const sasa = mean("vl_vh_buried_sasa");
+      if (sasa != null) bump("interface_sasa", Math.round(sasa * 10) / 10);
+    } else if (runJson) {
+      for (const [raw, canon] of Object.entries(RAW_KEY_MAP)) {
+        const v = numOrNull(runJson[raw]);
+        if (v != null) bump(canon, v);
+      }
+      for (const [k, v] of Object.entries(runJson)) {
+        if (RUN_META_SKIP.has(k) || rawInMap(k)) continue;
+        const n = numOrNull(v);
+        if (n != null) bump(k, n);
+      }
+    }
+
+    // AlphaFold cluster ranking_debug.json {plddts[]} — mean confidence.
+    const ranking = await readJsonIfExists(join(dir, "ranking_debug.json"));
+    const plddts = (ranking as { plddts?: number[] } | null)?.plddts;
+    if (Array.isArray(plddts) && plddts.length > 0) {
+      const nums = plddts.filter((v) => typeof v === "number" && Number.isFinite(v));
+      if (nums.length > 0) bump("plddt", nums.reduce((a, b) => a + b, 0) / nums.length);
+    }
+  }
+
+  const out: Record<string, number> = {};
+  for (const [k, { sum, n }] of acc) {
+    if (n > 0) out[k] = Math.round((sum / n) * 1000) / 1000;
+  }
+  return out;
+}
+
+/** Compute metric defs (label/direction/domain) for raw metric maps —
+ *  shared by screening harvest and the sweep compare view. */
+export function computeMetricDefsForValues(
+  metricValues: Record<string, number>[],
+): ScreeningMetricDef[] {
+  return computeMetricDefs(metricValues);
+}
+
 /** Run detail shown as candidate sourceLabel (seed/symmetry or dir name). */
 function buildRunDetail(runJson: Record<string, unknown> | null, dir: string): string {
   const seed = numOrNull(runJson?.seed);
@@ -1022,7 +1130,8 @@ async function listDemoFiles(screeningId: string): Promise<string[]> {
 export type ScreeningSourceInput =
   | { kind: "node"; nodeId: string }
   | { kind: "job"; jobId: string }
-  | { kind: "demo"; demo: "scaffold" | "models" };
+  | { kind: "demo"; demo: "scaffold" | "models" }
+  | { kind: "sweep"; nodeId: string };
 
 export interface CreateScreeningInput {
   source: ScreeningSourceInput;
@@ -1050,19 +1159,137 @@ export async function getScreeningDetail(
   return { screening: toScreeningDTO(row, candidates), candidates: candidates.map(toCandidateDTO) };
 }
 
+// ── Sweep source resolution (shared by create + rescan) ──────────────────────
+
+interface ResolvedSweep {
+  groupId: string;
+  workflowId: string;
+  nodeType: string;
+  /** Completed variants with at least one existing trailer file. */
+  completed: { id: string; name: string; files: string[] }[];
+  totalVariants: number;
+  /** Param keys that differ across the variants (axis presets). */
+  axes: string[];
+}
+
+/** Variant name sanitized into a run label (unique per screening by dir). */
+function variantRunLabel(name: string): string {
+  return name.replace(/[\\/]/g, "-").slice(0, 64) || "variant";
+}
+
+async function resolveSweepSource(
+  nodeId: string,
+): Promise<ResolvedSweep> {
+  const node = await db.node.findUnique({ where: { id: nodeId } });
+  if (!node) throw new ScreeningError("Source node not found", 404);
+  if (!node.sweepGroup) {
+    throw new ScreeningError(
+      "Source node is not part of a parameter sweep — create a sweep first",
+      400,
+    );
+  }
+  const variants = await db.node.findMany({
+    where: { workflowId: node.workflowId, sweepGroup: node.sweepGroup },
+    orderBy: { createdAt: "asc" },
+  });
+  if (variants.length === 0) {
+    throw new ScreeningError("Sweep group is empty", 404);
+  }
+
+  const completed: ResolvedSweep["completed"] = [];
+  const paramMaps: Record<string, unknown>[] = [];
+  for (const v of variants) {
+    paramMaps.push((() => {
+      try {
+        const p = JSON.parse(v.params || "{}");
+        return p && typeof p === "object" && !Array.isArray(p)
+          ? (p as Record<string, unknown>)
+          : {};
+      } catch {
+        return {};
+      }
+    })());
+    if (v.status !== "completed") continue;
+    const files = parseOutputsTrailer(v.logs ?? "").filter((f) => existsSync(f));
+    if (files.length === 0) continue;
+    completed.push({ id: v.id, name: v.name, files });
+  }
+  if (completed.length === 0) {
+    throw new ScreeningError(
+      "No completed variants with outputs in this sweep — run the variants first",
+      400,
+    );
+  }
+
+  // Axis keys = params that differ across the group.
+  const axes: string[] = [];
+  const first = paramMaps[0] ?? {};
+  for (const key of Object.keys(first)) {
+    const varies = paramMaps.some((p) => String(p[key]) !== String(first[key]));
+    if (varies) axes.push(key);
+  }
+
+  return {
+    groupId: node.sweepGroup,
+    workflowId: node.workflowId,
+    nodeType: node.type,
+    completed,
+    totalVariants: variants.length,
+    axes,
+  };
+}
+
+/** Build the dir → run-label map (variant name) for sweep harvesting. */
+function sweepRunLabels(sweep: ResolvedSweep): (dir: string) => string | undefined {
+  const dirLabel = new Map<string, string>();
+  for (const v of sweep.completed) {
+    const label = variantRunLabel(v.name);
+    for (const f of v.files) {
+      dirLabel.set(dirname(resolve(f)), label);
+    }
+  }
+  return (dir) => dirLabel.get(dir);
+}
+
+/** Apply axis-driven weight presets to a just-harvested sweep screening. */
+async function applySweepAxisWeights(id: string, axes: string[]): Promise<void> {
+  if (axes.length === 0) return;
+  const row = await db.screening.findUnique({ where: { id } });
+  if (!row) return;
+  const weights = parseJson<Record<string, number>>(row.weights, {});
+  let changed = false;
+  for (const axis of axes) {
+    const preset = AXIS_WEIGHT_PRESETS[axis];
+    if (!preset) continue;
+    for (const [k, w] of Object.entries(preset)) {
+      if (k in weights && weights[k] !== w) {
+        weights[k] = w;
+        changed = true;
+      }
+    }
+  }
+  if (changed) {
+    await db.screening.update({
+      where: { id },
+      data: { weights: JSON.stringify(weights) },
+    });
+  }
+}
+
 export async function createScreening(input: CreateScreeningInput): Promise<ScreeningDTO> {
   const source = input.source;
   if (!source || typeof source !== "object") {
     throw new ScreeningError("source is required", 400);
   }
 
-  let sourceType: "node" | "job" | "demo";
+  let sourceType: "node" | "job" | "demo" | "sweep";
   let sourceRef: string | null = null;
   let sourceFamily: string;
   let sourceLabel: string | null;
   let defaultName: string;
   let files: string[] = [];
   let opts: HarvestOptions = {};
+  let sweepAxes: string[] | null = null;
 
   if (source.kind === "node") {
     if (typeof source.nodeId !== "string" || !source.nodeId.trim()) {
@@ -1099,9 +1326,25 @@ export async function createScreening(input: CreateScreeningInput): Promise<Scre
       source.demo === "scaffold" ? "demo: scaffold campaign" : "demo: AF2 model ranking";
     defaultName = source.demo === "scaffold" ? "Scaffold Campaign" : "AF2 Model Ranking";
     opts = demoHarvestOpts(source.demo);
+  } else if (source.kind === "sweep") {
+    // One-click campaign from a parameter sweep: ALL completed variants'
+    // outputs, each run labeled with its variant name (provenance chain
+    // C1 — the candidate name carries the variant it came from).
+    if (typeof source.nodeId !== "string" || !source.nodeId.trim()) {
+      throw new ScreeningError("source.nodeId is required for sweep sources", 400);
+    }
+    const sweep = await resolveSweepSource(source.nodeId);
+    sourceType = "sweep";
+    sourceRef = sweep.groupId;
+    sourceFamily = sweep.nodeType;
+    sourceLabel = `sweep · ${sweep.completed.length}/${sweep.totalVariants} variants`;
+    defaultName = "Sweep Campaign";
+    files = sweep.completed.flatMap((v) => v.files);
+    opts = { runLabelOf: sweepRunLabels(sweep) };
+    sweepAxes = sweep.axes;
   } else {
     throw new ScreeningError(
-      'source.kind must be "node", "job" or "demo"',
+      'source.kind must be "node", "job", "demo" or "sweep"',
       400,
     );
   }
@@ -1130,6 +1373,10 @@ export async function createScreening(input: CreateScreeningInput): Promise<Scre
     }
     await harvestFromFiles(screening.id, files, sourceFamily, sourceLabel, opts);
     await refreshScreeningMetrics(screening.id);
+    if (sweepAxes) {
+      // Axis-driven weight presets (e.g. total_length variants → geometry).
+      await applySweepAxisWeights(screening.id, sweepAxes);
+    }
     const updated = await db.screening.update({
       where: { id: screening.id },
       data: { status: "ready" },
@@ -1177,6 +1424,24 @@ export async function rescanScreening(
     files = await listDemoFiles(id);
     sourceFamily = row.sourceRef === "scaffold" ? "rfdiffusion" : "alphafold";
     opts = demoHarvestOpts(row.sourceRef);
+  } else if (row.sourceType === "sweep" && row.sourceRef) {
+    // The group id persists on the row — resolve ANY surviving member to
+    // rebuild the variant file list + run labels (deleted variants simply
+    // contribute nothing; their old candidates stay).
+    const member = await db.node.findFirst({
+      where: { sweepGroup: row.sourceRef },
+    });
+    if (member) {
+      try {
+        const sweep = await resolveSweepSource(member.id);
+        files = sweep.completed.flatMap((v) => v.files);
+        sourceFamily = sweep.nodeType;
+        opts = { runLabelOf: sweepRunLabels(sweep) };
+      } catch {
+        // resolveSweepSource throws when no completed variant has outputs
+        // anymore — rescan then legitimately adds nothing.
+      }
+    }
   }
 
   const added = await harvestFromFiles(id, files, sourceFamily, row.sourceLabel, opts);

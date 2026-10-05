@@ -27,11 +27,12 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Loader2, Play, Sparkles, Info } from "lucide-react";
+import { Loader2, Play, Sparkles, Info, Wand2 } from "lucide-react";
 import type { NodeDTO, NodeSpec, ParamSchema, SweepAxisDTO, SweepResponseDTO } from "@/lib/types";
 import { useAppStore } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
 import { withHistorySuppressed } from "@/lib/history-apply";
+import { SWEEP_TEMPLATES, templateMatches } from "@/lib/sweep-templates";
 
 const MAX_COMBINATIONS = 24;
 /** Values per axis (protects the URL/JSON payload and the grid layout). */
@@ -144,6 +145,42 @@ export function SweepDialog({
 
   const setAxis = (key: string, patch: Partial<AxisState>) =>
     setAxes((a) => ({ ...a, [key]: { ...axis(key), ...patch } }));
+
+  // One-click template ladders — only templates with ≥2 valid values on this
+  // node's spec are offered; applying one enables those axes (replacing their
+  // current values, leaving other axes untouched).
+  const templateHits = React.useMemo(
+    () =>
+      SWEEP_TEMPLATES.map((t) => ({
+        template: t,
+        matches: templateMatches(t, sweepable),
+      })).filter((h) => h.matches.length > 0),
+    [sweepable],
+  );
+
+  const applyTemplate = (
+    matches: { key: string; schema: ParamSchema; values: (string | number | boolean)[] }[],
+  ) => {
+    setAxes((a) => {
+      const next = { ...a };
+      for (const m of matches) {
+        if (m.schema.type === "select" || m.schema.type === "bool") {
+          next[m.key] = {
+            enabled: true,
+            raw: "",
+            picked: m.values.map((v) => String(v)),
+          };
+        } else {
+          next[m.key] = {
+            enabled: true,
+            raw: m.values.join(", "),
+            picked: [],
+          };
+        }
+      }
+      return next;
+    });
+  };
 
   // Parse every enabled axis; compute the product for the live preview.
   const parsed = React.useMemo(() => {
@@ -280,6 +317,31 @@ export function SweepDialog({
               <p className="text-sm text-muted-foreground">
                 This node has no sweepable parameters.
               </p>
+            )}
+            {templateHits.length > 0 && (
+              <div
+                className="rounded-lg border border-primary/20 bg-primary/5 p-3"
+                data-sweep-templates
+              >
+                <div className="flex items-center gap-1.5 text-xs font-medium text-primary">
+                  <Wand2 className="size-3.5" />
+                  Quick templates
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1.5">
+                  {templateHits.map(({ template, matches }) => (
+                    <button
+                      key={template.id}
+                      type="button"
+                      title={template.description}
+                      onClick={() => applyTemplate(matches)}
+                      className="rounded-md border border-primary/30 bg-background px-2.5 py-1 text-xs text-primary transition-colors hover:bg-primary/10"
+                      data-sweep-template={template.id}
+                    >
+                      {template.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
             )}
             {sweepable.map((p) => {
               const state = axis(p.key);

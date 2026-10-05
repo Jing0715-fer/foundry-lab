@@ -194,8 +194,50 @@ export interface SweepResponseDTO {
   sourceId: string;
   /** number of combinations actually materialized as variant nodes */
   combinations: number;
+  /** shared sweepGroup id stamped on every created variant */
+  sweepGroup: string;
   nodes: NodeDTO[];
   edges: EdgeDTO[];
+}
+
+// --- Sweep comparison (GET /api/workflow/nodes/[id]/sweep-group) --------------
+
+/** One variant row of the sweep compare table. */
+export interface SweepVariantRowDTO {
+  nodeId: string;
+  name: string;
+  status: NodeStatus;
+  /** Full node params (params columns are derived from axisKeys). */
+  params: Record<string, string | number | boolean>;
+  /** Output files listed in the variant's ##OUTPUTS## trailer. */
+  files: string[];
+  /** Aggregated run metrics (means over the variant's output dirs). */
+  metrics: Record<string, number>;
+  completedAt: string | null;
+}
+
+/** Metric column of the sweep compare table (label + direction + domain). */
+export interface SweepMetricColumnDTO {
+  key: string;
+  label: string;
+  unit?: string;
+  higherIsBetter: boolean;
+  domain: [number, number];
+  hint?: string;
+}
+
+/** GET sweep-group response — everything the compare dialog needs. */
+export interface SweepGroupDTO {
+  groupId: string;
+  workflowId: string;
+  nodeType: NodeType;
+  toolLabel: string;
+  /** Param keys that vary across the variants (table param columns). */
+  axisKeys: string[];
+  variants: SweepVariantRowDTO[];
+  metrics: SweepMetricColumnDTO[];
+  completedCount: number;
+  totalOutputFiles: number;
 }
 
 export interface NodeSpec {
@@ -229,6 +271,8 @@ export interface NodeDTO {
   params: Record<string, string | number | boolean>;
   result: string | null;
   logs: string;
+  /** Shared id of the parameter-sweep group this variant belongs to (null = standalone node). */
+  sweepGroup: string | null;
   startedAt: string | null;
   completedAt: string | null;
   createdAt: string;

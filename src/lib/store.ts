@@ -3,6 +3,7 @@ import { create } from "zustand";
 import type { NodeDTO, EdgeDTO, WorkflowDTO, AgentDTO } from "./types";
 import { ZOOM_MIN, ZOOM_MAX, WORLD_MIN, WORLD_MAX, CARD_W, CARD_H } from "./workflow-catalog";
 import { wouldCreateCycle, clamp } from "./canvas-utils";
+import { useHistoryStore } from "./history-store";
 
 export interface Viewport { x: number; y: number; zoom: number; }
 export interface PendingFrom { nodeId: string; port: string; dir: "out" | "in"; }
@@ -165,15 +166,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   environmentSheetOpen: false,
   clusterSheetOpen: false,
 
-  setWorkflow: (w) =>
+  setWorkflow: (w) => {
+    const switching = !!w && !!get().workflow && w.id !== get().workflow!.id;
+    if (switching) {
+      // A workflow SWITCH must drop the old graph's undo/redo stack — the
+      // snapshots reference the PREVIOUS workflow's nodes, and replaying
+      // them against the new graph would create/delete nodes across
+      // workflows (cross-contamination observed in e2e QA).
+      useHistoryStore.getState().clear();
+    }
     set((s) => ({
       workflow: w,
       loading: false,
       error: null,
       // A workflow SWITCH invalidates the pending-edit marks of the old
       // graph (their debounced PATCHes targeted the old nodes).
-      ...(w && s.workflow && w.id !== s.workflow.id ? { dirtyNodeIds: [] } : {}),
-    })),
+      ...(switching ? { dirtyNodeIds: [] } : {}),
+    }));
+  },
   setLoading: (b) => set({ loading: b }),
   setError: (e) => set({ error: e, loading: false }),
 

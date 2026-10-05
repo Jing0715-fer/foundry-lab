@@ -21,6 +21,7 @@ export async function POST(request: Request) {
       refId,
       params,
       workflowId,
+      sweepGroup,
     } = body ?? {};
 
     if (typeof type !== "string" || typeof name !== "string") {
@@ -45,6 +46,15 @@ export async function POST(request: Request) {
         ? JSON.stringify(params)
         : "{}";
 
+    // Optional sweep-group linkage — undo/redo replays a sweep batch through
+    // this endpoint and the restored variants must land back in their group
+    // (compare view + one-click campaign resolve by sweepGroup). Plain string
+    // trim + length cap only: the id is opaque to this route.
+    const sweepGroupId =
+      typeof sweepGroup === "string" && sweepGroup.trim()
+        ? sweepGroup.trim().slice(0, 64)
+        : null;
+
     const node = await db.node.create({
       data: {
         workflowId: target.workflow.id,
@@ -56,6 +66,7 @@ export async function POST(request: Request) {
         status: "idle",
         progress: 0,
         params: paramsJson,
+        sweepGroup: sweepGroupId,
       },
     });
 

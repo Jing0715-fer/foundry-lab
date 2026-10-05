@@ -33,17 +33,22 @@ export async function POST(request: Request) {
   const source = body.source;
   if (!source || typeof source !== "object" || Array.isArray(source)) {
     return NextResponse.json(
-      { error: "source is required: {kind:'node'|'job'|'demo', …}" },
+      { error: "source is required: {kind:'node'|'job'|'demo'|'sweep', …}" },
       { status: 400 },
     );
   }
   const kind = (source as Record<string, unknown>).kind;
 
   try {
-    if (kind === "node") {
+    if (kind === "node" || kind === "sweep") {
+      // "sweep" = one-click campaign from a parameter sweep: any variant node
+      // id — the server resolves the whole sweepGroup from it.
       const nodeId = (source as Record<string, unknown>).nodeId;
       if (typeof nodeId !== "string" || !nodeId.trim()) {
-        throw new ScreeningError("source.nodeId is required for node sources", 400);
+        throw new ScreeningError(
+          `source.nodeId is required for ${kind} sources`,
+          400,
+        );
       }
     } else if (kind === "job") {
       const jobId = (source as Record<string, unknown>).jobId;
@@ -56,7 +61,10 @@ export async function POST(request: Request) {
         throw new ScreeningError('source.demo must be "scaffold" or "models"', 400);
       }
     } else {
-      throw new ScreeningError('source.kind must be "node", "job" or "demo"', 400);
+      throw new ScreeningError(
+        'source.kind must be "node", "job", "demo" or "sweep"',
+        400,
+      );
     }
 
     const name =

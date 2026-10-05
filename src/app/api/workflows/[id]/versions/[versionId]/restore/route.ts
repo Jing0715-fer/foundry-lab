@@ -28,6 +28,8 @@ interface SnapshotNodeRow {
   params: string;
   result: string | null;
   logs: string;
+  /** Optional: pre-sweep-era snapshots lack this column. */
+  sweepGroup?: string | null;
   startedAt: Date | string | null;
   completedAt: Date | string | null;
   createdAt: Date | string;
@@ -106,6 +108,8 @@ export async function POST(
           params: n.params,
           result: n.result,
           logs: n.logs ?? "",
+          // Sweep-group linkage (older snapshots lack the column → null).
+          sweepGroup: typeof n.sweepGroup === "string" ? n.sweepGroup : null,
           startedAt: asDate(n.startedAt),
           completedAt: asDate(n.completedAt),
         },

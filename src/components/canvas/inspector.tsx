@@ -22,6 +22,7 @@ import {
   Copy,
   Download,
   Grid3X3,
+  Table2,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -29,6 +30,7 @@ import { useAppStore } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
 import { withHistorySuppressed } from "@/lib/history-apply";
 import { SweepDialog } from "./sweep-dialog";
+import { SweepCompareDialog } from "./sweep-compare-dialog";
 import { NODE_COLORS, nodeSpec } from "@/lib/workflow-catalog";
 import type { NodeDTO, NodeSpec, ParamSchema, AgentDTO } from "@/lib/types";
 import { Input } from "@/components/ui/input";
@@ -902,6 +904,7 @@ function NodeInspectorImpl() {
   const [duplicating, setDuplicating] = React.useState(false);
   const [viewerOpen, setViewerOpen] = React.useState(false);
   const [sweepOpen, setSweepOpen] = React.useState(false);
+  const [compareOpen, setCompareOpen] = React.useState(false);
 
   const id = inspectId ?? selectedId;
   const node = React.useMemo(
@@ -1482,6 +1485,25 @@ function NodeInspectorImpl() {
                 </TooltipContent>
               </Tooltip>
             )}
+            {node?.sweepGroup && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={() => setCompareOpen(true)}
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    data-sweep-compare-button
+                  >
+                    <Table2 className="size-4" />
+                    Compare
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Sweep comparison — metrics across every variant of this sweep
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
           <Button
             onClick={onRunAll}
@@ -1530,6 +1552,13 @@ function NodeInspectorImpl() {
             spec={spec}
             open={sweepOpen}
             onOpenChange={setSweepOpen}
+          />
+        )}
+        {node?.sweepGroup && (
+          <SweepCompareDialog
+            node={node}
+            open={compareOpen}
+            onOpenChange={setCompareOpen}
           />
         )}
         {viewerJob && (

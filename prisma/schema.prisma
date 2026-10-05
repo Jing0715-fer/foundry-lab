@@ -205,6 +205,10 @@ model Node {
   params      String   @default("{}") // JSON
   result      String?
   logs        String   @default("")
+  // Parameter-sweep group id — all variant nodes created by ONE sweep share
+  // this id (the source node itself is NOT part of the group). Drives the
+  // sweep compare view and the sweep→screening one-click campaign.
+  sweepGroup  String?
   startedAt   DateTime?
   completedAt DateTime?
   createdAt   DateTime @default(now())
@@ -212,6 +216,7 @@ model Node {
   workflow    Workflow @relation(onDelete: Cascade, fields: [workflowId], references: [id])
 
   @@index([workflowId])
+  @@index([workflowId, sweepGroup])
 }
 
 model Edge {

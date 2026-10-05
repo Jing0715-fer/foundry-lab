@@ -137,6 +137,9 @@ export async function applyHistorySnapshot(snap: HistorySnapshot): Promise<void>
               y: n.y,
               refId: n.refId ?? undefined,
               params: n.params,
+              // Sweep linkage — restored variants must rejoin their group so
+              // compare / one-click campaign still resolve after a redo.
+              sweepGroup: n.sweepGroup ?? undefined,
             }),
           })
             .then((r) =>

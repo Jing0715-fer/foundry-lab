@@ -83,6 +83,19 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
 单次 Ctrl+Z 整组撤销（服务器同步删除）。变体输出直接进入筛选评估——
 `num_designs` / `total_length` 等参数真实反映到输出文件数与结构长度。
 
+**Campaign 全链路闭环**（变体组 → 结论 → 筛选一步到位）：
+
+- **参数轴模板**：对话框内置常用扫描阶梯（设计数阶梯 2/4/8/16、长度系列、
+  采样温度、recycle 阶梯、对称体系、LLM 温度），按节点参数自动匹配一键填入。
+- **Sweep 结果对比视图**：选中任一变体 → **Compare** 按钮 → 内联对比表：
+  参数轴列 + 逐变体聚合指标（与筛选收割同一套提取规则）、列内最优值高亮、
+  综合得分与 **Best** 榜冠、行点击跳画布定位变体。只读视图，不写数据库。
+- **Sweep → Screening 一键衔接**：对比视图内 **Create screening campaign**
+  把全部已完成变体的产物一次性收割为筛选 campaign，候选名携带变体溯源
+  标签（`变体名/design_0`），参数轴自动绑定指标权重预设（如 `total_length`
+  变体 → 几何指标加权）。变体节点卡片常驻 `sweep` 徽标，撤销/重做后组链接
+  依然保持（组 id 随节点重建传递）。
+
 ### 🖼️ 3D 结构查看器
 
 基于 three.js 的分子查看器：cartoon / ball-stick / space-filling 表示、
@@ -260,6 +273,8 @@ bun run dev            # http://localhost:3000
 | POST | `/api/workflow/nodes` · `/edges` | 增删节点 / 连线 |
 | POST | `/api/workflow/nodes/:id/run` | 单节点运行 |
 | POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
+| GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
+| POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
 | POST | `/api/workflows/:id/versions/:v/restore` | 恢复版本快照 |
 | POST | `/api/workflows/:id/schedule` | 预约定时运行 |
 | GET/POST | `/api/agents` | 智能体 CRUD |

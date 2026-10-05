@@ -3287,3 +3287,66 @@ Work Log:
 
 Stage Summary:
 - 下一阶段方向以测试结论为据（重叠节点、串行执行、DB/文档不一致都来自本次实测发现）；ROADMAP 成为滚动维护的开发契约。
+
+---
+Task ID: 11
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（ROADMAP A 线 P0）：Sweep 对比视图 + Sweep→Screening 一键衔接 + 参数轴模板 + sweepGroup 数据链路
+
+Work Log:
+- 盘点基线：上一阶段（Sweep 系统，Task 7-10）已交付并提交（ba1b64f）；ROADMAP 定义的下一阶段 = A 线 P0（A1 对比视图 / A2 一键 campaign / A3 模板）。
+- Prisma：Node += `sweepGroup String?` + `@@index([workflowId, sweepGroup])`，`bun run db:push`。
+- 数据链路全通：NodeDTO.sweepGroup ↔ toNodeDTO ↔ node create API（≤64 字符规整）↔ sweep API（randomUUID 组 id 盖章所有变体）↔ history-apply（重建 POST 携带 sweepGroup，redo 保组）↔ 版本快照恢复（旧快照缺列 → null）。
+- screening.ts：新增 `collectRunMetricsForDirs`（变体级聚合指标：designs[] 均值 / helix/strand 派生 / 抗体 energy_kT·interface_sasa·h3_len / RAW_KEY_MAP / ranking_debug plddts 均值）+ 导出 `computeMetricDefsForValues`；createScreening/rescanScreening 支持 `source.kind="sweep"`（组解析 → runLabelOf = 变体名 → 候选名自带溯源）；AXIS_WEIGHT_PRESETS（total_length→几何、sampling_temp→多样性、num_recycles→置信度）。
+- 新 API：GET /api/workflow/nodes/[id]/sweep-group（只读对比数据：axisKeys 差异推导 + 聚合指标 + registry 指标列 + 轴值数值排序）；POST /api/screening 校验分支接受 sweep kind。
+- 前端：sweep-compare-dialog.tsx（对比表：参数轴列 + 指标列方向箭头 + 列内最优高亮 + 默认权重综合分 + Best 榜冠 + 行点击定位 + 一键 campaign 按钮 + 空态/未跑完提示）；inspector 接入 Compare 按钮（仅变体节点显示）；node-card 常驻 sweep 徽标；sweep-templates.ts（6 模板 + schema 匹配过滤）+ sweep 对话框 Quick templates chips。
+
+Stage Summary:
+- A1/A2/A3 全部落地；sweepGroup 从创建到撤销/重做/快照恢复全程保持；后端与前端均复用 screening 的指标语义（同一套提取规则与注册表）。
+
+---
+Task ID: 12
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 测试：tsc + lint + API 冒烟 + 实测发现修复
+
+Work Log:
+- tsc --noEmit（src/）零错误、bun run lint 零告警。
+- API 冒烟（全部拦截，DB 零写入验证）：sweep-group 非变体节点 400 / 不存在 404；screening sweep 源缺 nodeId 400 / 节点不存在 404 / 非变体 400（含修复提示）/ 非法 kind 400。
+- 发现并修复（严重）：**跨工作流撤销污染** —— 切换工作流后 Ctrl+Z 把旧图快照重放到新工作流（实测 DB：5 节点测试工作流被写入 14 个异图节点）。根因两处：① 历史捕获订阅把"换图"当成节点删除（节点数 14→5）捕获了旧图快照；② 换图不清栈。双修复：store.setWorkflow 检测 id 变化清空历史栈 + 订阅忽略 prevWf.id !== curWf.id。复测：切换后 Ctrl+Z 无操作、DB 不变。
+- 发现并修复：对比表窄屏不可滚动（Radix ScrollArea viewport 被 min-w 子内容撑宽至 829px）→ 改 screening-table 同款 overflow-x-auto + min-w 方案；375px 实测 scrollWidth 829 / clientWidth 291 可滚。
+- 发现并修复：redo 并行重建打乱变体顺序 → sweep-group 路由按轴值数值感知排序（2,4,8,16）。
+- dev server 两次重启（schema 推送后 stale Prisma client —— 已记入 ROADMAP 运维项 C4）。
+
+Stage Summary:
+- 3 项实测缺陷全部闭环；QA 结论写入 ROADMAP 测试结论表（新增 #7 stale client 运维项）。
+
+---
+Task ID: 13
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：Sweep → 对比 → 一键 campaign → undo/redo 保组 → 基线回归（agent-browser + VLM）
+
+Work Log:
+- 隔离测试工作流（API 构建）：rfdiffusion 源节点 + 2×2 sweep（num_designs 2/4 × total_length 100/120）→ Run Workflow → 4 变体全部真实引擎 completed（输出 5/5/9/9 文件数 ∝ num_designs；长度 100/120 = total_length）。
+- 对比 API：axisKeys=[num_designs,total_length]、指标列 helix/strand/clashes/rama_ll/sym、4 变体聚合指标（域值正确）。
+- 浏览器 e2e：选变体 → Compare 按钮出现 → 对话框 4 行表格 + Best 榜冠（num_designs=4,total_length=100 —— 与手工核算 77.9 分一致）→ Create screening campaign → 12 候选（2+2+4+4 ∝ num_designs）、候选名携带变体溯源标签、长度集合 {100,120}、几何权重预设生效（helix/strand/rama/clashes=2）→ 自动跳转 Screening 面板。
+- rescan 去重：重复扫描 added=0。
+- 撤销/重做链路：Sweep 对话框（Quick templates —— Design count ladder 一键填 2,4,8,16，预览 4 变体）创建 4 变体 → Ctrl+Z（9→5 节点，DB 同步）→ Ctrl+Shift+Z（5→9，DB 同步）→ 重做变体仍可 Compare（sweepGroup 经 history-apply 重建传递）+ 对比表按轴值排序。
+- 跨工作流保护回归：切换工作流后 Ctrl+Z 无操作（修复生效）。
+- VLM 复验：对比对话框（4 行/列齐/Best/按钮/无缺陷）、筛选面板（campaign 名/变体名候选/评分行）、移动端 375（布局可用/footer sticky/无溢出）+ 移动端对比表可滚动（程序化验证 scrollLeft=400）。
+- 清理：测试工作流 + 2 个 sweep screening 全部删除；基线回归：My First Workflow 14 节点、Antibody Campaign 5 节点、3 个演示 campaign（6/20/60）全部正常；控制台/页面错误零。
+
+Stage Summary:
+- A 线三项新功能全链路（含 undo/redo 保组、跨图保护、移动端适配）e2e 通过；演示 DB 零污染。
+
+---
+Task ID: 14
+Agent: main-orchestrator (Z.ai Code)
+Task: 后续开发计划更新（ROADMAP）+ README + 提交
+
+Work Log:
+- docs/ROADMAP.md 重写：本阶段成果（Sweep 系统 + A 线闭环 + QA 修复三项）+ 测试结论表（7 项发现 → 方向映射）+ 下一阶段建议 = B 线 P0（防重叠自动布局、并行执行、聚合组卡、运行队列）；验收标准新增"跨工作流操作必须验证撤销栈不串图"条款。
+- README.md：参数扫描章节扩写 Campaign 全链路闭环（模板/对比视图/一键衔接）；API 表新增 sweep-group 与 sweep screening 两行。
+- git 提交推送。
+
+Stage Summary:
+- 下一阶段方向以本轮 7 项实测结论为据；B 线（画布与执行引擎）成为 P0。

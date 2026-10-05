@@ -198,6 +198,10 @@ export async function POST(
 
     // ---- Create variants (grid below the source) ---------------------------
     const baseName = source.name.length > 24 ? `${source.name.slice(0, 24)}…` : source.name;
+    // One group id for the whole batch — the variants stay linkable after the
+    // fact (compare view, sweep→screening one-click campaign) and the linkage
+    // survives undo/redo (history-apply re-POSTs it with the node create).
+    const sweepGroupId = randomUUID();
     const createdNodes: ReturnType<typeof toNodeDTO>[] = [];
     const createdEdges: ReturnType<typeof toEdgeDTO>[] = [];
 
@@ -222,6 +226,7 @@ export async function POST(
           status: "idle",
           progress: 0,
           params: JSON.stringify(nodeParams),
+          sweepGroup: sweepGroupId,
         },
       });
       createdNodes.push(toNodeDTO(created));
@@ -244,6 +249,7 @@ export async function POST(
     const response: SweepResponseDTO = {
       sourceId: source.id,
       combinations: combos.length,
+      sweepGroup: sweepGroupId,
       nodes: createdNodes,
       edges: createdEdges,
     };

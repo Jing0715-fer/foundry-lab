@@ -17,6 +17,7 @@ import {
   Play,
   Copy,
   Trash2,
+  Grid3X3,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import type { EdgeDTO, NodeDTO, PortKind, PortSpec } from "@/lib/types";
@@ -626,6 +627,16 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 >
                   {status}
                 </span>
+                {node.sweepGroup && (
+                  <span
+                    className="flex shrink-0 items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-medium text-primary"
+                    title="Parameter-sweep variant — select it and hit Compare to see the whole group"
+                    data-sweep-variant-badge
+                  >
+                    <Grid3X3 className="size-2.5" />
+                    sweep
+                  </span>
+                )}
                 {spec && (
                   <span className="truncate text-[10.5px] text-muted-foreground">
                     {spec.label}
