@@ -176,6 +176,28 @@ export interface ParamSchema {
   advanced?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Parameter sweep (campaign mode) — expand one tool node's parameter grid
+// into N variant nodes that inherit its upstream wiring.
+// ---------------------------------------------------------------------------
+
+export type SweepValue = string | number | boolean;
+
+/** One axis of the sweep: a param key + the values it should take. */
+export interface SweepAxisDTO {
+  key: string;
+  values: SweepValue[];
+}
+
+/** POST /api/workflow/nodes/[id]/sweep response. */
+export interface SweepResponseDTO {
+  sourceId: string;
+  /** number of combinations actually materialized as variant nodes */
+  combinations: number;
+  nodes: NodeDTO[];
+  edges: EdgeDTO[];
+}
+
 export interface NodeSpec {
   type: NodeType;
   label: string;

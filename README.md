@@ -75,6 +75,14 @@ ranking_debug.json、msas/…）全量同步回本地。
 BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt REST ——
 全部在线真实调用，错误如实上报。
 
+### 🧪 参数扫描（Campaign Mode）
+
+选中任一工具节点 → Inspector 的 **Sweep** 按钮 → 勾选参数轴、填入取值网格，
+一键把笛卡尔积（≤24 组合）展开为**变体节点组**：每个变体自动继承上游连线、
+命名携带 `k=v` 标签、网格布局在源节点下方。支持创建后立即运行全部变体、
+单次 Ctrl+Z 整组撤销（服务器同步删除）。变体输出直接进入筛选评估——
+`num_designs` / `total_length` 等参数真实反映到输出文件数与结构长度。
+
 ### 🖼️ 3D 结构查看器
 
 基于 three.js 的分子查看器：cartoon / ball-stick / space-filling 表示、
@@ -251,6 +259,7 @@ bun run dev            # http://localhost:3000
 | GET/POST | `/api/workflow` | 工作流读取 / 全量运行 |
 | POST | `/api/workflow/nodes` · `/edges` | 增删节点 / 连线 |
 | POST | `/api/workflow/nodes/:id/run` | 单节点运行 |
+| POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
 | POST | `/api/workflows/:id/versions/:v/restore` | 恢复版本快照 |
 | POST | `/api/workflows/:id/schedule` | 预约定时运行 |
 | GET/POST | `/api/agents` | 智能体 CRUD |

@@ -3213,3 +3213,77 @@ Work Log:
 Stage Summary:
 - 两线合一：远程的更完整修复集 + 本地的抗体指标体系/扭转盆地分析/真实数据/今日验证截图。
 - 后续开发者以合并后的 main 为唯一基线。
+
+---
+Task ID: 7
+Agent: main (Z.ai Code)
+Task: 现状评估 + 下一阶段方向确定（合并后基线盘点）
+
+Work Log:
+- 读取 worklog 尾部 + git log：确认并行会话已完成 43 项审查修复、跨平台工具层、AF2↔Environment 统一、抗体全链路 e2e、两线合并（d8c384a）。
+- 盘点功能版图：设计→执行→筛选→Promote 闭环、导入导出、模板市场、调度（sweeper+API）、版本快照、3D 叠合分析均已存在。
+- 确定"下一阶段开发"缺口 = 参数扫描（Parameter Sweep / Campaign Mode）：把单次手工运行升级为批量实验设计——计算蛋白设计 campaign 的日常核心操作，与 screening 天然衔接。
+- dev server OOM 死亡 → (setsid nohup bun run dev &) 进程组隔离重启成功（worklog 既定方案）。
+
+Stage Summary:
+- 基线：My First Workflow 14 节点 / 12 边（6 节点主链 + IL-7Rα 战役 8 节点）、Antibody Design Campaign 5 节点、3 个 screening campaign。下一阶段 = Sweep 系统。
+
+---
+Task ID: 8-a
+Agent: main (Z.ai Code)
+Task: Sweep 前端（types + sweep-dialog + inspector 接入）
+
+Work Log:
+- types.ts：SweepValue / SweepAxisDTO / SweepResponseDTO 契约类型。
+- 新组件 src/components/canvas/sweep-dialog.tsx：参数轴勾选（number 带区间校验 / select chips / bool 双选 / text 逗号分隔）、笛卡尔积实时预览（前 6 组合 + "N more"）、组合上限 24、"创建后立即运行"选项；提交后单次历史快照 + withHistorySuppressed 批量写入（一次 Ctrl+Z 撤销整个 sweep），可选触发 /api/workflow/run 并回拉终态。
+- inspector.tsx：sweepableParamCount memo（过滤 advanced/refId/gpu/cudaDevice）驱动 Sweep 按钮显隐（agent 节点不显示）；按钮置于 Duplicate 旁，Grid3X3 图标；对话框随选中节点挂载。
+- lint 修掉一个多余 eslint-disable 指令。
+
+Stage Summary:
+- Sweep 前端完成，与现有历史栈/乐观更新体系一致（inline push + suppressed 写入模式）。
+
+---
+Task ID: 8-b
+Agent: main (Z.ai Code)
+Task: Sweep 后端 API
+
+Work Log:
+- 新路由 POST /api/workflow/nodes/[id]/sweep：逐轴校验（key 存在于 spec、类型转换、min/max/options 校验、UNSWEEPABLE_KEYS 拦截 refId/gpu/cudaDevice、每轴 ≤8 值）、笛卡尔积 ≤24、单组合拒绝。
+- 每组合创建克隆节点：type/refId 继承、params 合并、名称 `${源名}·k=v,…`（64 字符截断）、3 列网格布局（dx=300 dy=210 于源下方）。
+- 入边继承：源的每条入边（fromNodeId/fromPort/toPort）复制到每个变体——变体即独立实验，auto-wire 逐变体独立生效。
+- 返回 SweepResponseDTO{sourceId, combinations, nodes, edges}。
+
+Stage Summary:
+- 服务器端强校验 + 入边继承是本实现的关键决策；无入边的独立节点同样可 sweep。
+
+---
+Task ID: 9
+Agent: main (Z.ai Code)
+Task: QA 冒烟 + Sweep 全链路 e2e + 基线回归
+
+Work Log:
+- QA 冒烟（API 级，9 项无效输入全部 400/404 拦截，DB 零写入验证）：空 body、未知 key、单组合、每轴超 8 值、扫 refId、低于 min、非数字、节点不存在、组合超限（5×5=25>24）。
+- e2e（独立测试工作流 Sweep E2E QA，2 节点起）：agent-browser 选中节点（坑：data-node-card 是零尺寸锚点，真实卡片 rect 需 querySelector(':scope > *')；node 重叠时需点非重叠区）→ Sweep 按钮出现 → 对话框 → 勾选 num_designs=2,4 + total_length=100,150 → 预览 4 组合 → 创建 → API 验证 4 变体（命名/参数/布局/入边继承 5 边）。
+- Ctrl+Z：画布 6→2、DB 6 节点 5 边→2 节点 1 边（服务器同步删除变体+继承边）；Ctrl+Shift+Z：恢复 6/5，变体新 id + 参数一致（history-apply id 重映射路径验证）。
+- Run Workflow → 拓扑执行：input completed，4 变体 16 秒内全部 completed。
+- 真实性证据：num_designs=2 → 5 文件（2 PDB+2 FASTA+traj）、=4 → 9 文件；total_length=100 → 100 残基/400 原子、=150 → 150 残基/600 原子。输出目录按变体独立（wf-<ts>-<rand>/）。
+- sweep→screening：变体节点建 node 源 campaign → 收集 2 候选（=num_designs）。
+- 清理：删 QA screening + QA 工作流，演示 DB 恢复基线（2 工作流原样）。
+- 基线回归：agent 节点无 Sweep 按钮、RFdiffusion 节点有、演示工作流 14 节点可选中；Screening 3 campaign（Scaffold 60/AF2 20/Antibody Fv 6）表格/Score/星标正常；版本快照保存→列表 latest（QA 快照用 Prisma deleteMany 清理，余 2 个真实版本）；调度创建+取消（API 验证 no schedules cleanly）；移动端 375 footer sticky@812/FAB/toolbar 正常（VLM 复核）；控制台 0 错误、页面 0 错误、dev.log 无运行时错误。
+- dev server 又一次 OOM 重启（tsc/lint 内存压力），setsid 方案有效。
+
+Stage Summary:
+- Sweep 全链路（创建→撤销/重做→真实执行→输出文件级证据→筛选收集→清理）全部通过；基线零回归；演示 DB 无污染。
+
+---
+Task ID: 10
+Agent: main (Z.ai Code)
+Task: 后续开发计划（docs/ROADMAP.md）
+
+Work Log:
+- 新建 docs/ROADMAP.md：测试结论表（6 项发现 → 方向映射）+ A/B/C/D 四线：A Campaign 体验深化（P0：sweep 对比视图、sweep→screening 一步衔接、参数轴模板）；B 画布与执行（变体组折叠卡、防重叠自动布局、并行执行、运行队列）；C 数据可信度（演示数据治理、溯源链、undo 状态语义补齐）；D 科研深度（3D 叠合比较、亲和力成熟、认证协作、结果导出）。
+- 验收标准固化：API 冒烟 + 浏览器 e2e + 文件级证据 + undo/redo 一致性 + lint/tsc/dev.log/演示 DB 五项收尾检查。
+- README.md：核心特性新增"参数扫描（Campaign Mode）"章节 + API 表新增 sweep 路由行。
+
+Stage Summary:
+- 下一阶段方向以测试结论为据（重叠节点、串行执行、DB/文档不一致都来自本次实测发现）；ROADMAP 成为滚动维护的开发契约。

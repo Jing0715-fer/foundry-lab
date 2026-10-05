@@ -21,12 +21,14 @@ import {
   ChevronRight,
   Copy,
   Download,
+  Grid3X3,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
 import { withHistorySuppressed } from "@/lib/history-apply";
+import { SweepDialog } from "./sweep-dialog";
 import { NODE_COLORS, nodeSpec } from "@/lib/workflow-catalog";
 import type { NodeDTO, NodeSpec, ParamSchema, AgentDTO } from "@/lib/types";
 import { Input } from "@/components/ui/input";
@@ -899,6 +901,7 @@ function NodeInspectorImpl() {
   const [runningAll, setRunningAll] = React.useState(false);
   const [duplicating, setDuplicating] = React.useState(false);
   const [viewerOpen, setViewerOpen] = React.useState(false);
+  const [sweepOpen, setSweepOpen] = React.useState(false);
 
   const id = inspectId ?? selectedId;
   const node = React.useMemo(
@@ -909,6 +912,23 @@ function NodeInspectorImpl() {
   const spec = React.useMemo(
     () => (node ? nodeSpec(node.type) : undefined),
     [node],
+  );
+
+  // Params this node can sweep (drives the Sweep button + dialog mount).
+  // Mirrors the dialog's UNSWEEPABLE_KEYS + advanced filtering so the button
+  // only appears when there is actually something to vary.
+  const sweepableParamCount = React.useMemo(
+    () =>
+      spec
+        ? spec.params.filter(
+            (p) =>
+              !p.advanced &&
+              p.key !== "refId" &&
+              p.key !== "gpu" &&
+              p.key !== "cudaDevice",
+          ).length
+        : 0,
+    [spec],
   );
 
   // Tool nodes: parse the real output file list from the engine's
@@ -1443,6 +1463,25 @@ function NodeInspectorImpl() {
               </TooltipTrigger>
               <TooltipContent side="top">Duplicate this node</TooltipContent>
             </Tooltip>
+            {sweepableParamCount > 0 && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    onClick={() => setSweepOpen(true)}
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5"
+                    data-sweep-button
+                  >
+                    <Grid3X3 className="size-4" />
+                    Sweep
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent side="top">
+                  Parameter sweep — expand this node into variants
+                </TooltipContent>
+              </Tooltip>
+            )}
           </div>
           <Button
             onClick={onRunAll}
@@ -1485,6 +1524,14 @@ function NodeInspectorImpl() {
             </AlertDialogContent>
           </AlertDialog>
         </footer>
+        {node && spec && sweepableParamCount > 0 && (
+          <SweepDialog
+            node={node}
+            spec={spec}
+            open={sweepOpen}
+            onOpenChange={setSweepOpen}
+          />
+        )}
         {viewerJob && (
           <OutputViewerDialog
             job={viewerJob}
