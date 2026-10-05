@@ -560,7 +560,13 @@ export function ScreeningPanel() {
       const res = await fetch(`/api/screening/${screening.id}/promote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ids: selectedIds, nodeName }),
+        // Target the workflow the store is currently viewing — matches the
+        // upsertNode() below (which merges into that same workflow's view).
+        body: JSON.stringify({
+          ids: selectedIds,
+          nodeName,
+          workflowId: useAppStore.getState().workflow?.id,
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));

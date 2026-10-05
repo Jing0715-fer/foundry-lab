@@ -3012,3 +3012,104 @@ Work Log:
 
 Stage Summary:
 - 演示 DB 状态：2 个 fresh screening（默认权重）+ 6 节点 5 边全 completed 的演示工作流（文档实景来源）。
+
+---
+Task ID: 2-a
+Agent: code-review-subagent
+Task: 全面只读代码审查 src/（lib + 51 个 API routes + components panels/screening/canvas + scripts/algorithms 引擎）
+
+Work Log:
+- 逐行读完 src/lib 核心：screening.ts(1432)、real-executor.ts(701)、run-utils.ts(687)、tool-registry.ts(616)、workflow-engine.ts(550)、tools.ts、alphafold.ts、llm.ts、bio-tools.ts、scheduler.ts、install-jobs.ts、db.ts、workflow-runner.ts、workflow-io.ts、foundry.ts、canvas-utils.ts、pdb-parser.ts、store.ts，以及 cluster/{ssh,run-scripts,cluster-run,connections,probe,types}.ts（共 2269 行，SSH/命令注入重点面）。
+- 读完全部 51 个 route.ts（tools/file 路径穿越逐条推演、tools/run、jobs、install、screening×5、workflow nodes/edges/run/stream/logs、workflows+versions+schedule+restore、agents+chat+stream+analytics、meetings/research/tasks/pi/seed/bio-tools/cluster connections×4）。
+- 组件面聚焦数据获取/错误处理/类型：panels/screening-panel.tsx(1019) + screening/ 8 个模块（scoring.ts 归一化 min==max/除零专项核对）、canvas/{node-card,inspector,workflow-canvas,palette,canvas-toolbar,edges-layer}、viewers/{inline-results,output-viewer-dialog}、panels/{tools,cluster,alphafold,agent-chat-drawer,dashboard,tasks,meetings,research}，全部 fetch 调用逐个核对 try/catch/AbortController/乐观回滚。
+- scripts/algorithms/{common,diffusion,fold,mpnn,score,antibody}_engine.py + scripts/foundry/run_mpnn.py 入口/自测/##OUTPUTS## 错误路径过一遍。
+- 安全专项验证（全部通过）：/api/tools/file normalize+resolve+前缀白名单无穿越；jobs/[id]/file recorded-or-workDir 双重约束；远程命令逐 token shQuote（hydra list 引号经 bash 语义推演确认保留）；本地 spawn 全部 shell:false；install 命令仅来自 registry 常量且 key 先校验；无 $queryRaw；Prisma 全参数化；bio-tools 固定公网 URL+encodeURIComponent 无 SSRF；z-ai-web-dev-sdk 仅在服务端 llm.ts；无 shell:true。
+- 交叉验证运行时：bunx tsc --noEmit app-src 0 errors；outputs/screening/ 现为空目录（DB 候选指向已不存在的文件——数据态问题非代码问题，harvest 有 existsSync 防护）。
+- 未做任何源代码修改（只读任务）；仅追加本 worklog。
+
+Stage Summary:
+- 结论：P0 x 0，P1 x 2，P2 x 5，P3 x 12。
+- 最重要发现：
+  ① P1 agents/[id]/chat/stream/route.ts:70 — 历史查询 orderBy asc + take 50 取的是最旧 50 条而非最新 50 条，对话超 50 条后每次流式回复都基于最旧上下文（非流式 POST /chat 的 desc+take+reverse 写法是对的）。
+  ② P1 real-executor.ts runFoundryMpnn --out_fasta / tools.ts path_to_fasta — 用户/LLM 提供的输出路径未做 outputs/ 沙箱（读侧有 /api/tools/file 白名单，写侧没有），LLM tool-fence 或未鉴权 POST 可写任意路径。
+  ③ P2 screening.ts deleteScreening 只删 DB 行不删 outputs/screening/<id>/（demo 引擎产物可达数百 MB，前序 agent 只能手工清理）。
+  ④ P2 nodes/[id]/run 无状态守卫：重跑 promoted input 节点会用 "Input node" 覆盖含 ##OUTPUTS## trailer 的 logs，永久破坏下游 auto-wire；且允许 running 节点重入双跑。
+  ⑤ P2 三个 resolveEnginePython/resolveFoundryPython 永久缓存 + invalidateFoundryCache 零调用方——one-click 安装成功后 scan 仍显示 executorReady=false，须重启 dev server。
+- 整体评价：工程质量很高（契约冻结纪律、乐观更新+回滚、SSE/子进程/SSH 超时与清理、诚实的失败上报）；系统性弱点集中在安装生命周期与检测缓存、写侧路径沙箱、多工作流二等公民、以及个别上下文窗口/重跑语义 bug。
+
+---
+Task ID: 2-b
+Agent: fix-subagent
+Task: 代码审查修复 P1×1 + P2×4 + P3×6
+
+Work Log:
+- P1-1 src/app/api/agents/[id]/chat/stream/route.ts: 历史查询 orderBy asc+take50（最旧50条）→ desc+take50 再 reverse 恢复正序（对齐非流式 /chat 的写法），长对话不再基于最旧上下文。
+- P2-1 src/lib/screening.ts deleteScreening: 删 DB 行后 best-effort fsp.rm(SCREENING_ROOT/<id>, {recursive,force}) 清理引擎产物目录，try/catch 失败仅 console.warn 不阻塞；已用临时脚本端到端验证（row+dir 均清除，PASS）。
+- P2-2 src/app/api/workflow/nodes/[id]/run/route.ts: 双守卫——status==="running" → 409 "Node is already running"；type==="input" 且 logs 含 ##OUTPUTS## → 409 提示 re-running 会丢弃 promote 产物、建议新建 promote。curl 实测两个 409 均生效。
+- P2-4 多工作流幻影节点：nodes/route.ts POST 接受可选 body.workflowId（findUnique 验证，不存在 400，缺省 findFirst 兜底）；screening.ts promoteCandidates 增第 4 参 workflowId（同样 findUnique/400/findFirst）；promote/route.ts 透传 body.workflowId。客户端补 workflowId（useAppStore workflow.id）：command-palette.tsx、canvas/palette.tsx、canvas/canvas-toolbar.tsx（undo/redo 重建节点的 POST 处；DELETE/PATCH 不动）；promote 的 POST body 实际位于 panels/screening-panel.tsx（修复清单写的 promote-dialog.tsx 只是对话框、不含 fetch），故在该文件 promote() 的 body 加 workflowId=当前 store 工作流 id（一行外科手术式改动，已披露）。curl 验证：bogus workflowId → nodes 400 / promote 400 且零副作用（无节点创建、候选状态不变）。
+- P2-5 src/lib/workflow-runner.ts: 模块级 runningWorkflows Set 并发锁——入口已存在则 console.warn+返回 {ok:false, error:"already running"}（不 throw）；主体包 try/finally 释放；导出 isWorkflowRunning(id)。
+- P3-1 src/lib/db.ts: Prisma log 由恒 ["query"] 改为 dev 恒 query / 非 dev ["error"]。
+- P3-2 src/lib/agent-orchestrator.ts: rg 确认 src/ + scripts/ + 全仓零代码引用（仅 worklog 提及）→ 整文件删除（363 行死代码）。
+- P3-3 src/lib/workflow-engine.ts biotool 分支: runBio 返回 error 时节点状态 completed → "failed"（NodeStatus 联合类型无 "error"，"failed" 是该文件所有错误路径的既有状态值；日志仍保留 res.error 信息）。
+- P3-4 src/lib/scheduler.ts: 清扫器启动时回收卡死 firing 行（where status="firing" AND firedAt=null → 置回 "scheduled"；"pending" 不在 schedule 状态集 {scheduled|firing|fired|failed|cancelled} 内，"scheduled" 才是 sweeper 可认领、能补跑的状态），带 count>0 的 reclaim 日志。
+- P3-5 src/lib/run-utils.ts runAgentTurn: assistant 回复的 convo.push 从 comp/bio 两个循环体内移到循环外只 push 一次——N 个 tool-fence 不再把同一回复重复塞 N 份污染上下文。
+- P3-6 src/lib/bio-tools.ts runPubmed: query 缺失/空白时 throw 明确错误（含收到的值），不再把字面量 "undefined" 当搜索词发给 NCBI。
+
+Stage Summary:
+- 11 项全部 done（P1×1、P2×4、P3×6），无 skipped。偏离说明两处：① P3-3/P3-4 的目标状态值按实际类型/状态集取 "failed"/"scheduled"；② promote 客户端补 workflowId 落在 screening-panel.tsx（POST 真实所在）而非清单所写 promote-dialog.tsx。
+- 验证：bunx tsc --noEmit src/ 0 error（仅 examples/skills 既有噪音；期间出现过一次 src 计数=1 的瞬时噪音，复查为并行代理 2-c 编辑 real-executor.ts 的中间态，与本批文件无关）；bun run lint exit 0；dev.log tail 无编译错误（仅 scheduler 例行查询）；dev server 未重启。
+- 运行时冒烟（均清理干净，DB 无残留）：nodes POST bogus wfId→400、正确 wfId→200（测试节点已删）；run 双守卫 409×2；promote bogus wfId→400 零副作用；deleteScreening 清目录 PASS；POST /api/workflow/run 200（锁生效，对已完成节点 no-op）。
+
+---
+Task ID: 2-c
+Agent: platform-subagent
+Task: 外部工具跨平台检测/安装 + AlphaFold↔Environment 互链 + 写侧沙箱 + 缓存失效
+
+Work Log:
+- 新建 src/lib/platform.ts（服务端）：getPlatformInfo()（os/isWindows/isMac/isLinux/label/pathSep）、crossWhich()（纯 JS PATH 扫描，win32 试 .COM/.EXE/.BAT/.CMD + POSIX X_OK 位，回退 where/which spawnSync 数组形式）、runCapture()（spawnSync 数组、无 shell、stdout|null）、bashAvailable()（bash -lc echo ok）。
+- real-executor.ts 跨平台化：PYTHON_CANDIDATES 改 {cmd,preArgs} 结构（win32=[python, py(-3), python3]）；新增导出 pythonSpawnTokens()（"py"→["py","-3"]）与 invalidateEnginePythonCache()；resolveEnginePython/isToolInstalled/isEntryInstalled/selfTestEngines 全部 execSync 字符串 → spawnSync 数组形式（selftest 保持 stdout+stderr 合并、Traceback 检测、语法回退语义）；binary 检测走 crossWhich；path 检测 startsWith("/")→isAbsolute()（兼容 win32 盘符）；runNativeTool script/python-module 与 runBuiltinEngine 的 python spawn 全部加 preArgs 前缀；executable 路径 isAbsolute。
+- P1-2 写侧沙箱：executeCompToolReal 入口处 sandboxFastaOutput()——params.path_to_fasta resolve 后若在 process.cwd() 之外（relative 判定含 isAbsolute/".."/"../"）→ 改写为 join(workDir,"designed.fasta")，返回 stdout 顶部加一行 "[sandbox] path_to_fasta redirected into job workDir (...)"。单入口统一覆盖 foundry --out_fasta、native --path_to_fasta（buildArgs 传入）、内置引擎 payload 三条写路径。
+- foundry.ts：execSync/sh() 全部换 runCapture（spawnSync 数组）；FOUNDRY_PY_CANDIDATES 平台感知 venv 布局（Scripts\python.exe）；cli 解析 win32→foundry.exe；checkpoint 正则/行分割兼容 win32 路径与 \r\n；invalidateFoundryCache 原有（install-jobs 现已真正调用）。
+- /api/tools/scan：版本探测 runCapture 数组（git --version / python -c import…print(__version__)，python 用 resolveEnginePython+pythonSpawnTokens）；响应新增 platform=getPlatformInfo()；win32 下 install.method==="github" 条目 oneClick 输出 false + platformNote:"Windows 需通过 WSL 安装（此命令为 bash 脚本）"（其他平台省略该字段）；runtime pip 条目不受影响。
+- install-jobs.ts：win32 且 !bashAvailable() 时 github 方法（及 foundry 式 bash 链）→ 直接返回含 WSL 指引的 error；简单 "pip install X" → startWinNoShellPip()：解析包名（含 "colabfold[alphafold]" 引号剥离）→ spawn(py, [...preArgs,"-m","pip","install",...]) 无 shell；linux/mac（含 win+有 bash）保持原 spawn("bash",["-c",cmd]) 路径不变（py 重写对 "py" 用 "py -3" 字符串形式）；job settle（close 与 spawn error，成功/失败都触发）统一 invalidateDetectionCaches()：invalidateEnginePythonCache + invalidateFoundryCache + 动态 import("./screening") 调用 invalidateScreeningPython（若导出）；抽出 wireInstallJob() 共享日志环形缓冲与结算逻辑，超时/kill 逻辑未动。
+- tool-registry.ts：仅 alphafold 条目 description 尾部追加"本地无原生安装路径；本地执行回落内置 Chou-Fasman 引擎。"
+- tools-panel.tsx（Environment）：头部新增平台徽章（Monitor icon + scan.platform.label + pathSep title）；ToolRow 增 platformNote?，win32 github 条目渲染 amber 警告卡（AlertTriangle）；alphafold 行新增"打开 AF2 工作台"按钮（Boxes icon，仅该行传入 onOpenAlphafoldWorkbench）。
+- alphafold-panel.tsx：头部状态区新增"环境状态"小按钮（Wrench icon，title="依赖检测与安装统一在 Environment 管理"）调用新 prop onOpenEnvironment?。
+- page.tsx 接线：ToolsSheet → onOpenAlphafoldWorkbench={() => { setEnvironmentOpen(false); useAppStore.getState().setActivePanel("alphafold"); }}；alphafold 主面板 → onOpenEnvironment={() => setEnvironmentOpen(true)}。
+- types.ts：新增 PlatformInfoDTO（客户端安全镜像）；tools-panel 本地 ScanResponse.platform / ToolRow.platformNote 已同步。
+
+验证：
+- bunx tsc --noEmit：src/ 0 error（仅 examples/skills 预存噪声）。
+- bun run lint：干净（无输出）。
+- curl /api/tools/scan：HTTP 200，platform={os:"linux",label:"Linux x64",pathSep:"/"}，runtime 5/5 带版本（git 2.47.3 / Python 3.12.14 / numpy 2.1.3），engines 5/5 selftest PASS（spawnSync 版），github 条目 oneClick=true 且无 platformNote（非 win32 正确省略），alphafold 行 desc 含追加文案、engine-fold 回退就绪。
+- 写侧沙箱 e2e（bun 直调 executeCompToolReal）：path_to_fasta=/tmp/escape-test.fa → stdout 首行 "[sandbox] path_to_fasta redirected into job workDir (/tmp/escape-test.fa is outside the project root → /tmp/sbx-workdir/designed.fasta)"，designed.fasta 实际写入 workDir，/tmp 逃逸路径未创建；项目内相对路径 → 无 notice 不重定向。platform.ts 单测：crossWhich(git/python3) 命中、缺失→null、bashAvailable true、runCapture git --version 正常；pythonSpawnTokens("py"/"py.exe")→["py","-3"]，"python"/绝对路径不变，linux 恒等；pip 包名解析 "colabfold[alphafold]"/"fair-esm torch" 正确。
+- 真实安装链路（dev server）：POST /api/tools/install {key:"numpy"} → 201 running → completed exit 0（"Requirement already satisfied"），close 回调缓存失效无异常，复扫 200。
+- agent-browser e2e：Environment sheet 显示 "Linux x64" 徽章 + alphafold 行 "打开 AF2 工作台" → 点击后 sheet 关闭、主面板切到 AlphaFold2 Structure Prediction → 头部 "环境状态" 按钮 → 点击后 Environment sheet 重开（徽章仍在）；0 console errors / 0 page errors，dev.log 无编译错误。
+- 注意：win32 分支（WSL 拒绝 + 无 shell pip）无法在本 Linux 沙箱真实触发（bun 的子进程 PATH 解析不吃运行时改 PATH 的模拟），已用逻辑单测覆盖（pythonSpawnTokens/包名解析/分支代码直读），并在 2-c 提交说明。
+
+Stage Summary:
+- 全部 9 项完成：跨平台检测/安装（platform.ts + real-executor + foundry + scan + install-jobs）、AlphaFold↔Environment 双向互链、P1-2 写侧沙箱（真实 e2e 验证）、安装后缓存失效（engine python + foundry 已接通；screening 经动态 import 钩子待 2-b 导出 invalidateScreeningPython 后自动生效——当前该函数不存在，非阻塞）。tsc src/ 0 error、lint 干净、scan 200 带 platform、dev.log 干净。
+
+---
+Task ID: 5
+Agent: main-orchestrator (Z.ai Code)
+Task: 全面代码审查 + 修复 + 真实抗体设计全链路测试 + e2e + 移动端画布 UX 修复 + 移动端截图重截
+
+Work Log:
+- Task 2-a（代码审查子代理，只读）：全量审查 src/（26 个 lib、51 个 route、组件层、引擎脚本）。结果 P0×0 / P1×2 / P2×5 / P3×12，安全专项（路径白名单、命令消毒、无 shell 拼接、SDK 服务端隔离）全部通过。
+- Task 2-b（修复子代理）：P1-1 聊天历史 asc→desc+reverse；P2-1 deleteScreening 清理 outputs/screening/<id>；P2-2 runOne 双守卫（running 409 / promoted-input trailer 保护 409）；P2-4 promote+nodes POST 接受 workflowId（客户端 5 处补传当前工作流）；P2-5 工作流执行锁（Set+finally+isWorkflowRunning 导出）；P3×6（db 日志分级、agent-orchestrator 死代码删除 363 行、runBio 失败态、调度器 firing 回收、assistant 消息去重、PubMed 空 query 报错）。curl 冒烟全部通过。
+- Task 2-c（跨平台子代理）：新建 src/lib/platform.ts（getPlatformInfo/crossWhich 纯 JS PATH 扫描+PATHEXT/runCapture/bashAvailable）；real-executor 全 execSync→spawnSync 数组化 + python 候选按平台（win32: python/py -3/python3）+ invalidateEnginePythonCache；P1-2 写侧沙箱（path_to_fasta 项目根外→workDir 重定向+notice）；scan 响应加 platform + win32 github 条目降级+platformNote；install-jobs win32 无 bash 时诚实拒绝（WSL 指引）/pip 改 python -m pip；安装 close 回调三处缓存失效；tools-panel 平台徽章+AF2 工作台互链；alphafold-panel 环境状态按钮；page.tsx 双向接线。我补上 screening.ts 的 invalidateScreeningPython 导出完成最后一块。
+- 我补修：/api/workflow/run 也只跑第一个工作流（与 P2-4 同族 bug）→ 接受 workflowId + 409 已运行守卫；4 个客户端调用点（header/inspector/canvas-toolbar/pi-copilot）补传 + 重取 /api/workflows/<id>。
+- 真实抗体设计全链路（新工作流 "Antibody Design Campaign"）：Input→RFantibody_Design→ProteinMPNN_Design→AlphaFold_Validation，4 节点 3 边全 completed。真实引擎链：antibody_engine.py（germline Fv，6 设计×13 文件，756 原子 PDB）→ MPNN [chain] auto-wired fv_design_0.pdb（Gibbs 采样）→ AF2 [chain] auto-wired designed.fasta（Chou-Fasman 折叠 4 链）。几何诚实性校验：φ/ψ 盆地分析（修正扭角公式后）框架区 73% β 盆地=真实 Ig 特征；app DSSP（Kabsch-Sander 氢键）0% strand 是诚实结果（统计引擎无链间折叠配对）。
+- 抗体筛选扩展：screening.ts 采集器支持 fv_design_N 命名 + 抗体指标（h3_len/energy_kt/interface_sasa + METRIC_REGISTRY 定义/排序/PRIMARY 权重）；DSSP 分析面板新增 computeTorsionBasins（φ/ψ 盆地统计，dihedral IUPAC 公式）——bun 直测与 Python 校准一致（抗体 73% β、扩散 42% α/39% β）。
+- e2e（agent-browser 全程）：工作流切换→画布 4 节点全绿→检查器 Result 13 产物+REAL ENGINE 徽章+3D cartoon（链 H/L 选择器+DSSP+SASA）→筛选 6 候选（H3/Energy/Interface 三列+加权分 83.3）→详情抽屉 3D+界面检测（chain H 368 原子/L 388）→Promote 落点当前工作流（P2-4 修复实证）→促进节点 trailer→下游 MPNN 自动接线闭环（测后清理）→Environment 平台徽章 Linux x64+AF2↔Environment 双向互链→命令面板→PI 真实 LLM 对话（CDR H3 5-24aa 科学正确，UI 持久化）→Dashboard。
+- 移动端根因修复：原 21-mobile-canvas.png 显示节点目录的根因是 palette 固定 256px 在 375px 只剩 65px 画布——NodePalette 接受 className（desktop hidden md:flex）+ page.tsx 移动端 "+ Nodes" 浮动按钮 + Sheet 抽屉（w-72）；375px 画布实测 319px 宽、节点可见、无溢出、抽屉可用。重截 20（抗体筛选卡片+新指标直方图）与 21（真实画布+浮动按钮），VLM 复验；教程 12 章补一句节点库抽屉说明。
+- 陈旧模块陷阱再现（page.tsx 新 import 后 HMR 供旧 chunk "Plus is not defined"）→ 完整重启 dev server + 全新浏览器会话后 0 page errors。
+- 收尾：tsc src/ 0 error、lint 干净、双视口 sticky footer 验证、agent-browser errors 0。
+
+Stage Summary:
+- 代码审查闭环：发现→修复→实证（幻影节点/并发锁/写侧沙箱/聊天历史方向全部修掉），tsc+lint 干净。
+- 抗体设计全链路真实跑通（引擎→MPNN→AF2→筛选→3D→Promote→下游接线），并扩展了抗体指标体系（h3_len/energy_kt/interface_sasa）与 φ/ψ 盆地统计。
+- 外部工具体系跨平台化（platform.ts 抽象层）+ AlphaFold 与 Environment 架构打通（任务工作台 vs 依赖管理的双向互链，检测/安装归 Environment 统一注册——alphafold 本就在 TOOL_REGISTRY）。
+- 移动端画布从"不可用"变可用（palette→抽屉），两张移动端截图重截并 VLM 验证。
+- DB：保留 Antibody Design Campaign（5 节点）+ Antibody Fv Campaign 筛选（6 候选）作为抗体能力实景；演示工作流与其余数据未动。

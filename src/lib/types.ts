@@ -285,6 +285,24 @@ export interface ToolJobDTO {
   cluster?: ClusterJobInfoDTO | null;
 }
 
+// --- Environment scan (GET /api/tools/scan) ----------------------------------
+
+/**
+ * Host platform snapshot included in the scan response (client-safe mirror
+ * of the server-side getPlatformInfo() in lib/platform.ts).
+ */
+export interface PlatformInfoDTO {
+  /** process.platform — "win32" | "darwin" | "linux" | … */
+  os: string;
+  isWindows: boolean;
+  isMac: boolean;
+  isLinux: boolean;
+  /** Human label, e.g. "Linux x64" / "macOS arm64" / "Windows x64". */
+  label: string;
+  /** Path separator — "/" on POSIX, "\\" on win32. */
+  pathSep: string;
+}
+
 // --- Screening (large-scale result evaluation & ranking) ----------------------
 
 export type ScreeningCandidateStatus =

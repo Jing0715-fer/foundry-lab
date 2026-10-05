@@ -137,6 +137,9 @@ async function createNodeAtCenter(spec: NodeSpec): Promise<void> {
         name: spec.label,
         x,
         y,
+        // Target the workflow the user is looking at (multi-workflow apps);
+        // undefined falls back to the server's first-workflow behavior.
+        workflowId: workflow?.id,
       }),
     });
     if (!res.ok) {
@@ -262,8 +265,10 @@ function CategorySection({
   );
 }
 
-/** The left-column node palette. */
-export function NodePalette() {
+/** The left-column node palette.
+ * `className` controls visibility/layout: desktop mounts it inline
+ * ("hidden md:flex"), mobile mounts it inside a Sheet drawer ("flex w-full"). */
+export function NodePalette({ className }: { className?: string }) {
   const query = useAppStore((s) => s.paletteQuery);
   const setQuery = useAppStore((s) => s.setPaletteQuery);
 
@@ -281,7 +286,12 @@ export function NodePalette() {
   const groups = React.useMemo(() => groupByCategory(filtered), [filtered]);
 
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r bg-background">
+    <aside
+      className={cn(
+        "flex h-full w-64 shrink-0 flex-col border-r bg-background",
+        className,
+      )}
+    >
       <header className="flex flex-col gap-2 border-b p-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Nodes</h2>

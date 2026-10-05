@@ -157,7 +157,9 @@ export function CanvasToolbar() {
           void fetch("/api/workflow/nodes", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ type: n.type, name: n.name, x: n.x, y: n.y, refId: n.refId ?? undefined, params: n.params }),
+            // Keep re-created nodes on the workflow being undone (not the
+            // server's first-workflow fallback).
+            body: JSON.stringify({ type: n.type, name: n.name, x: n.x, y: n.y, refId: n.refId ?? undefined, params: n.params, workflowId: s.workflow.id }),
           }).catch(() => {});
         }
       }
@@ -262,13 +264,20 @@ export function CanvasToolbar() {
     if (runningAll) return;
     setRunningAll(true);
     try {
-      const res = await fetch("/api/workflow/run", { method: "POST" });
+      const wfId = useAppStore.getState().workflow?.id;
+      const res = await fetch("/api/workflow/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflowId: wfId }),
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
       // Refetch the workflow to pull fresh node statuses.
-      const wfRes = await fetch("/api/workflow");
+      const wfRes = wfId
+        ? await fetch(`/api/workflows/${wfId}`)
+        : await fetch("/api/workflow");
       if (wfRes.ok) {
         const wf = await wfRes.json();
         useAppStore.getState().setWorkflow(wf);

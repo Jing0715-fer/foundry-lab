@@ -879,6 +879,10 @@ export function AnalysisPanel() {
                 const total = r.helix + r.strand + r.loop
                 const pct = (v: number) => total > 0 ? (v / total * 100).toFixed(0) : '0'
                 appendLog('out', tt({ zh: `DSSP 重算完成：螺旋 ${r.helix}（${pct(r.helix)}%）· 折叠 ${r.strand}（${pct(r.strand)}%）· 环 ${r.loop}（${pct(r.loop)}%）`, en: `DSSP recompute done: helix ${r.helix} (${pct(r.helix)}%) · strand ${r.strand} (${pct(r.strand)}%) · loop ${r.loop} (${pct(r.loop)}%)` }))
+                if (r.basins && r.basins.total > 0) {
+                  const bp = (v: number) => (v / r.basins!.total * 100).toFixed(0)
+                  appendLog('out', tt({ zh: `φ/ψ 扭转盆地：α 盆地 ${r.basins.helixBasin}（${bp(r.basins.helixBasin)}%）· β 延伸盆地 ${r.basins.betaBasin}（${bp(r.basins.betaBasin)}%）—— 统计构建的骨架可无 H 键桥接但保持延伸扭转`, en: `φ/ψ basins: α ${r.basins.helixBasin} (${bp(r.basins.helixBasin)}%) · β extended ${r.basins.betaBasin} (${bp(r.basins.betaBasin)}%) — statistically built backbones may lack H-bond bridges yet keep extended torsions` }))
+                }
               }}
               className="mt-1.5 flex w-full items-center justify-center gap-1.5 rounded-lg border border-border px-3 py-2 text-[11px] font-medium text-muted-foreground transition hover:border-primary/50 hover:bg-primary/5 hover:text-primary"
             >

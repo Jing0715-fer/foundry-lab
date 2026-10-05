@@ -1,5 +1,6 @@
 // POST /api/workflow/nodes/[id]/run — run a SINGLE node, then cascade
 // downstream nodes whose all-upstream are completed (BFS).
+// 409 guards: node already running / promoted input node (##OUTPUTS##).
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -21,6 +22,28 @@ export async function POST(
       return NextResponse.json(
         { error: "Node not found" },
         { status: 404 },
+      );
+    }
+
+    // Guard 1 — no re-entrant runs: a node already in "running" state means
+    // another request is mid-flight; re-running would double-execute.
+    if (startNode.status === "running") {
+      return NextResponse.json(
+        { error: "Node is already running" },
+        { status: 409 },
+      );
+    }
+    // Guard 2 — promoted input nodes carry harvested artifact files in their
+    // ##OUTPUTS## logs trailer. Re-running an input node overwrites logs with
+    // a generic "Input node" line, permanently destroying the trailer and
+    // the downstream auto-wire (pdb_path/fasta_path) wiring.
+    if (startNode.type === "input" && (startNode.logs ?? "").includes("##OUTPUTS##")) {
+      return NextResponse.json(
+        {
+          error:
+            "Promoted input node already carries output files; re-running would discard them. Create a new promote instead.",
+        },
+        { status: 409 },
       );
     }
     const workflowId = startNode.workflowId;

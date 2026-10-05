@@ -36,6 +36,8 @@ import {
   BookOpen,
   Info,
   Layers,
+  Monitor,
+  AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,6 +52,7 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/lib/store";
+import type { PlatformInfoDTO } from "@/lib/types";
 import { PanelSkeleton } from "@/components/empty-state";
 import { cn } from "@/lib/utils";
 
@@ -96,6 +99,9 @@ interface ToolRow {
   sizeHint?: string;
   builtinEngine?: string;
   executorReady: boolean;
+  /** Present only on win32 for github-method entries (bash-script installs —
+   *  need WSL); absent/null elsewhere. */
+  platformNote?: string | null;
 }
 
 interface FoundryStatusDTO {
@@ -113,6 +119,8 @@ interface FoundryStatusDTO {
 
 interface ScanResponse {
   scannedAt: string;
+  /** Host platform snapshot (drives the platform badge). */
+  platform: PlatformInfoDTO;
   runtime: RuntimeRow[];
   engines: EngineRow[];
   tools: ToolRow[];
@@ -175,7 +183,13 @@ function timeAgo(iso: string): string {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function ToolsPanel() {
+export function ToolsPanel({
+  onOpenAlphafoldWorkbench,
+}: {
+  /** Jump to the AF2 workbench (the AlphaFold panel is the task-submission
+   *  surface — SSH connect, salloc/slurm dispatch, job monitor, 3D viewer). */
+  onOpenAlphafoldWorkbench?: () => void;
+}) {
   const toast = useAppStore((s) => s.toast);
   const [scan, setScan] = React.useState<ScanResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -317,11 +331,21 @@ export function ToolsPanel() {
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Wrench className="size-5 text-primary" />
             <h2 className="text-lg font-semibold tracking-tight">
               Environment &amp; Toolchain
             </h2>
+            {scan?.platform && (
+              <Badge
+                variant="outline"
+                className="gap-1 font-mono text-[10px]"
+                title={`Host platform — PATH separator "${scan.platform.pathSep}"`}
+              >
+                <Monitor className="size-3" />
+                {scan.platform.label}
+              </Badge>
+            )}
           </div>
           <p className="text-sm text-muted-foreground">
             Installation status for every dependency the studio uses — runtime,
@@ -467,6 +491,9 @@ export function ToolsPanel() {
                       engines={scan.engines}
                       onInstall={() => void startInstall(t.key, t.label)}
                       installing={startingInstall === t.key}
+                      onOpenAlphafoldWorkbench={
+                        t.key === "alphafold" ? onOpenAlphafoldWorkbench : undefined
+                      }
                     />
                   ))}
                 </div>
@@ -822,11 +849,14 @@ function ToolCard({
   engines,
   onInstall,
   installing,
+  onOpenAlphafoldWorkbench,
 }: {
   row: ToolRow;
   engines: EngineRow[];
   onInstall: () => void;
   installing: boolean;
+  /** Set only on the alphafold row — jumps to the AF2 workbench. */
+  onOpenAlphafoldWorkbench?: () => void;
 }) {
   const engine = engines.find((e) => e.key === row.builtinEngine);
   const { size, detail } = splitSizeHint(row.sizeHint ?? "");
@@ -856,6 +886,19 @@ function ToolCard({
         <p className="line-clamp-2 text-xs text-muted-foreground">
           {row.description}
         </p>
+
+        {/* win32 platform warning (github-method installs are bash scripts) */}
+        {row.platformNote && (
+          <div
+            className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5"
+            role="note"
+          >
+            <AlertTriangle className="mt-0.5 size-3 shrink-0 text-amber-600 dark:text-amber-400" />
+            <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
+              {row.platformNote}
+            </p>
+          </div>
+        )}
 
         {/* Fallback engine row */}
         {engine && (
@@ -905,6 +948,17 @@ function ToolCard({
             <Badge variant="secondary" className="text-[10px]">
               native execution active
             </Badge>
+          )}
+          {onOpenAlphafoldWorkbench && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onOpenAlphafoldWorkbench}
+              title="AlphaFold 的任务提交工作台 — SSH 连接、salloc/slurm 派发、作业监控与 3D 查看"
+            >
+              <Boxes className="size-3.5" />
+              打开 AF2 工作台
+            </Button>
           )}
           <Button size="sm" variant="ghost" asChild>
             <a href={row.docs} target="_blank" rel="noreferrer">

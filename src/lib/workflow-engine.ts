@@ -514,8 +514,11 @@ export async function executeNode(
           res.hits.map((h) => `- ${h.id}: ${h.title}`).join("\n");
         return {
           result: JSON.stringify(res.hits, null, 2),
+          // Keep the error text in logs, but don't paint the node green —
+          // an API failure is a failed node (the NodeStatus union's error
+          // state is "failed"), not a completed one.
           logs: summary,
-          status: "completed",
+          status: res.error ? "failed" : "completed",
         };
       }
 

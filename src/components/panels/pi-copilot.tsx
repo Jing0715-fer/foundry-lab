@@ -128,9 +128,16 @@ export function PiCopilot() {
           title: "PI is running the workflow...",
           variant: "default",
         });
-        await fetch("/api/workflow/run", { method: "POST" });
+        const wfId = workflow?.id;
+        await fetch("/api/workflow/run", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ workflowId: wfId }),
+        });
         // Refresh again after run.
-        const wfRes2 = await fetch("/api/workflow");
+        const wfRes2 = wfId
+          ? await fetch(`/api/workflows/${wfId}`)
+          : await fetch("/api/workflow");
         if (wfRes2.ok) {
           const wf2 = await wfRes2.json();
           setWorkflow(wf2);

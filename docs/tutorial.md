@@ -599,6 +599,8 @@ education / production 分类）。
 
 ![移动端筛选](images/20-mobile-screening.png)
 
+- **节点库 → 抽屉**：窄屏下左侧节点库收纳为画布左上角的
+  **`+ Nodes`** 浮动按钮，点击以抽屉展开（桌面端仍为常驻侧栏）；
 - 画布支持触摸拖动/缩放：
 
 ![移动端画布](images/21-mobile-canvas.png)

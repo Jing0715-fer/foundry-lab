@@ -1137,13 +1137,20 @@ function NodeInspectorImpl() {
   const onRunAll = async () => {
     setRunningAll(true);
     try {
-      const res = await fetch("/api/workflow/run", { method: "POST" });
+      const wfId = useAppStore.getState().workflow?.id;
+      const res = await fetch("/api/workflow/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflowId: wfId }),
+      });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
       // Refetch the workflow to pull fresh node statuses.
-      const wfRes = await fetch("/api/workflow");
+      const wfRes = wfId
+        ? await fetch(`/api/workflows/${wfId}`)
+        : await fetch("/api/workflow");
       if (wfRes.ok) {
         const wf = await wfRes.json();
         useAppStore.getState().setWorkflow(wf);

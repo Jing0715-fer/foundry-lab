@@ -113,7 +113,9 @@ async function addNodeAtCenter(
     const res = await fetch("/api/workflow/nodes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ type, name, x, y }),
+      // Target the workflow the user is looking at (multi-workflow apps);
+      // undefined falls back to the server's first-workflow behavior.
+      body: JSON.stringify({ type, name, x, y, workflowId: workflow?.id }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

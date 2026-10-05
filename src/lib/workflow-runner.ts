@@ -30,99 +30,136 @@ export interface WorkflowRunResult {
   error?: string;
 }
 
+// ── Concurrency lock ─────────────────────────────────────────────────────────
+
+/** Workflows currently executing in this process. runWorkflowById is not
+ *  re-entrant for the same workflow: a second concurrent run would double-
+ *  execute nodes and thrash node statuses. Manual runs (POST /api/workflow/run)
+ *  and the schedule sweeper share this module-level lock. */
+const runningWorkflows = new Set<string>();
+
+/** Whether the given workflow is mid-run in this process. */
+export function isWorkflowRunning(id: string): boolean {
+  return runningWorkflows.has(id);
+}
+
 /** Run the given workflow end-to-end (sequential, topological). */
 export async function runWorkflowById(
   workflowId: string,
 ): Promise<WorkflowRunResult> {
-  const wf = await db.workflow.findUnique({
-    where: { id: workflowId },
-    include: { nodes: true, edges: true },
-  });
-  if (!wf) {
+  // Skip (do NOT throw) when a run is already in flight — the scheduler's
+  // sweeper calls this in a loop and must keep breathing.
+  if (runningWorkflows.has(workflowId)) {
+    console.warn(
+      `[workflow-runner] workflow ${workflowId} is already running in this process — skipping concurrent run`,
+    );
     return {
       ok: false,
       workflowId,
       started: 0,
       completed: 0,
-      error: "Workflow not found",
+      error: "Workflow is already running (concurrent run skipped)",
     };
   }
-
-  const nodes = wf.nodes.map(toNodeDTO);
-  const edges = wf.edges.map(toEdgeDTO);
-  const order = topologicalOrder(nodes, edges);
-  if (!order) {
-    return {
-      ok: false,
-      workflowId,
-      started: 0,
-      completed: 0,
-      error: "Workflow has a cycle",
-    };
-  }
-
-  // Mark all idle nodes as pending.
-  const idleIds = wf.nodes
-    .filter((n) => n.status === "idle")
-    .map((n) => n.id);
-  if (idleIds.length > 0) {
-    await db.node.updateMany({
-      where: { id: { in: idleIds } },
-      data: { status: "pending" },
-    });
-  }
-  const startedCount = idleIds.length;
-
-  let completedCount = 0;
-
-  // Re-fetch nodes after status change so we always work with fresh state.
-  for (const nodeId of order) {
-    const nodeRow = await db.node.findUnique({ where: { id: nodeId } });
-    if (!nodeRow) continue;
-    if (nodeRow.status !== "pending" && nodeRow.status !== "idle") {
-      continue;
-    }
-
-    // Set running.
-    await db.node.update({
-      where: { id: nodeId },
-      data: {
-        status: "running",
-        progress: 10,
-        startedAt: nodeRow.startedAt ?? new Date(),
-      },
-    });
-
-    // Gather inputs from already-completed upstream nodes.
-    const freshWf = await db.workflow.findUnique({
+  runningWorkflows.add(workflowId);
+  try {
+    const wf = await db.workflow.findUnique({
       where: { id: workflowId },
       include: { nodes: true, edges: true },
     });
-    const freshNodes = (freshWf?.nodes ?? []).map(toNodeDTO);
-    const freshEdges = (freshWf?.edges ?? []).map(toEdgeDTO);
-    const currentNode = freshNodes.find((n) => n.id === nodeId);
-    if (!currentNode) continue;
-    const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
+    if (!wf) {
+      return {
+        ok: false,
+        workflowId,
+        started: 0,
+        completed: 0,
+        error: "Workflow not found",
+      };
+    }
 
-    // Execute.
-    const { result, logs, status } = await executeNode(
-      currentNode,
-      inputs,
+    const nodes = wf.nodes.map(toNodeDTO);
+    const edges = wf.edges.map(toEdgeDTO);
+    const order = topologicalOrder(nodes, edges);
+    if (!order) {
+      return {
+        ok: false,
+        workflowId,
+        started: 0,
+        completed: 0,
+        error: "Workflow has a cycle",
+      };
+    }
+
+    // Mark all idle nodes as pending.
+    const idleIds = wf.nodes
+      .filter((n) => n.status === "idle")
+      .map((n) => n.id);
+    if (idleIds.length > 0) {
+      await db.node.updateMany({
+        where: { id: { in: idleIds } },
+        data: { status: "pending" },
+      });
+    }
+    const startedCount = idleIds.length;
+
+    let completedCount = 0;
+
+    // Re-fetch nodes after status change so we always work with fresh state.
+    for (const nodeId of order) {
+      const nodeRow = await db.node.findUnique({ where: { id: nodeId } });
+      if (!nodeRow) continue;
+      if (nodeRow.status !== "pending" && nodeRow.status !== "idle") {
+        continue;
+      }
+
+      // Set running.
+      await db.node.update({
+        where: { id: nodeId },
+        data: {
+          status: "running",
+          progress: 10,
+          startedAt: nodeRow.startedAt ?? new Date(),
+        },
+      });
+
+      // Gather inputs from already-completed upstream nodes.
+      const freshWf = await db.workflow.findUnique({
+        where: { id: workflowId },
+        include: { nodes: true, edges: true },
+      });
+      const freshNodes = (freshWf?.nodes ?? []).map(toNodeDTO);
+      const freshEdges = (freshWf?.edges ?? []).map(toEdgeDTO);
+      const currentNode = freshNodes.find((n) => n.id === nodeId);
+      if (!currentNode) continue;
+      const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
+
+      // Execute.
+      const { result, logs, status } = await executeNode(
+        currentNode,
+        inputs,
+        workflowId,
+      );
+
+      await db.node.update({
+        where: { id: nodeId },
+        data: {
+          status,
+          result,
+          logs,
+          progress: 100,
+          completedAt: new Date(),
+        },
+      });
+      if (status === "completed") completedCount++;
+    }
+
+    return {
+      ok: true,
       workflowId,
-    );
-
-    await db.node.update({
-      where: { id: nodeId },
-      data: {
-        status,
-        result,
-        logs,
-        progress: 100,
-        completedAt: new Date(),
-      },
-    });
-    if (status === "completed") completedCount++;
+      started: startedCount,
+      completed: completedCount,
+    };
+  } finally {
+    runningWorkflows.delete(workflowId);
   }
-
-  return { ok: true, workflowId, started: startedCount, completed: completedCount };
 }

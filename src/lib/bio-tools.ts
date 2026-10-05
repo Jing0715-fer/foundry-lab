@@ -261,9 +261,19 @@ export async function runPdb(p: BioPdbParams): Promise<BioResult> {
 
 export async function runPubmed(p: BioPubmedParams): Promise<BioResult> {
   const max = Math.min(p.maxResults ?? 5, 10);
+  // Guard: without a query we'd otherwise search NCBI for the literal string
+  // "undefined" and return junk hits — throw so the upstream catch turns this
+  // into an honest failure.
+  const term = (p.query ?? "").trim();
+  if (!term) {
+    throw new Error(
+      "PubMed search requires a non-empty 'query' parameter (got: " +
+        `${JSON.stringify(p.query) ?? "undefined"}).`,
+    );
+  }
   const url =
     `https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&retmode=json` +
-    `&retmax=${max}&term=${encodeURIComponent(p.query)}` +
+    `&retmax=${max}&term=${encodeURIComponent(term)}` +
     (p.sortBy === "pub_date" ? "&sort=pub_date" : "");
   const data = await safeFetchJson(url);
   if (data && typeof data === "object") {

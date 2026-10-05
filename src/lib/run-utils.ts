@@ -188,6 +188,11 @@ export async function runAgentTurn(
     const { comp, bio } = extractToolCalls(reply);
     if (comp.length === 0 && bio.length === 0) break;
 
+    // The reply enters the conversation exactly once — it may contain N
+    // tool fences, but it is still one assistant message (previously each
+    // tool iteration re-pushed the same reply, polluting the context).
+    convo.push({ role: "assistant", content: reply });
+
     // Execute comp tool calls (real algorithms via the execution engine).
     for (const c of comp) {
       const def = getCompTool(c.tool);
@@ -211,7 +216,6 @@ export async function runAgentTurn(
         status,
       };
       toolCalls.push(tc);
-      convo.push({ role: "assistant", content: reply });
       convo.push({
         role: "user",
         content: `[Tool result for ${c.tool}]\n${resultText}\n\nRevise your answer using these results.`,
@@ -232,7 +236,6 @@ export async function runAgentTurn(
           status: "completed",
         };
         toolCalls.push(tc);
-        convo.push({ role: "assistant", content: reply });
         convo.push({
           role: "user",
           content: `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,

@@ -62,14 +62,16 @@ export async function POST(
     ...(rt?.topP != null ? { topP: rt.topP } : {}),
   };
 
-  // Fetch last 50 messages (ascending) for context. We slice off the final
-  // user message because we already append it explicitly below — but the
-  // saved user row above means it IS in the history query result.
-  const history = await db.chatMessage.findMany({
+  // Fetch the latest 50 messages for context (desc + take, then reverse back
+  // to ascending chronological order — same approach as POST /chat). We slice
+  // off the final user message because we already append it explicitly below —
+  // but the saved user row above means it IS in the history query result.
+  const recent = await db.chatMessage.findMany({
     where: { agentId: id },
-    orderBy: { createdAt: "asc" },
+    orderBy: { createdAt: "desc" },
     take: 50,
   });
+  const history = [...recent].reverse();
   const priorHistory = history.slice(0, -1);
 
   const messages: ChatMessage[] = [

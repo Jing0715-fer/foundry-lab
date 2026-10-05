@@ -58,6 +58,12 @@ function resolveEnginePython(): string | null {
   return null;
 }
 
+/** Invalidate the resolved-python cache (called after a runtime install
+ * job completes so the next scan picks up the new interpreter). */
+export function invalidateScreeningPython(): void {
+  cachedPython = undefined;
+}
+
 // ── Errors ───────────────────────────────────────────────────────────────────
 
 /** Typed error carrying the HTTP status the route should respond with. */
@@ -124,6 +130,25 @@ const METRIC_REGISTRY: Record<string, MetricDefSeed> = {
     hint: "Ramachandran log-likelihood",
   },
   symmetry_units: { key: "symmetry_units", label: "Sym Units", higherIsBetter: true },
+  // Antibody-engine metrics (RFantibody fallback engine: germline Fv design).
+  h3_len: {
+    key: "h3_len",
+    label: "CDR H3 Length",
+    higherIsBetter: false,
+    hint: "IMGT H3 loop length — shorter loops are typically more developable",
+  },
+  energy_kt: {
+    key: "energy_kt",
+    label: "Design Energy (kT)",
+    higherIsBetter: false,
+    hint: "Knowledge-based energy of the full Fv (lower is better)",
+  },
+  interface_sasa: {
+    key: "interface_sasa",
+    label: "VH/VL Interface (Å²)",
+    higherIsBetter: true,
+    hint: "Buried SASA across the VH/VL interface — more burial = more stable pairing",
+  },
 };
 
 /** Stable display order: registry keys first, then auto keys alphabetically. */
@@ -137,6 +162,9 @@ const REGISTRY_ORDER = [
   "clashes",
   "rama_ll",
   "symmetry_units",
+  "h3_len",
+  "energy_kt",
+  "interface_sasa",
 ];
 
 /** Primary metrics default to weight 2; every other observed metric → 1. */
@@ -543,16 +571,31 @@ function applyRunMetrics(
 ): number | null {
   let length: number | null = null;
 
-  // 1) Diffusion engine: designs[] array — design_N.pdb → entry design === N+1.
+  // 1) Diffusion / antibody engines: designs[] array — design_N.pdb (and
+  //    antibody fv_design_N.pdb) → entry design === N+1, else designs[N].
   const designs =
     runJson && Array.isArray(runJson.designs) ? (runJson.designs as Record<string, unknown>[]) : null;
   if (designs) {
-    const m = /^design[_-]?(\d+)$/i.exec(stem);
+    const m = /design[_-]?(\d+)$/i.exec(stem);
     if (m) {
       const idx = parseInt(m[1], 10);
-      const entry = designs.find((d) => numOrNull(d.design) === idx + 1);
+      const entry =
+        designs.find((d) => numOrNull(d.design) === idx + 1) ?? designs[idx];
       if (entry) {
-        length = numOrNull(entry.length);
+        // Antibody engine entries carry vh_len/vl_len (two-chain Fv).
+        const vhLen = numOrNull(entry.vh_len);
+        const vlLen = numOrNull(entry.vl_len);
+        if (vhLen != null && vlLen != null) {
+          length = vhLen + vlLen;
+          const h3Len = numOrNull(entry.h3_len);
+          if (h3Len != null) metrics.h3_len = h3Len;
+          const energy = numOrNull(entry.energy_kT);
+          if (energy != null) metrics.energy_kt = energy;
+          const ifaceSasa = numOrNull(entry.vl_vh_buried_sasa);
+          if (ifaceSasa != null) metrics.interface_sasa = ifaceSasa;
+        } else {
+          length = numOrNull(entry.length);
+        }
         const helical = numOrNull(entry.helical);
         const extended = numOrNull(entry.extended);
         if (length && helical != null) {
@@ -1210,6 +1253,17 @@ export async function deleteScreening(id: string): Promise<void> {
   const existing = await db.screening.findUnique({ where: { id } });
   if (!existing) throw new ScreeningError("Screening not found", 404);
   await db.screening.delete({ where: { id } });
+  // Best-effort cleanup of the campaign's harvested engine artifacts
+  // (outputs/screening/<id>/ can reach hundreds of MB for demo runs).
+  // Failure is logged and ignored — the DB row is already gone.
+  try {
+    await fsp.rm(join(SCREENING_ROOT, id), { recursive: true, force: true });
+  } catch (err) {
+    console.warn(
+      `[screening] deleteScreening: failed to remove artifacts for ${id}:`,
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
 
 const CANDIDATE_STATUSES: readonly string[] = [
@@ -1320,6 +1374,7 @@ export async function promoteCandidates(
   id: string,
   ids: string[],
   nodeName?: string,
+  workflowId?: string,
 ): Promise<PromoteResultDTO> {
   if (!Array.isArray(ids) || ids.length === 0 || ids.some((x) => typeof x !== "string")) {
     throw new ScreeningError("ids must be a non-empty array of candidate ids", 400);
@@ -1354,11 +1409,26 @@ export async function promoteCandidates(
     if (files.length >= 20) break;
   }
 
-  // Placement on the first workflow: max node x + 340, y 60 (fallback 120/80).
-  const wf = await db.workflow.findFirst({
-    orderBy: { createdAt: "asc" },
-    include: { nodes: true },
-  });
+  // Placement: max node x + 340, y 60 (fallback 120/80). Target workflow =
+  // the client-specified workflowId (validated) so promoted nodes land on
+  // the workflow the user is actually looking at; fallback = first workflow
+  // (multi-workflow apps would otherwise scatter "phantom" nodes).
+  const wf =
+    typeof workflowId === "string" && workflowId
+      ? await db.workflow.findUnique({
+          where: { id: workflowId },
+          include: { nodes: true },
+        })
+      : await db.workflow.findFirst({
+          orderBy: { createdAt: "asc" },
+          include: { nodes: true },
+        });
+  if (workflowId && !wf) {
+    throw new ScreeningError(
+      `Workflow not found: ${workflowId}`,
+      400,
+    );
+  }
   if (!wf) {
     throw new ScreeningError("No workflow exists to place the promoted node on", 404);
   }

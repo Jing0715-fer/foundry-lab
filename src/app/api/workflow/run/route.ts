@@ -1,21 +1,43 @@
-// POST /api/workflow/run — run the ACTIVE (first) workflow in topological
-// order. The execution engine itself lives in src/lib/workflow-runner.ts and
-// is shared with the scheduled-run sweeper (src/lib/scheduler.ts) so manual
-// and scheduled runs behave identically.
+// POST /api/workflow/run — run a workflow in topological order. Body may
+// carry { workflowId } to target a specific (e.g. currently viewed) workflow;
+// omitted → the first workflow. The execution engine itself lives in
+// src/lib/workflow-runner.ts and is shared with the scheduled-run sweeper
+// (src/lib/scheduler.ts) so manual and scheduled runs behave identically.
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { runWorkflowById } from "@/lib/workflow-runner";
+import { runWorkflowById, isWorkflowRunning } from "@/lib/workflow-runner";
 
-export async function POST() {
+export async function POST(request: Request) {
   try {
-    const wf = await db.workflow.findFirst({
-      orderBy: { createdAt: "asc" },
-    });
+    const body = await request.json().catch(() => ({}));
+    const workflowId =
+      typeof body?.workflowId === "string" ? body.workflowId : null;
+
+    let wf: { id: string } | null = null;
+    if (workflowId) {
+      wf = await db.workflow.findUnique({ where: { id: workflowId } });
+      if (!wf) {
+        return NextResponse.json(
+          { error: `Workflow ${workflowId} not found` },
+          { status: 400 },
+        );
+      }
+    } else {
+      wf = await db.workflow.findFirst({
+        orderBy: { createdAt: "asc" },
+      });
+    }
     if (!wf) {
       return NextResponse.json(
         { error: "No workflow exists" },
         { status: 404 },
+      );
+    }
+    if (isWorkflowRunning(wf.id)) {
+      return NextResponse.json(
+        { error: "Workflow is already running" },
+        { status: 409 },
       );
     }
 

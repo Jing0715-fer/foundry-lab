@@ -16,9 +16,10 @@
 // All file outputs land under <workDir> (outputs/<toolKey>/<jobId>/). The
 // absolute file list is returned to the caller and persisted on the ToolJob.
 
-import { spawn, execSync } from "child_process";
+import { spawn, spawnSync } from "child_process";
 import { promises as fs, existsSync } from "fs";
-import { join, resolve } from "path";
+import { isAbsolute, join, relative, resolve, sep } from "path";
+import { crossWhich } from "./platform";
 import {
   getToolRegistryEntry,
   engineForTool,
@@ -47,22 +48,60 @@ export interface ExecutionResult {
 
 // ── Python resolution ───────────────────────────────────────────────────────
 
-const PYTHON_CANDIDATES = [
-  "python3",
-  "/home/z/.venv/bin/python3",
-  "/usr/bin/python3",
-];
+/** A python candidate + the argv prefix it needs. Windows' "py" launcher
+ *  must be invoked with an explicit -3 (its default may resolve to a
+ *  different interpreter than the one that passed the numpy probe). */
+interface PythonCandidate {
+  cmd: string;
+  preArgs: string[];
+}
+
+function pythonCandidates(): PythonCandidate[] {
+  if (process.platform === "win32") {
+    return [
+      { cmd: "python", preArgs: [] },
+      { cmd: "py", preArgs: ["-3"] }, // Windows launcher, forced Python 3
+      { cmd: "python3", preArgs: [] },
+    ];
+  }
+  // darwin / linux
+  return [
+    { cmd: "python3", preArgs: [] },
+    { cmd: "/home/z/.venv/bin/python3", preArgs: [] },
+    { cmd: "/usr/bin/python3", preArgs: [] },
+  ];
+}
 
 let cachedPython: string | null | undefined;
 
-/** Resolve a python3 that can import numpy (the engine runtime requirement). */
+/** Spawn tokens for a python resolved here (see PythonCandidate — "py" needs
+ *  the -3 prefix). Exported so install-jobs / the scan route spawn the same
+ *  interpreter that passed detection. */
+export function pythonSpawnTokens(py: string): {
+  cmd: string;
+  preArgs: string[];
+} {
+  if (process.platform === "win32" && /^(?:py|py\.exe)$/i.test(py.trim())) {
+    return { cmd: "py", preArgs: ["-3"] };
+  }
+  return { cmd: py, preArgs: [] };
+}
+
+/** Resolve a python3 that can import numpy (the engine runtime requirement).
+ *  Probing uses spawnSync in ARRAY form — no shell, no string concatenation. */
 export function resolveEnginePython(): string | null {
   if (cachedPython !== undefined) return cachedPython;
-  for (const cand of PYTHON_CANDIDATES) {
+  for (const cand of pythonCandidates()) {
     try {
-      execSync(`${cand} -c "import numpy" 2>/dev/null`, { stdio: "pipe" });
-      cachedPython = cand;
-      return cand;
+      const res = spawnSync(cand.cmd, [...cand.preArgs, "-c", "import numpy"], {
+        stdio: "pipe",
+        timeout: 15_000,
+        encoding: "utf8",
+      });
+      if (res.status === 0 && !res.error) {
+        cachedPython = cand.cmd;
+        return cand.cmd;
+      }
     } catch {
       /* try next */
     }
@@ -71,67 +110,72 @@ export function resolveEnginePython(): string | null {
   return null;
 }
 
+/** Reset the python resolution cache — called after an install job settles
+ *  (install-jobs.ts) so a freshly installed python/numpy is detected without
+ *  a dev-server restart. */
+export function invalidateEnginePythonCache(): void {
+  cachedPython = undefined;
+}
+
 const ALGORITHMS_DIR = resolve(process.cwd(), "scripts", "algorithms");
 
 // ── Detection ───────────────────────────────────────────────────────────────
 
+/** Can the given python import a module? (spawnSync array form; the module
+ *  name comes from registry constants, and argv values never hit a shell.) */
+function pythonCanImport(py: string | null, module: string): boolean {
+  const target = py ?? "python3";
+  const tok = pythonSpawnTokens(target);
+  try {
+    const res = spawnSync(tok.cmd, [...tok.preArgs, "-c", `import ${module}`], {
+      stdio: "pipe",
+      timeout: 15_000,
+      encoding: "utf8",
+    });
+    return res.status === 0 && !res.error;
+  } catch {
+    return false;
+  }
+}
+
+/** Shared detection for a registry detect spec (binary / python / path). */
+function detectInstalled(detect: {
+  type: string;
+  binary?: string;
+  pythonModule?: string;
+  path?: string;
+}): boolean {
+  if (detect.type === "binary" && detect.binary) {
+    return crossWhich(detect.binary) !== null;
+  }
+  if (detect.type === "python" && detect.pythonModule) {
+    return pythonCanImport(resolveEnginePython(), detect.pythonModule);
+  }
+  if (detect.type === "path" && detect.path) {
+    // Absolute paths (e.g. the foundry venv) check directly; relative
+    // paths resolve under the project root. isAbsolute covers win32 drives.
+    const p = detect.path;
+    return existsSync(isAbsolute(p) ? p : join(process.cwd(), p));
+  }
+  return false;
+}
+
 /**
  * Check if the NATIVE external tool is installed on the host.
- *   - binary: `which <binary>` succeeds
+ *   - binary: cross-platform PATH lookup (crossWhich)
  *   - python: the engine python can `import <module>`
  */
 export function isToolInstalled(key: string): boolean {
   const entry = getToolRegistryEntry(key);
   if (!entry) return false;
-  try {
-    if (entry.detect.type === "binary" && entry.detect.binary) {
-      execSync(`which ${entry.detect.binary} 2>/dev/null`, { stdio: "pipe" });
-      return true;
-    }
-    if (entry.detect.type === "python" && entry.detect.pythonModule) {
-      const py = resolveEnginePython() ?? "python3";
-      execSync(`${py} -c "import ${entry.detect.pythonModule}" 2>/dev/null`, {
-        stdio: "pipe",
-      });
-      return true;
-    }
-    if (entry.detect.type === "path" && entry.detect.path) {
-      // Absolute paths (e.g. the foundry venv) check directly; relative
-      // paths resolve under the project root.
-      const p = entry.detect.path;
-      return existsSync(p.startsWith("/") ? p : join(process.cwd(), p));
-    }
-  } catch {
-    return false;
-  }
-  return false;
+  return detectInstalled(entry.detect);
 }
 
 /** Detect an arbitrary registry entry (runtime + external tiers). */
 export function isEntryInstalled(
   detect: { type: string; binary?: string; pythonModule?: string; path?: string },
 ): boolean {
-  try {
-    if (detect.type === "binary" && detect.binary) {
-      execSync(`which ${detect.binary} 2>/dev/null`, { stdio: "pipe" });
-      return true;
-    }
-    if (detect.type === "python" && detect.pythonModule) {
-      const py = resolveEnginePython() ?? "python3";
-      execSync(`${py} -c "import ${detect.pythonModule}" 2>/dev/null`, {
-        stdio: "pipe",
-      });
-      return true;
-    }
-    if (detect.type === "path" && detect.path) {
-      // Absolute paths (foundry venv) check directly; relative under root.
-      const p = detect.path;
-      return existsSync(p.startsWith("/") ? p : join(process.cwd(), p));
-    }
-  } catch {
-    return false;
-  }
-  return false;
+  return detectInstalled(detect);
 }
 
 // ── Engine self-test ────────────────────────────────────────────────────────
@@ -144,7 +188,8 @@ interface EngineTestResult {
   detail: string;
 }
 
-/** Run each engine's fast selftest (common.py selftest). */
+/** Run each engine's fast selftest (common.py selftest).
+ *  spawnSync in ARRAY form — stdout+stderr merged (old `2>&1` semantics). */
 export function selfTestEngines(): EngineTestResult[] {
   const py = resolveEnginePython();
   if (!py) {
@@ -156,12 +201,22 @@ export function selfTestEngines(): EngineTestResult[] {
       detail: "python3 with numpy not found — install the runtime tier first",
     }));
   }
+  const tok = pythonSpawnTokens(py);
   return BUILTIN_ENGINES.map((e) => {
     try {
-      const out = execSync(
-        `${py} ${join(ALGORITHMS_DIR, e.script)} --selftest 2>&1`,
-        { stdio: "pipe", timeout: 30000 },
-      ).toString();
+      const res = spawnSync(
+        tok.cmd,
+        [...tok.preArgs, join(ALGORITHMS_DIR, e.script), "--selftest"],
+        { stdio: "pipe", timeout: 30000, encoding: "utf8" },
+      );
+      if (res.error) throw new Error(res.error.message);
+      const out = `${res.stdout ?? ""}${res.stderr ?? ""}`;
+      if (res.status !== 0) {
+        throw new Error(
+          out.trim().split("\n").slice(-1)[0]?.slice(0, 200) ||
+            `exit ${res.status}`,
+        );
+      }
       // Engines accept --selftest → delegate to common selftest; if an engine
       // doesn't implement it, just verify the script exists + imports.
       return {
@@ -174,16 +229,33 @@ export function selfTestEngines(): EngineTestResult[] {
     } catch (err) {
       // --selftest not implemented → fall back to import check.
       try {
-        execSync(
-          `${py} -c "import ast,sys; ast.parse(open('${join(ALGORITHMS_DIR, e.script)}').read())"`,
-          { stdio: "pipe", timeout: 15000 },
+        const check = spawnSync(
+          tok.cmd,
+          [
+            ...tok.preArgs,
+            "-c",
+            "import ast,sys; ast.parse(open(sys.argv[1]).read())",
+            join(ALGORITHMS_DIR, e.script),
+          ],
+          { stdio: "pipe", timeout: 15000, encoding: "utf8" },
         );
+        if (check.status === 0 && !check.error) {
+          return {
+            key: e.key,
+            label: e.label,
+            script: e.script,
+            ok: true,
+            detail: "script present, syntax valid",
+          };
+        }
         return {
           key: e.key,
           label: e.label,
           script: e.script,
-          ok: true,
-          detail: "script present, syntax valid",
+          ok: false,
+          detail: (
+            (check.stderr as string | null) ?? (err as Error).message
+          ).slice(0, 200),
         };
       } catch {
         return {
@@ -218,11 +290,42 @@ function normalizePathParams(
     const v = out[f.key];
     if (typeof v !== "string" || !v.trim()) continue;
     const s = v.trim();
-    if (s.startsWith("/")) continue; // already absolute
+    if (isAbsolute(s)) continue; // already absolute (POSIX / or win32 drive)
     const abs = join(process.cwd(), s);
     if (existsSync(abs)) out[f.key] = abs;
   }
   return out;
+}
+
+/**
+ * P1-2 WRITE-SIDE SANDBOX for output FASTA paths. `path_to_fasta` is an
+ * output location the user / LLM can point anywhere on disk (reads are
+ * already whitelisted via /api/tools/file; writes were not). Resolve the
+ * requested path and — unless it lands under the PROJECT ROOT — redirect it
+ * into the job workDir. Applies uniformly to every downstream path (foundry
+ * --out_fasta, native --path_to_fasta, the built-in engine payload).
+ */
+function sandboxFastaOutput(
+  params: Record<string, unknown>,
+  workDir: string,
+): { params: Record<string, unknown>; notice: string | null } {
+  const raw = params.path_to_fasta;
+  if (typeof raw !== "string" || !raw.trim()) {
+    return { params, notice: null };
+  }
+  const requested = raw.trim();
+  const target = resolve(process.cwd(), requested);
+  const rel = relative(process.cwd(), target);
+  const outside =
+    rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  if (!outside) return { params, notice: null };
+  const safe = join(workDir, "designed.fasta");
+  return {
+    params: { ...params, path_to_fasta: safe },
+    notice:
+      `[sandbox] path_to_fasta redirected into job workDir ` +
+      `(${requested} is outside the project root → ${safe})`,
+  };
 }
 
 /**
@@ -248,7 +351,21 @@ export async function executeCompToolReal(
   }
   // Relative input paths → project-root absolute (see normalizePathParams).
   params = normalizePathParams(def, params);
+  // Write-side sandbox: output FASTA paths must stay inside the project.
+  const sandboxed = sandboxFastaOutput(params, workDir);
 
+  const result = await dispatchCompTool(toolKey, sandboxed.params, workDir);
+  return sandboxed.notice
+    ? { ...result, stdout: `${sandboxed.notice}\n${result.stdout}` }
+    : result;
+}
+
+/** Foundry → native → built-in dispatch (after param normalization). */
+async function dispatchCompTool(
+  toolKey: string,
+  params: Record<string, unknown>,
+  workDir: string,
+): Promise<ExecutionResult> {
   // FOUNDRY TIER — the official RosettaCommons foundry platform
   // (rc-foundry wheel: the MPNN re-implementation maintained by the IPD).
   // It takes priority over the legacy dauparas repos and the built-in
@@ -366,7 +483,9 @@ async function runFoundryMpnn(
   const seed = Number(params.seed ?? 42);
   args.push("--seed", String(Number.isFinite(seed) ? Math.abs(Math.trunc(seed)) : 42));
 
-  // FASTA output: the param surface's path_to_fasta, else the job workDir.
+  // FASTA output: the param surface's path_to_fasta (already sanitized by
+  // the write-side sandbox in executeCompToolReal — outside-project targets
+  // were redirected into the job workDir), else the job workDir default.
   const outFasta =
     typeof params.path_to_fasta === "string" && params.path_to_fasta.trim()
       ? params.path_to_fasta
@@ -475,7 +594,7 @@ async function runNativeTool(
     return { ...res, executor: "native", realToolUsed: true };
   }
   if (mode.mode === "executable") {
-    const exePath = mode.path.startsWith("/") ? mode.path : join(process.cwd(), mode.path);
+    const exePath = isAbsolute(mode.path) ? mode.path : join(process.cwd(), mode.path);
     const res = await runProcess(
       exePath,
       [...argTokens, ...fixed, ...outTokens],
@@ -489,10 +608,11 @@ async function runNativeTool(
   }
   if (mode.mode === "script") {
     if (!py) throw new Error("engine python not available for script execution");
+    const tok = pythonSpawnTokens(py);
     const scriptPath = join(process.cwd(), mode.script);
     const res = await runProcess(
-      py,
-      [scriptPath, ...argTokens, ...fixed, ...outTokens],
+      tok.cmd,
+      [...tok.preArgs, scriptPath, ...argTokens, ...fixed, ...outTokens],
       workDir,
       displayCommand,
       Date.now(),
@@ -503,9 +623,10 @@ async function runNativeTool(
   }
   // python-module
   if (!py) throw new Error("engine python not available for module execution");
+  const tok = pythonSpawnTokens(py);
   const res = await runProcess(
-    py,
-    ["-m", mode.module, ...argTokens, ...fixed, ...outTokens],
+    tok.cmd,
+    [...tok.preArgs, "-m", mode.module, ...argTokens, ...fixed, ...outTokens],
     workDir,
     displayCommand,
     Date.now(),
@@ -549,9 +670,10 @@ async function runBuiltinEngine(
     params: { ...params, _tool: toolKey },
     workdir: workDir,
   });
+  const tok = pythonSpawnTokens(py);
   const res = await runProcess(
-    py,
-    [join(ALGORITHMS_DIR, engine.script), payload],
+    tok.cmd,
+    [...tok.preArgs, join(ALGORITHMS_DIR, engine.script), payload],
     workDir,
     displayCommand,
     startedAt,

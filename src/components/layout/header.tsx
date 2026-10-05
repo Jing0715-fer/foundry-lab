@@ -82,7 +82,11 @@ export function Header() {
       description: `Running "${workflow.name}"…`,
     });
     try {
-      const res = await fetch("/api/workflow/run", { method: "POST" });
+      const res = await fetch("/api/workflow/run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ workflowId: workflow.id }),
+      });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       toast({

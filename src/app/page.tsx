@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import { Plus } from "lucide-react";
 import { Header } from "@/components/layout/header";
 import { Sidebar } from "@/components/layout/sidebar";
 import { Footer } from "@/components/layout/footer";
@@ -122,6 +123,11 @@ export default function Home() {
   // from the Sidebar's "Cluster" button. Wider than Environment (sm:max-w-2xl)
   // because the cluster panel shows probe grids + live job logs.
   const [clusterOpen, setClusterOpen] = React.useState(false);
+
+  // Mobile node palette — the fixed 256px palette would leave almost no
+  // canvas at 375px, so below md it becomes a drawer behind a floating
+  // "+ Nodes" button on the canvas.
+  const [paletteOpen, setPaletteOpen] = React.useState(false);
 
   // Boot sequence — runs once.
   React.useEffect(() => {
@@ -287,10 +293,21 @@ export default function Home() {
         <main className="flex min-h-0 flex-1 flex-col">
           {activePanel === "canvas" && (
             <div className="flex min-h-0 flex-1">
-              <NodePalette />
+              <NodePalette className="hidden md:flex" />
               <div className="relative flex min-h-0 flex-1 flex-col">
                 <WorkflowCanvas />
                 <CanvasToolbar />
+                {/* Mobile-only floating palette trigger (md+: inline palette
+                    is mounted, this button is hidden). */}
+                <button
+                  type="button"
+                  aria-label="Open node palette"
+                  onClick={() => setPaletteOpen(true)}
+                  className="absolute left-3 top-3 z-20 flex items-center gap-1.5 rounded-full border border-border bg-background/95 px-3.5 py-2 text-xs font-medium shadow-md backdrop-blur transition hover:border-primary/50 hover:text-primary md:hidden"
+                >
+                  <Plus className="size-3.5" />
+                  Nodes
+                </button>
               </div>
               {selectedId && <NodeInspector />}
             </div>
@@ -300,7 +317,13 @@ export default function Home() {
           {activePanel === "tasks" && <div className="min-h-0 flex-1 overflow-y-auto"><TasksPanel /></div>}
           {activePanel === "meetings" && <div className="min-h-0 flex-1 overflow-y-auto"><MeetingsPanel /></div>}
           {activePanel === "research" && <div className="min-h-0 flex-1 overflow-y-auto"><ResearchPanel /></div>}
-          {activePanel === "alphafold" && <div className="min-h-0 flex-1 overflow-y-auto"><AlphaFoldPanel /></div>}
+          {activePanel === "alphafold" && (
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <AlphaFoldPanel
+                onOpenEnvironment={() => setEnvironmentOpen(true)}
+              />
+            </div>
+          )}
           {activePanel === "screening" && <div className="min-h-0 flex-1 overflow-y-auto"><ScreeningPanel /></div>}
         </main>
       </div>
@@ -343,7 +366,14 @@ export default function Home() {
             Scan the host for runtime dependencies and engine status, and
             one-click install missing pieces.
           </SheetDescription>
-          <ToolsPanel />
+          <ToolsPanel
+            onOpenAlphafoldWorkbench={() => {
+              // Close the Environment sheet and switch the main panel to the
+              // AF2 workbench (the task-submission surface for AlphaFold).
+              setEnvironmentOpen(false);
+              useAppStore.getState().setActivePanel("alphafold");
+            }}
+          />
         </SheetContent>
       </Sheet>
       {/* Cluster Sheet — left side like Environment, but wider (probe grids +
@@ -364,6 +394,17 @@ export default function Home() {
         </SheetContent>
       </Sheet>
       <CommandPalette />
+      {/* Mobile node palette drawer — the inline palette is hidden below md;
+        this Sheet hosts the same catalog for phones. */}
+      <Sheet open={paletteOpen} onOpenChange={setPaletteOpen}>
+        <SheetContent side="left" className="w-72 gap-0 p-0">
+          <SheetTitle className="sr-only">Node palette</SheetTitle>
+          <SheetDescription className="sr-only">
+            Browse and add nodes to the workflow canvas.
+          </SheetDescription>
+          <NodePalette className="flex w-full border-r-0" />
+        </SheetContent>
+      </Sheet>
       <OnboardingTour />
     </div>
   );

@@ -5,7 +5,7 @@ import { chainColor, computeAtomColors, parseCssColor, type ColorScheme } from '
 import { parseStructure, type StructureData } from './parser'
 import { evaluateSelection, maskToIndices } from './selection'
 import { textRegistry } from './text-registry'
-import { computeDSSP } from './dssp'
+import { computeDSSP, computeTorsionBasins, type TorsionBasinResult } from './dssp'
 import {
   defaultRep, defaultSettings, type AtomLabel, type ChainSummary, type LigandSummary,
   type MeasureMode, type Measurement, type NamedSelection, type RepConfig, type RepType,
@@ -97,7 +97,7 @@ export interface MolState {
   clearLabels: (structureId?: string) => void
   updateSettings: (patch: Partial<Settings>) => void
   /** 用 DSSP 重算指定结构的二级结构（无记录结构或强制重算） */
-  recomputeSS: (structureId: string) => { helix: number; strand: number; loop: number; error?: string }
+  recomputeSS: (structureId: string) => { helix: number; strand: number; loop: number; basins?: TorsionBasinResult; error?: string }
   setUi: (patch: Partial<MolState['ui']>) => void
   appendLog: (type: 'in' | 'out' | 'err', text: string) => void
   bumpVisual: () => void
@@ -716,7 +716,7 @@ export const useMolStore = create<MolState>()((set, get) => ({
       structures: s.structures.map(x => x.id === structureId ? { ...x, hasSS: true, rev: x.rev + 1 } : x),
       visualRev: s.visualRev + 1,
     }))
-    return { helix: dssp.helixResidues, strand: dssp.strandResidues, loop: dssp.loopResidues }
+    return { helix: dssp.helixResidues, strand: dssp.strandResidues, loop: dssp.loopResidues, basins: computeTorsionBasins(data) }
   },
 
   setUi: (patch) => set(s => ({ ui: { ...s.ui, ...patch } })),

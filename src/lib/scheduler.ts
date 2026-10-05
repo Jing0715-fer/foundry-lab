@@ -33,6 +33,25 @@ export function startScheduleSweeper(): void {
   console.log(
     `[scheduler] workflow schedule sweeper started (every ${SWEEP_INTERVAL_MS / 1000}s)`,
   );
+  // Boot-time recovery: rows stuck in "firing" belong to a previous process
+  // that crashed mid-run (the sweeper only writes a terminal status —
+  // fired/failed — when the run finishes; firing alone means it never did).
+  // This process has no in-flight fires yet, so reclaim them by flipping back
+  // to "scheduled" — the next sweep re-fires them. ("scheduled" is the
+  // claimable state; firedAt stays null so history isn't fabricated.)
+  void db.workflowSchedule
+    .updateMany({
+      where: { status: "firing", firedAt: null },
+      data: { status: "scheduled" },
+    })
+    .then((r) => {
+      if (r.count > 0) {
+        console.warn(
+          `[scheduler] reclaimed ${r.count} schedule(s) stuck in "firing" (crashed mid-run) → re-queued as "scheduled"`,
+        );
+      }
+    })
+    .catch(() => {});
   // Sweep immediately on boot — a schedule whose runAt passed while the
   // server was down fires as soon as we come back up.
   void sweepDueSchedules().catch(() => {});

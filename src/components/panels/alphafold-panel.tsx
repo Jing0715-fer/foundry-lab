@@ -103,6 +103,7 @@ import {
   Square,
   Terminal,
   Trash2,
+  Wrench,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -294,7 +295,15 @@ function inputSummary(params: Record<string, unknown>): string {
 
 // ── panel ───────────────────────────────────────────────────────────────────
 
-export default function AlphaFoldPanel() {
+interface AlphaFoldPanelProps {
+  /** Opens the Environment sheet — dependency detection & one-click installs
+   *  are unified there (AlphaFold itself is scanned via TOOL_REGISTRY). */
+  onOpenEnvironment?: () => void;
+}
+
+export default function AlphaFoldPanel({
+  onOpenEnvironment,
+}: AlphaFoldPanelProps) {
   const toast = useAppStore((s) => s.toast);
 
   // ── connections ─────────────────────────────────────────────────────────
@@ -1032,17 +1041,29 @@ export default function AlphaFoldPanel() {
               </Badge>
             )}
           </div>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              void loadConnections();
-              void refreshJobs();
-            }}
-            aria-label="Refresh connections and jobs"
-          >
-            <RefreshCw className="size-3.5" /> Refresh
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            {onOpenEnvironment && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={onOpenEnvironment}
+                title="依赖检测与安装统一在 Environment 管理"
+              >
+                <Wrench className="size-3.5" /> 环境状态
+              </Button>
+            )}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                void loadConnections();
+                void refreshJobs();
+              }}
+              aria-label="Refresh connections and jobs"
+            >
+              <RefreshCw className="size-3.5" /> Refresh
+            </Button>
+          </div>
         </div>
       </header>
 

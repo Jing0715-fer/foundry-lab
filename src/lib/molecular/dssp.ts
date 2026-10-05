@@ -304,3 +304,87 @@ export function computeDSSP(data: StructureData): DSSPResult {
   }
   return { ss, helixResidues: helix, strandResidues: strand, loopResidues: loop, hbonds: hbs.size, bridges: bridgeCount, ms: performance.now() - t0 }
 }
+
+// ---------- φ/ψ 扭转盆地统计 ----------
+// 动机：Kabsch–Sander 氢键法判 E 需要链间/远程链内 H 键桥接伙伴；统计构建
+// 引擎（抗体 germline Fv 等）的 β 片段有真实的延伸扭转（φ/ψ 落 β 盆地）但
+// 没有折叠配对 → DSSP 诚实报 loop。本统计补上骨架扭转维度：报告 φ/ψ 落在
+// α 盆地 / β 盆地的残基比例，让"延伸构象含量"这一设计质量信号可见。
+export interface TorsionBasinResult {
+  /** 可计算 φ/ψ 的残基对总数 */
+  total: number
+  /** φ/ψ 落 α 螺旋盆地（φ∈[-80,-30], ψ∈[-60,20]） */
+  helixBasin: number
+  /** φ/ψ 落 β 延伸盆地（φ∈[-180,-30], ψ∈[90,180]） */
+  betaBasin: number
+  ms: number
+}
+
+/** 标准二面角（IUPAC 符号约定）——p0..p3 四点，绕 p1-p2 轴 */
+function dihedral(
+  p0: readonly number[], p1: readonly number[], p2: readonly number[], p3: readonly number[],
+): number {
+  const b0x = p0[0] - p1[0], b0y = p0[1] - p1[1], b0z = p0[2] - p1[2]
+  const b1x = p2[0] - p1[0], b1y = p2[1] - p1[1], b1z = p2[2] - p1[2]
+  const b2x = p3[0] - p2[0], b2y = p3[1] - p2[1], b2z = p3[2] - p2[2]
+  const n1 = Math.hypot(b1x, b1y, b1z)
+  if (n1 < 1e-9) return NaN
+  const ux = b1x / n1, uy = b1y / n1, uz = b1z / n1
+  // v = b0 ⊥ b1 分量, w = b2 ⊥ b1 分量
+  const d0 = b0x * ux + b0y * uy + b0z * uz
+  const d2 = b2x * ux + b2y * uy + b2z * uz
+  const vx = b0x - d0 * ux, vy = b0y - d0 * uy, vz = b0z - d0 * uz
+  const wx = b2x - d2 * ux, wy = b2y - d2 * uy, wz = b2z - d2 * uz
+  const x = vx * wx + vy * wy + vz * wz
+  const cx = uy * vz - uz * vy, cy = uz * vx - ux * vz, cz = ux * vy - uy * vx
+  const y = cx * wx + cy * wy + cz * wz
+  return (Math.atan2(y, x) * 180) / Math.PI
+}
+
+export function computeTorsionBasins(data: StructureData): TorsionBasinResult {
+  const t0 = performance.now()
+  const atoms = data.atoms
+  const pos = atoms.positions
+  const residues = data.residues
+  let total = 0, helixBasin = 0, betaBasin = 0
+
+  for (const ch of data.chains) {
+    // 收集该链连续氨基酸残基的 (N, CA, C) 索引
+    const bbList: { n: number; ca: number; c: number }[] = []
+    for (const ri of ch.residueIdx) {
+      const r = residues[ri]
+      if (!AMINO_ACIDS.has(r.resName.toUpperCase()) || r.water) continue
+      let n = -1, ca = -1, c = -1
+      for (let i = r.start; i < r.end; i++) {
+        const nm = atoms.names[i]
+        if (nm === 'N') n = i
+        else if (nm === 'CA') ca = i
+        else if (nm === 'C') c = i
+      }
+      if (n >= 0 && ca >= 0 && c >= 0) bbList.push({ n, ca, c })
+    }
+    for (let i = 0; i < bbList.length; i++) {
+      const cur = bbList[i]
+      const prev = i > 0 ? bbList[i - 1] : null
+      const next = i < bbList.length - 1 ? bbList[i + 1] : null
+      if (!prev || !next) continue
+      const phi = dihedral(
+        [pos[prev.c * 3], pos[prev.c * 3 + 1], pos[prev.c * 3 + 2]],
+        [pos[cur.n * 3], pos[cur.n * 3 + 1], pos[cur.n * 3 + 2]],
+        [pos[cur.ca * 3], pos[cur.ca * 3 + 1], pos[cur.ca * 3 + 2]],
+        [pos[cur.c * 3], pos[cur.c * 3 + 1], pos[cur.c * 3 + 2]],
+      )
+      const psi = dihedral(
+        [pos[cur.n * 3], pos[cur.n * 3 + 1], pos[cur.n * 3 + 2]],
+        [pos[cur.ca * 3], pos[cur.ca * 3 + 1], pos[cur.ca * 3 + 2]],
+        [pos[cur.c * 3], pos[cur.c * 3 + 1], pos[cur.c * 3 + 2]],
+        [pos[next.n * 3], pos[next.n * 3 + 1], pos[next.n * 3 + 2]],
+      )
+      if (!Number.isFinite(phi) || !Number.isFinite(psi)) continue
+      total++
+      if (phi >= -80 && phi <= -30 && psi >= -60 && psi <= 20) helixBasin++
+      else if (phi >= -180 && phi <= -30 && psi >= 90 && psi <= 180) betaBasin++
+    }
+  }
+  return { total, helixBasin, betaBasin, ms: performance.now() - t0 }
+}

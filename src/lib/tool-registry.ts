@@ -571,7 +571,7 @@ export const TOOL_REGISTRY: ToolRegistryEntry[] = [
     label: "AlphaFold2",
     category: "structure-prediction",
     description:
-      "Protein structure prediction (Jumper et al. 2021). Provided on the GPU cluster: salloc -N 1 --gres=gpu:1 -p brain2 → ssh gpu05 → module load alphafold2 → run_alphafold.py. Predicts 3D coordinates for every main-chain atom; outputs five models ranked by pLDDT (ranked_0.pdb = highest confidence).",
+      "Protein structure prediction (Jumper et al. 2021). Provided on the GPU cluster: salloc -N 1 --gres=gpu:1 -p brain2 → ssh gpu05 → module load alphafold2 → run_alphafold.py. Predicts 3D coordinates for every main-chain atom; outputs five models ranked by pLDDT (ranked_0.pdb = highest confidence). 本地无原生安装路径；本地执行回落内置 Chou-Fasman 引擎。",
     detect: {
       type: "binary",
       binary: "run_alphafold.py",
