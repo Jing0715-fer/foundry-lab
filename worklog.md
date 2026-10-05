@@ -3014,102 +3014,202 @@ Stage Summary:
 - 演示 DB 状态：2 个 fresh screening（默认权重）+ 6 节点 5 边全 completed 的演示工作流（文档实景来源）。
 
 ---
-Task ID: 2-a
-Agent: code-review-subagent
-Task: 全面只读代码审查 src/（lib + 51 个 API routes + components panels/screening/canvas + scripts/algorithms 引擎）
+Task ID: 5
+Agent: main-orchestrator (Z.ai Code)
+Task: 修复 README 移动端图片误用 + 优化外部软件调用的跨系统检测与安装。
 
 Work Log:
-- 逐行读完 src/lib 核心：screening.ts(1432)、real-executor.ts(701)、run-utils.ts(687)、tool-registry.ts(616)、workflow-engine.ts(550)、tools.ts、alphafold.ts、llm.ts、bio-tools.ts、scheduler.ts、install-jobs.ts、db.ts、workflow-runner.ts、workflow-io.ts、foundry.ts、canvas-utils.ts、pdb-parser.ts、store.ts，以及 cluster/{ssh,run-scripts,cluster-run,connections,probe,types}.ts（共 2269 行，SSH/命令注入重点面）。
-- 读完全部 51 个 route.ts（tools/file 路径穿越逐条推演、tools/run、jobs、install、screening×5、workflow nodes/edges/run/stream/logs、workflows+versions+schedule+restore、agents+chat+stream+analytics、meetings/research/tasks/pi/seed/bio-tools/cluster connections×4）。
-- 组件面聚焦数据获取/错误处理/类型：panels/screening-panel.tsx(1019) + screening/ 8 个模块（scoring.ts 归一化 min==max/除零专项核对）、canvas/{node-card,inspector,workflow-canvas,palette,canvas-toolbar,edges-layer}、viewers/{inline-results,output-viewer-dialog}、panels/{tools,cluster,alphafold,agent-chat-drawer,dashboard,tasks,meetings,research}，全部 fetch 调用逐个核对 try/catch/AbortController/乐观回滚。
-- scripts/algorithms/{common,diffusion,fold,mpnn,score,antibody}_engine.py + scripts/foundry/run_mpnn.py 入口/自测/##OUTPUTS## 错误路径过一遍。
-- 安全专项验证（全部通过）：/api/tools/file normalize+resolve+前缀白名单无穿越；jobs/[id]/file recorded-or-workDir 双重约束；远程命令逐 token shQuote（hydra list 引号经 bash 语义推演确认保留）；本地 spawn 全部 shell:false；install 命令仅来自 registry 常量且 key 先校验；无 $queryRaw；Prisma 全参数化；bio-tools 固定公网 URL+encodeURIComponent 无 SSRF；z-ai-web-dev-sdk 仅在服务端 llm.ts；无 shell:true。
-- 交叉验证运行时：bunx tsc --noEmit app-src 0 errors；outputs/screening/ 现为空目录（DB 候选指向已不存在的文件——数据态问题非代码问题，harvest 有 existsSync 防护）。
-- 未做任何源代码修改（只读任务）；仅追加本 worklog。
+- 环境恢复：沙箱被回滚到旧快照（HEAD f7144cf，screening/docs 代码与提交全部丢失）→ git fetch 发现远端保有全部新提交 → git reset --hard origin/main (f3d0bf8) 完整恢复（screening 组件、docs/images 23 张截图、README/tutorial、worklog）→ bun run db:generate 重新生成含 Screening model 的 Prisma client → 重启 dev server（screening API 200）。
+- 图片误用诊断（用户反馈"两张移动端的图被错误使用"）：20-mobile-screening.png 实际内容是统计卡/过滤器（候选卡片列表在折叠线以下）→ 滚动重拍为真正的候选卡片（#排名/评分条/pLDDT/pTM，VLM 验证）；21-mobile-canvas.png 实际是节点目录列表而非画布 —— 根因：NodePalette 固定 w-64 在 375px 只给画布留 ~60px。
+- 移动端画布修复：store 增加 mobilePaletteOpen；NodePalette <md 变为 overlay（absolute z-40 + 滑入动画 + 遮罩 + X 关闭 + 点选节点自动收起）；画布容器 relative；CanvasToolbar 新增 PanelLeft 按钮（md:hidden）。修复两个 bug：JSX 注释缺右括号；关闭态 translate 后仍遮挡图标导航 → invisible + transition-[transform,visibility]。桌面回归验证 palette 仍为静态列（x=224 w=256 static visible）。
+- 重拍/新拍移动端截图：20-mobile-screening（卡片列表）、21-mobile-canvas（14 节点画布+工具栏+minimap）、22-mobile-palette（目录浮层）——均 VLM 验证；17-environment 更新为新平台横幅版。
+- 跨平台检测与安装（新模块 src/lib/platform-env.ts）：OS 探测（os-release/sw_vers/ver 含发行版名）、无 shell 的 PATH+PATHEXT 二进制解析（替代 which）、包管理器探测（apt/dnf/yum/pacman/zypper/apk/nix/brew/winget/choco/scoop + conda/mamba/uv/pixi + pip）、WSL 探测、Python 解析（venv→python3→python→py -3，numpy 校验）、SYSTEM_INSTALL_COMMANDS（python3/git × 11 个包管理器）、resolveInstallLane（bash/cmd/WSL bash）+ isPosixFlavored 启发式、resolveInstallSpec（commandByOs 变体 → system 级 PM 命令 → 默认）。
+- 接入：real-executor（isEntryInstalled/isToolInstalled/scanAllTools 全部跨平台化，去掉全部 which/2>/dev/null；resolveEnginePython 走 platform-env；runProcess 支持带参命令如 "py -3"）；tool-registry（InstallMethod + "system"；install 增 commandByOs/systemKey；python3/git 改 system 级）；scan 路由（版本探测去重定向；runtime 行返回解析后的 installCommand/installError/oneClick；响应新增 platform 块）；install-jobs（按 OS 选执行通道；python/pip token 重写仅本机通道 —— 修复关键顺序 bug：lane args 先于重写构建导致 pip 落到系统 pip 触发 PEP-668）；foundry.ts 清理 4 处 POSIX 重定向/tail 管道。
+- UI：tools-panel 顶部平台横幅卡（OS/架构/shell/Python/PM chips/WSL 状态徽章）+ RuntimeCard 显示解析后的安装命令与错误。
+- E2E 验证：scan API 返回 Debian 13 + bash + /home/z/.venv/bin/python3 + apt-get/uv/pip；system 级 python3/git 解析出真实 apt 命令且 oneClick=true；POST install numpy → lane bash → 重写为 /home/z/.venv/bin/python3 -m pip install numpy → exit 0 "Requirement already satisfied"（顺序 bug 修复后）；ESMFold 引擎作业 completed（runProcess 改动回归通过）；移动端 palette 开→点选 Input→节点 14→15→浮层自动收起（translate -100% + hidden）；screening/canvas 桌面回归 OK。tsc 0 错误、lint 干净。
+- 文档：README 环境章节改写为跨平台版 + 新 FAQ；tutorial 第 8 章重写（平台横幅/检测原理/安装通道表/system 级安装）+ TOC 更新 + 第 12 章移动端重写（新截图 + 浮层说明）。
+- 收尾：删除测试 Input 节点（nodes 回到 14）。
 
 Stage Summary:
-- 结论：P0 x 0，P1 x 2，P2 x 5，P3 x 12。
-- 最重要发现：
-  ① P1 agents/[id]/chat/stream/route.ts:70 — 历史查询 orderBy asc + take 50 取的是最旧 50 条而非最新 50 条，对话超 50 条后每次流式回复都基于最旧上下文（非流式 POST /chat 的 desc+take+reverse 写法是对的）。
-  ② P1 real-executor.ts runFoundryMpnn --out_fasta / tools.ts path_to_fasta — 用户/LLM 提供的输出路径未做 outputs/ 沙箱（读侧有 /api/tools/file 白名单，写侧没有），LLM tool-fence 或未鉴权 POST 可写任意路径。
-  ③ P2 screening.ts deleteScreening 只删 DB 行不删 outputs/screening/<id>/（demo 引擎产物可达数百 MB，前序 agent 只能手工清理）。
-  ④ P2 nodes/[id]/run 无状态守卫：重跑 promoted input 节点会用 "Input node" 覆盖含 ##OUTPUTS## trailer 的 logs，永久破坏下游 auto-wire；且允许 running 节点重入双跑。
-  ⑤ P2 三个 resolveEnginePython/resolveFoundryPython 永久缓存 + invalidateFoundryCache 零调用方——one-click 安装成功后 scan 仍显示 executorReady=false，须重启 dev server。
-- 整体评价：工程质量很高（契约冻结纪律、乐观更新+回滚、SSE/子进程/SSH 超时与清理、诚实的失败上报）；系统性弱点集中在安装生命周期与检测缓存、写侧路径沙箱、多工作流二等公民、以及个别上下文窗口/重跑语义 bug。
+- 两项交付：① 移动端图片误用已修复（根因是 palette 占屏，顺手把它做成可折叠浮层 —— 移动画布从 60px 残条变为全屏可用，3 张新截图 VLM 验证）；② 外部软件检测/安装跨系统化（Linux/macOS/Windows 原生 + WSL 通道 + 11 种包管理器 + system 级一键装），bash 通道真实安装 E2E 通过，平台横幅 UI 上线。
+- 架构注记：resolveInstallSpec 由 scan 与 install 共享（UI 显示 = 按钮执行）；WSL 通道不重写 python token（目标是 WSL 侧环境）；scanAllTools/scan route/install-jobs 三处口径一致。
+
+---
+Task ID: 2-a
+Agent: code-review-backend
+Task: Read-only backend code review (API routes + libs + cluster + schema)
+
+Work Log:
+- Read worklog.md (architecture section + full task history) to map the build lineage (foundation → real engines → cluster lane → screening → cross-platform install lanes).
+- Opened and reviewed every route under src/app/api/** (agents CRUD + chat + chat/stream + analytics, tasks, meetings, research, pi/orchestrate, tools run/scan/install/jobs/file/stop, bio-tools, cluster connections/test/gpus, workflow + workflows CRUD/versions/restore/schedule, screening list/detail/rescan/candidates/promote, seed, root health).
+- Reviewed all in-scope libs: tools.ts, tool-registry.ts, real-executor.ts, platform-env.ts, install-jobs.ts, foundry.ts, screening.ts (full 1432 lines), workflow-engine.ts, workflow-runner.ts, workflow-io.ts, run-utils.ts, agent-orchestrator.ts, scheduler.ts, llm.ts, bio-tools.ts, alphafold.ts, db.ts + all cluster/* (ssh, connections, run-scripts, cluster-run 1018 lines, probe, types).
+- Reviewed prisma/schema.prisma end-to-end; skimmed scripts/algorithms/*.py (diffusion/fold read fully; mpnn/score/antibody/common selftest paths verified — C._selftest sys.exit() prevents the main() fall-through) + scripts/patches/rfdiffusion_cpu.py.
+- Cross-checked frontend call sites (workflow-switcher, header Run button, palette/canvas POST /api/workflow/nodes, agent-chat-drawer stream lane) to confirm backend contract drift; grepped invalidateFoundryCache/globalThis caches (never called); verified data/ secrets handling, file-route traversal guards, and command-quoting paths.
+- Compiled 22 findings (0 P0 / 4 P1 / 12 P2 / 6 P3) with file:line evidence; verified-OK list for the clean areas; appended this entry. NO files edited (read-only review; this worklog append is the only write).
+
+Stage Summary:
+- 22 issues: P1×4 (multi-workflow UI broken by first-workflow hardcoding in nodes/run/promote/import routes; arbitrary-file-read chain via client-writable node logs → screening harvest copies any path into outputs/ → /api/tools/file serves it; cluster poll-timeout returns exitCode 0 → node marked completed while remote job still running; agent chat/stream uses OLDEST-50 history and drops the tool-calling loop its non-stream twin has).
+- Top P2s: install-success caches never invalidated (foundry/platform-env/real-executor negative caches — invalidateFoundryCache exists but is never called; "Re-scan to verify" shows stale data until restart); no concurrency guards on run endpoints (double-execution races); stuck "running" nodes never recover after a crash; local ToolJob Stop is a no-op (pid never persisted); SSE node stream leaks its 500ms poll loop after client disconnect; plaintext SSH secrets at rest; hardcoded /home/z sandbox paths in platform-env/screening/tool-registry/foundry.
+- Verified OK: path-traversal guards on both file routes, SSRF posture of bio-tools, command-injection posture of install/cluster lanes (shQuote + int-parsed pids + sanitized modules), scheduler atomic claim, screening dedup/weights clamps, engines' selftest exit semantics, Prisma JSON field round-tripping.
 
 ---
 Task ID: 2-b
-Agent: fix-subagent
-Task: 代码审查修复 P1×1 + P2×4 + P3×6
+Agent: code-review-frontend
+Task: Read-only frontend code review (shell/store/canvas/panels/viewers)
 
 Work Log:
-- P1-1 src/app/api/agents/[id]/chat/stream/route.ts: 历史查询 orderBy asc+take50（最旧50条）→ desc+take50 再 reverse 恢复正序（对齐非流式 /chat 的写法），长对话不再基于最旧上下文。
-- P2-1 src/lib/screening.ts deleteScreening: 删 DB 行后 best-effort fsp.rm(SCREENING_ROOT/<id>, {recursive,force}) 清理引擎产物目录，try/catch 失败仅 console.warn 不阻塞；已用临时脚本端到端验证（row+dir 均清除，PASS）。
-- P2-2 src/app/api/workflow/nodes/[id]/run/route.ts: 双守卫——status==="running" → 409 "Node is already running"；type==="input" 且 logs 含 ##OUTPUTS## → 409 提示 re-running 会丢弃 promote 产物、建议新建 promote。curl 实测两个 409 均生效。
-- P2-4 多工作流幻影节点：nodes/route.ts POST 接受可选 body.workflowId（findUnique 验证，不存在 400，缺省 findFirst 兜底）；screening.ts promoteCandidates 增第 4 参 workflowId（同样 findUnique/400/findFirst）；promote/route.ts 透传 body.workflowId。客户端补 workflowId（useAppStore workflow.id）：command-palette.tsx、canvas/palette.tsx、canvas/canvas-toolbar.tsx（undo/redo 重建节点的 POST 处；DELETE/PATCH 不动）；promote 的 POST body 实际位于 panels/screening-panel.tsx（修复清单写的 promote-dialog.tsx 只是对话框、不含 fetch），故在该文件 promote() 的 body 加 workflowId=当前 store 工作流 id（一行外科手术式改动，已披露）。curl 验证：bogus workflowId → nodes 400 / promote 400 且零副作用（无节点创建、候选状态不变）。
-- P2-5 src/lib/workflow-runner.ts: 模块级 runningWorkflows Set 并发锁——入口已存在则 console.warn+返回 {ok:false, error:"already running"}（不 throw）；主体包 try/finally 释放；导出 isWorkflowRunning(id)。
-- P3-1 src/lib/db.ts: Prisma log 由恒 ["query"] 改为 dev 恒 query / 非 dev ["error"]。
-- P3-2 src/lib/agent-orchestrator.ts: rg 确认 src/ + scripts/ + 全仓零代码引用（仅 worklog 提及）→ 整文件删除（363 行死代码）。
-- P3-3 src/lib/workflow-engine.ts biotool 分支: runBio 返回 error 时节点状态 completed → "failed"（NodeStatus 联合类型无 "error"，"failed" 是该文件所有错误路径的既有状态值；日志仍保留 res.error 信息）。
-- P3-4 src/lib/scheduler.ts: 清扫器启动时回收卡死 firing 行（where status="firing" AND firedAt=null → 置回 "scheduled"；"pending" 不在 schedule 状态集 {scheduled|firing|fired|failed|cancelled} 内，"scheduled" 才是 sweeper 可认领、能补跑的状态），带 count>0 的 reclaim 日志。
-- P3-5 src/lib/run-utils.ts runAgentTurn: assistant 回复的 convo.push 从 comp/bio 两个循环体内移到循环外只 push 一次——N 个 tool-fence 不再把同一回复重复塞 N 份污染上下文。
-- P3-6 src/lib/bio-tools.ts runPubmed: query 缺失/空白时 throw 明确错误（含收到的值），不再把字面量 "undefined" 当搜索词发给 NCBI。
+- Read worklog (architecture + tail) and mapped the frontend surface: page.tsx shell, 5 lib stores, 11 canvas components, screening panel + 9 screening modules, alphafold/tools/cluster panels, 5 viewers, layout (header/sidebar/footer), command palette, onboarding tour, toasts, chat drawer, PI copilot, workflow switcher, and spot-checked MolStudio lifecycle + mol-viewer-mount disposal.
+- Verified no type drift: `bunx tsc --noEmit` shows 0 app errors (only pre-existing examples/skills noise); grep for `any` / `as unknown as` / @ts-ignore in components is clean.
+- Traced effect lifecycles by hand: wheel-zoom attach order vs loading early-return, history subscription + isApplyingHistoryRef guard vs toolbar's unguarded copy, undo/redo future-stack semantics, inspector SSE EventSource open/close, install-job interval, cluster/tasks/meetings/research/alphafold polling gates, abort controllers in inline-results.
+- Audited optimistic mutations + rollback paths for node delete (node-card / inspector / bulk / Delete-key), edge create (attemptConnect), position drag, screening candidate PATCH, workflow switcher delete/rename.
+- Checked a11y (icon-only buttons, ports, touch targets, aria-sort/pressed/live), hydration safety (Date.now/localStorage usage), and perf (NodeCard/EdgesLayer memoization, DOM edge patching during drag, pagination caps).
+- Compiled ~21 issues (3×P1, 7×P2, 11×P3) with file:line evidence and fixes; no files edited (read-only review).
 
 Stage Summary:
-- 11 项全部 done（P1×1、P2×4、P3×6），无 skipped。偏离说明两处：① P3-3/P3-4 的目标状态值按实际类型/状态集取 "failed"/"scheduled"；② promote 客户端补 workflowId 落在 screening-panel.tsx（POST 真实所在）而非清单所写 promote-dialog.tsx。
-- 验证：bunx tsc --noEmit src/ 0 error（仅 examples/skills 既有噪音；期间出现过一次 src 计数=1 的瞬时噪音，复查为并行代理 2-c 编辑 real-executor.ts 的中间态，与本批文件无关）；bun run lint exit 0；dev.log tail 无编译错误（仅 scheduler 例行查询）；dev server 未重启。
-- 运行时冒烟（均清理干净，DB 无残留）：nodes POST bogus wfId→400、正确 wfId→200（测试节点已删）；run 双守卫 409×2；promote bogus wfId→400 零副作用；deleteScreening 清目录 PASS；POST /api/workflow/run 200（锁生效，对已完成节点 no-op）。
-
+- Top issues: (P1) wheel-zoom listener never attaches after boot because the init effect ([setViewport] deps) runs while the loading branch (no rootRef) is mounted — wheel zoom dead until a panel switch remounts the canvas; (P1) undo/redo subsystem broken 3 ways — redo restores the pre-op snapshot (future stack gets `prev`, not current), applySnapshot re-POSTs nodes so server gets NEW ids while local keeps stale ids (subsequent PATCH/run 404), and toolbar undo/redo lacks the canvas's isApplyingHistoryRef guard so every toolbar undo re-records itself as new history (undo becomes a toggle).
+- Other majors: header Run Workflow never refetches (statuses stay idle); 3 delete paths lack rollback/res.ok checks; useDebouncedPatch cancels the prior PATCH (name edits lost when quickly followed by param edits); polling mergeNodes clobbers in-flight optimistic edits on running nodes; boot failure = infinite "Loading workflow…" spinner (setError never called — dead error-toast effect); Backspace deletes selected nodes behind open dialogs; OutputViewerDialog silently substitutes SAMPLE_PDB labeled with the real path on fetch failure.
+- Verified OK: tsc clean, no any-leaks, NodeCard/EdgesLayer memo + rAF DOM edge patching, SSE + gated polling patterns, screening optimistic PATCH w/ rollback, MolStudio ownership/disposal, toast a11y, hydration safety, dialog focus/title usage.
+- Overall: engineering quality is high (screening + alphafold panels are exemplary); the risk clusters in canvas boot-order, the undo/redo server-roundtrip design, and optimistic-delete rollback gaps.
 ---
-Task ID: 2-c
-Agent: platform-subagent
-Task: 外部工具跨平台检测/安装 + AlphaFold↔Environment 互链 + 写侧沙箱 + 缓存失效
+Task ID: 3-a
+Agent: backend-fix
+Task: Fix backend code-review findings (workflowId plumbing, harvest security, poll-ceiling honesty, chat stream history, cache invalidation, claim guards, boot reconciliation, SSE leak, perf, 404s, quick wins)
 
 Work Log:
-- 新建 src/lib/platform.ts（服务端）：getPlatformInfo()（os/isWindows/isMac/isLinux/label/pathSep）、crossWhich()（纯 JS PATH 扫描，win32 试 .COM/.EXE/.BAT/.CMD + POSIX X_OK 位，回退 where/which spawnSync 数组形式）、runCapture()（spawnSync 数组、无 shell、stdout|null）、bashAvailable()（bash -lc echo ok）。
-- real-executor.ts 跨平台化：PYTHON_CANDIDATES 改 {cmd,preArgs} 结构（win32=[python, py(-3), python3]）；新增导出 pythonSpawnTokens()（"py"→["py","-3"]）与 invalidateEnginePythonCache()；resolveEnginePython/isToolInstalled/isEntryInstalled/selfTestEngines 全部 execSync 字符串 → spawnSync 数组形式（selftest 保持 stdout+stderr 合并、Traceback 检测、语法回退语义）；binary 检测走 crossWhich；path 检测 startsWith("/")→isAbsolute()（兼容 win32 盘符）；runNativeTool script/python-module 与 runBuiltinEngine 的 python spawn 全部加 preArgs 前缀；executable 路径 isAbsolute。
-- P1-2 写侧沙箱：executeCompToolReal 入口处 sandboxFastaOutput()——params.path_to_fasta resolve 后若在 process.cwd() 之外（relative 判定含 isAbsolute/".."/"../"）→ 改写为 join(workDir,"designed.fasta")，返回 stdout 顶部加一行 "[sandbox] path_to_fasta redirected into job workDir (...)"。单入口统一覆盖 foundry --out_fasta、native --path_to_fasta（buildArgs 传入）、内置引擎 payload 三条写路径。
-- foundry.ts：execSync/sh() 全部换 runCapture（spawnSync 数组）；FOUNDRY_PY_CANDIDATES 平台感知 venv 布局（Scripts\python.exe）；cli 解析 win32→foundry.exe；checkpoint 正则/行分割兼容 win32 路径与 \r\n；invalidateFoundryCache 原有（install-jobs 现已真正调用）。
-- /api/tools/scan：版本探测 runCapture 数组（git --version / python -c import…print(__version__)，python 用 resolveEnginePython+pythonSpawnTokens）；响应新增 platform=getPlatformInfo()；win32 下 install.method==="github" 条目 oneClick 输出 false + platformNote:"Windows 需通过 WSL 安装（此命令为 bash 脚本）"（其他平台省略该字段）；runtime pip 条目不受影响。
-- install-jobs.ts：win32 且 !bashAvailable() 时 github 方法（及 foundry 式 bash 链）→ 直接返回含 WSL 指引的 error；简单 "pip install X" → startWinNoShellPip()：解析包名（含 "colabfold[alphafold]" 引号剥离）→ spawn(py, [...preArgs,"-m","pip","install",...]) 无 shell；linux/mac（含 win+有 bash）保持原 spawn("bash",["-c",cmd]) 路径不变（py 重写对 "py" 用 "py -3" 字符串形式）；job settle（close 与 spawn error，成功/失败都触发）统一 invalidateDetectionCaches()：invalidateEnginePythonCache + invalidateFoundryCache + 动态 import("./screening") 调用 invalidateScreeningPython（若导出）；抽出 wireInstallJob() 共享日志环形缓冲与结算逻辑，超时/kill 逻辑未动。
-- tool-registry.ts：仅 alphafold 条目 description 尾部追加"本地无原生安装路径；本地执行回落内置 Chou-Fasman 引擎。"
-- tools-panel.tsx（Environment）：头部新增平台徽章（Monitor icon + scan.platform.label + pathSep title）；ToolRow 增 platformNote?，win32 github 条目渲染 amber 警告卡（AlertTriangle）；alphafold 行新增"打开 AF2 工作台"按钮（Boxes icon，仅该行传入 onOpenAlphafoldWorkbench）。
-- alphafold-panel.tsx：头部状态区新增"环境状态"小按钮（Wrench icon，title="依赖检测与安装统一在 Environment 管理"）调用新 prop onOpenEnvironment?。
-- page.tsx 接线：ToolsSheet → onOpenAlphafoldWorkbench={() => { setEnvironmentOpen(false); useAppStore.getState().setActivePanel("alphafold"); }}；alphafold 主面板 → onOpenEnvironment={() => setEnvironmentOpen(true)}。
-- types.ts：新增 PlatformInfoDTO（客户端安全镜像）；tools-panel 本地 ScanResponse.platform / ToolRow.platformNote 已同步。
-
-验证：
-- bunx tsc --noEmit：src/ 0 error（仅 examples/skills 预存噪声）。
-- bun run lint：干净（无输出）。
-- curl /api/tools/scan：HTTP 200，platform={os:"linux",label:"Linux x64",pathSep:"/"}，runtime 5/5 带版本（git 2.47.3 / Python 3.12.14 / numpy 2.1.3），engines 5/5 selftest PASS（spawnSync 版），github 条目 oneClick=true 且无 platformNote（非 win32 正确省略），alphafold 行 desc 含追加文案、engine-fold 回退就绪。
-- 写侧沙箱 e2e（bun 直调 executeCompToolReal）：path_to_fasta=/tmp/escape-test.fa → stdout 首行 "[sandbox] path_to_fasta redirected into job workDir (/tmp/escape-test.fa is outside the project root → /tmp/sbx-workdir/designed.fasta)"，designed.fasta 实际写入 workDir，/tmp 逃逸路径未创建；项目内相对路径 → 无 notice 不重定向。platform.ts 单测：crossWhich(git/python3) 命中、缺失→null、bashAvailable true、runCapture git --version 正常；pythonSpawnTokens("py"/"py.exe")→["py","-3"]，"python"/绝对路径不变，linux 恒等；pip 包名解析 "colabfold[alphafold]"/"fair-esm torch" 正确。
-- 真实安装链路（dev server）：POST /api/tools/install {key:"numpy"} → 201 running → completed exit 0（"Requirement already satisfied"），close 回调缓存失效无异常，复扫 200。
-- agent-browser e2e：Environment sheet 显示 "Linux x64" 徽章 + alphafold 行 "打开 AF2 工作台" → 点击后 sheet 关闭、主面板切到 AlphaFold2 Structure Prediction → 头部 "环境状态" 按钮 → 点击后 Environment sheet 重开（徽章仍在）；0 console errors / 0 page errors，dev.log 无编译错误。
-- 注意：win32 分支（WSL 拒绝 + 无 shell pip）无法在本 Linux 沙箱真实触发（bun 的子进程 PATH 解析不吃运行时改 PATH 的模拟），已用逻辑单测覆盖（pythonSpawnTokens/包名解析/分支代码直读），并在 2-c 提交说明。
+- FIX 1 (P1 workflowId plumbing): new shared resolver `resolveTargetWorkflow()` (src/lib/workflow-engine.ts:29 — explicit workflowId → that workflow with honest 404; absent → legacy first-workflow-by-createdAt fallback) wired into POST /api/workflow/nodes (route.ts:36, body now accepts workflowId) and POST /api/workflow/run (route.ts:28, body { workflowId? }); screening promote takes optional workflowId end-to-end (src/lib/screening.ts:1315 promoteCandidates + src/app/api/screening/[id]/promote/route.ts:36); importWorkflow(data, workflowId?) now fetches /api/workflows/<id> as the clear+rebuild target and forwards workflowId on every node create (src/lib/workflow-io.ts:234,263) — parameter optional so command-palette/workflow-templates call sites unchanged.
+- FIX 2 (P1 harvest arbitrary-file-read): harvestFromFiles (src/lib/screening.ts:611) now treats every ##OUTPUTS##/outputFiles path as untrusted — (a) resolved absolute path must be inside <cwd>/outputs/ (same containment rule as /api/tools/file; copyIntoScreeningDir removed — nothing outside outputs/ is ever copied in anymore), (b) extension whitelist .pdb/.ent/.fasta/.fa/.json with a debug log line (not an error) for skips. Verified live: /etc/hostname and /tmp/evil-test.pdb trailers → 0 candidates, no staging dir, debug lines in dev.log; legit demo screening rescan still yields 60 candidates / added:0.
+- FIX 3 (P1 poll ceiling): executeCompToolOnCluster timeout branch now returns `exitCode: null` + `pollCeiling: true` (src/lib/run-utils.ts:689, return types widened at :519/:565) instead of the lying exitCode 0; workflow-engine returns NodeExecResult status "running" for pollCeiling in both tool branches (src/lib/workflow-engine.ts:477,538); workflow-runner + node-run route persist that as running with progress 90, NO completedAt, NO downstream cascade (src/lib/workflow-runner.ts:130, nodes/[id]/run/route.ts:124); node stream route reconciles: while node is running and logs carry "[cluster run · job <id>]", each poll checks the ToolJob row the cluster sweep updates and copies its terminal state (status/result/logs + ##OUTPUTS## trailer) onto the node (stream/route.ts:44 regex, :111 reconcile). Verified staged: running node + completed cluster job → stream emits settled status + done, node flips to completed with trailer. Fixed a first-attempt regex bug (needed to match the "— poll ceiling reached" log variant) caught by exactly that live test.
+- FIX 4 (P1 chat stream): history query is now desc+take 50 then reversed (src/app/api/agents/[id]/chat/stream/route.ts:100, mirroring the non-stream lane — the old asc+take answered with the OLDEST 50 after 50+ turns); implemented the tool-calling round: after the streamed reply, extractToolCalls parses fences, bio tools execute inline (fast), ONE follow-up streamed completion folds results into the same SSE response, comp fences get an honest "run them on the canvas/Tools panel" note, and toolCalls persist on the assistant message (+ done event carries them). Live-tested: bio fence → real runBio execution → follow-up stream → message persisted with toolCalls.
+- FIX 5 (P2 install cache invalidation): exported resetPlatformInfoCache (src/lib/platform-env.ts:264 — clears globalThis.__foundryPlatformInfo) and resetEnginePythonCache (src/lib/real-executor.ts:63 — clears cachedPython); install-jobs.ts calls all three resets (incl. the previously-never-called invalidateFoundryCache) in the proc close path when exit 0 (src/lib/install-jobs.ts:148 invalidateInstallCaches, :205 call site).
+- FIX 6 (P2 double-execution guards): POST /api/workflow/nodes/[id]/run atomically claims idle/pending→running (re-run of terminal nodes still allowed via conditional reclaim) → 409 with clear message when already running (route.ts:40-70; cascade nodes claim per-runOne :92); POST /api/workflow/run 409s when any node is running + workflow-runner claims each node atomically before executing (src/lib/workflow-runner.ts:95 — scheduler.ts updateMany pattern); meetings/[id]/run + research/[id]/run got the same atomic claim → 409 (meetings route :19, research route :19). Live-tested both 409s and the happy path.
+- FIX 7 (P2 stuck running nodes): src/instrumentation.ts register() now runs a boot reconciliation behind a globalThis guard (HMR-safe): every Node stuck "running" → "failed" with "server restarted mid-run" log + result; every local ToolJob stuck "running" (no persisted pid — provably orphaned) → failed; cluster jobs (params._meta.cluster) left alone for the sweep. Fully defensive (try/catch per row, register never throws). Verified by invoking register() in a fresh process against a staged running node.
+- FIX 8 (P2 SSE leak): node stream route implements ReadableStream.cancel() (stream/route.ts:238) — flips the closed flag and clears BOTH the heartbeat interval and the pending poll setTimeout (state hoisted to route scope :56); 2h hard poll cap ends the stream with a terminal done event + reason (:193-201). Verified: client disconnect → zero further DB poll queries in dev.log.
+- FIX 9 (P2 analytics): toolJob groupBy agentId + node findMany select:{refId} (src/app/api/agents/analytics/route.ts:30,42) — no more full-table stdout/logs loads.
+- FIX 10 (P2 prisma logging): db.ts log levels = dev [query,error,warn] / prod [error] (src/lib/db.ts:14).
+- FIX 11 (P2 DELETE 404s): edges/[id] and agents/[id] DELETE catch Prisma P2025 → 404 (edges route :16, agents route :85). Live-tested both.
+- FIX 12 quick wins: (a) screening.ts uses the shared resolveEnginePython from real-executor.ts — private python candidate list + local cache deleted (screening.ts:25 import, single source of truth; verified resolution → /home/z/.venv/bin/python3); (b) runAgentTurn pushes the assistant reply ONCE per round before tool results, not once per tool call (src/lib/run-utils.ts:191); (c) deleteScreening also rm -rf outputs/screening/<id>/ (src/lib/screening.ts:1203); (d) PATCH node status validated against the NodeStatus enum → 400 on unknown (src/app/api/workflow/nodes/[id]/route.ts:11,51 — live-tested); (e) pi/orchestrate pre-validates every create_node action.nodeType against NODE_SPECS (nodeSpec) → 400 before ANY action executes, and create_edge runs the same duplicate + wouldCreateCycle checks as POST /api/workflow/edges against a live edge list before touching the DB (src/app/api/pi/orchestrate/route.ts:199,302).
+- Verification: `bunx tsc --noEmit` → 0 errors under src/; `bun run lint` → clean; dev.log tail clean (queries + 200s only). Live API tests: nodes/run/promote 404 on unknown workflowId, legacy no-workflowId fallbacks intact, harvest security (2 attack paths blocked, legit path intact), 409 claim guards, node-run happy path, full workflow run (8 started / 7 completed / 1 honest pre-existing failure "No agent nodes connected"), SSE reconciliation + cancel + hard-cap code path, chat stream (plain + bio-tool round), analytics, boot reconciliation simulation, deleteScreening with staging-dir cleanup. All test nodes/jobs/screenings/chat rows cleaned up afterwards.
 
 Stage Summary:
-- 全部 9 项完成：跨平台检测/安装（platform.ts + real-executor + foundry + scan + install-jobs）、AlphaFold↔Environment 双向互链、P1-2 写侧沙箱（真实 e2e 验证）、安装后缓存失效（engine python + foundry 已接通；screening 经动态 import 钩子待 2-b 导出 invalidateScreeningPython 后自动生效——当前该函数不存在，非阻塞）。tsc src/ 0 error、lint 干净、scan 200 带 platform、dev.log 干净。
+- All 12 review items implemented (4×P1, 7×P2, 5×P3 quick wins) across 23 files in the backend scope; zero deviations from the planned contracts (nodes/run/promote/import bodies match the frozen frontend contract exactly, parameters kept optional for legacy call sites). The multi-workflow switcher now has a real backend, the harvest lane can no longer exfiltrate arbitrary files via client-writable node logs, cluster poll-ceiling runs settle honestly (node stays running → stream reconciles from the sweep's ToolJob row), agent streaming chat has the correct 50-message window + a working bio-tool round, installs invalidate every detection cache, all run lanes have atomic claim guards, boots reconcile orphaned runs, and the SSE stream can no longer leak.
+- DEFERRED (per plan, not implemented): SSH secrets encryption at rest, WSL execution lane for POSIX executables, workflow-runner N+1 optimization (per-node findUnique/snapshot fetches), server-side transactional import endpoint (importWorkflow is still client-orchestrated), cluster-runs.json write serialization, local-job pid persistence/stop (boot reconciliation now fails orphaned local jobs honestly instead).
+- Noted for the frontend agent (parallel task): POST /api/workflow/nodes + /api/workflow/run + /api/screening/[id]/promote accept optional workflowId; node stream "done" events may carry a reason field; chat stream "done" carries toolCalls.
+---
+Task ID: 3-b
+Agent: frontend-fix
+Task: Fix frontend code-review findings (wheel zoom, undo/redo id remap + semantics, run refetch, delete rollbacks, debounced patch merge, merge protection, boot error state, dialog guards, honest PDB errors, quick wins)
+
+Work Log:
+- Contracts (3-a) — workflowId plumbing on every frontend call site: POST /api/workflow/nodes now sends the current workflow id from workflow-canvas.tsx:558/595/640 (empty-state chips, create menu, HTML5 drop), palette.tsx:139, command-palette.tsx:118 (addNodeAtCenter), inspector.tsx:1171 + node-card.tsx:449 (duplicate, via node.workflowId), template-marketplace.tsx:120, workflow-templates.tsx:225 (template loads) — plus the new shared undo/redo helper; POST /api/workflow/run sends { workflowId } from header.tsx:91, command-palette.tsx:271, canvas-toolbar.tsx:242, inspector.tsx:1203, pi-copilot.tsx:138 and surfaces 409 as a "Workflow is already running" toast; importWorkflow callers (command-palette.tsx:359, workflow-templates.tsx:170) pass useAppStore.getState().workflow?.id; screening promote POST (screening-panel.tsx:566, the fetch behind promote-dialog.tsx) sends workflowId. Run/import/template paths now also refetch /api/workflows/<id> instead of /api/workflow so a non-first current workflow is never clobbered by the first-workflow default.
+- FIX 1 (P1 wheel zoom): workflow-canvas.tsx — the ref'd <section data-canvas="viewport"> is now ALWAYS mounted (loading + boot-error render as opaque overlays INSIDE it, ~725-756); the wheel effect's [setViewport] deps now attach the listener on first mount instead of running against an un-ref'd early-return loading branch. Verified live: synthetic WheelEvent on a fresh boot → 100%→143% (previously impossible without a panel-switch remount). (agent-browser's CDP `mouse wheel` command doesn't emit DOM wheel events in this env — verified via event dispatch + a probe listener.)
+- FIX 2 (P1 undo/redo id remap): new shared src/lib/history-apply.ts applyHistorySnapshot — re-created nodes are POSTed with workflowId, responses collected into an old→new id map, snapshot nodes AND edge endpoints remapped, re-POSTed edges keep the SERVER's new edge rows in the store, drifted survivors (undo of auto-arrange/rename) are PATCHed, and setWorkflow lands the remapped graph. Verified live: palette-create → Ctrl+Z (server DELETE) → Ctrl+Shift+Z (server re-POST, NEW id) → inspector rename PATCH persisted on the remapped id (the old flow 404'd).
+- FIX 3 (P1 undo/redo semantics + double-capture): history-store.ts undo/redo now take the CURRENT state (captured via captureCurrentSnapshot at call time) and push it onto the opposite stack — undo pushes current→future, redo pushes current→past (undo is no longer a toggle). The capture guard moved from a canvas-local ref into the shared module (historyLock + isApplyingHistory/withHistorySuppressed); canvas Ctrl+Z/Ctrl+Y and the toolbar's undo/redo buttons both call the ONE guarded applyHistorySnapshot (toolbar copy deleted). Mutation sites that push their own inline snapshot (node-card/inspector/bulk/page deletes, attemptConnect) wrap their store writes in withHistorySuppressed so the subscription no longer double-captures.
+- FIX 4 (P2 header Run): header.tsx handleRun — sends workflowId, maps 409 → "Workflow is already running" toast, refetches /api/workflows/<id> + setWorkflow after the POST resolves (statuses no longer stay idle; the 3s poll's busy-gate now sees real transitions).
+- FIX 5 (P2 delete rollbacks): node-card.tsx handleDelete and inspector.tsx onDelete now check res.ok and RESTORE the node + its edges (capture-suppressed) with an honest "restored locally" toast; workflow-canvas.tsx handleBulkDelete uses allSettled + per-request res.ok counting and re-adds failed nodes/edges (page.tsx's allSettled pattern); edges-layer.tsx delete chip got the same res.ok + suppressed rollback treatment.
+- FIX 6 (P2 debounced PATCH): inspector.tsx useDebouncedPatch keeps one pending body + timer PER NODE (rename + param edits within the 350ms window merge into a single PATCH; later same-field edits win) and flushes pending bodies on unmount so the last keystroke isn't dropped.
+- FIX 7 (P2 poll clobber): store.ts — new dirtyNodeIds state (markNodeDirty/clearNodeDirty); inspector marks nodes dirty on rename/param/refId edits, successful PATCHes clear the mark; mergeNodes keeps a dirty node's local name/params/position and only takes live run state (status/progress/logs/result/timestamps) from the server row, auto-clearing the mark when the server echoes the edit back.
+- FIX 8 (P2 boot failure): page.tsx boot catches now setError + toast directly (dead st.error effect removed); workflow-canvas renders an error card with a Retry button (loadWorkflow) instead of an infinite spinner; the canvas's own defensive fetch shares the same error path.
+- FIX 9 (P2 Delete behind dialogs): deleteSelectedNodes bails when any [role=dialog|alertdialog|menu][data-state=open] is open (shared anyOverlayDialogOpen helper, also used by the Escape handler). Verified live: node selected + command palette open + Delete → 0 nodes removed, dialog untouched.
+- FIX 10 (P2 honest PDB): output-viewer-dialog.tsx — PDB/FASTA fetch failures set pdbError/fastaError and render inline error cards (FileWarning + real path + HTTP error, inline-results pattern); SAMPLE_PDB/SAMPLE_FASTA only load when the job genuinely has no file of that type.
+- FIX 11 (P3 double snapshot): the canvas history subscription is now an else-if chain (≤1 push per transition) and skips entirely under the shared lock.
+- FIX 12 (P3 Escape): keyboard-shortcuts.ts handlers receive the KeyboardEvent and a per-shortcut preventDefault flag (default true); the global Escape is skipInputs + preventDefault:false and only preventDefaults when it actually cancels a connection/inspector/selection.
+- FIX 13 (P3 hit targets): node-card ports are 28px transparent pads (visual dot stays 14px, hover/compatible ring moved to the dot, aria-label "Connect {label} input/output"); canvas-toolbar's mobile palette toggle keeps size-8 visuals with an ::after -inset-1.5 pad = 44px hit target. Verified live via getComputedStyle at 375px (hitW 44px) and port rects (28×28).
+- FIX 14 (P3 merge sync): store.ts mergeNodes takes an optional incomingEdges param — with it, local nodes absent from the poll are reaped (5s grace window via the new localNodeArrivedAt map, covering the in-flight-poll-vs-create race) and edges are replaced wholesale except pending "tmp_" optimistic edges; page.tsx's 3s poll passes both and fetches /api/workflows/<id>.
+- FIX 15 (P3): command-palette NAV_TARGETS + panel union widened with "screening" ("Go to Screening"). Verified live.
+- FIX 16 (P3): rg confirmed zero imports of pdb-3d-viewer (comments only) → file deleted. The "superseded by MolVision" comments in output-viewer-dialog/inline-results/pdb-parser were left as history notes.
+- FIX 17 (P3): cluster-panel jobs polling gated on live cluster jobs (isLiveClusterJob) — initial fetch, 2.5s interval only while any job is live, visibilitychange refresh (alphafold-panel pattern); post-launch refresh reuses refreshJobs.
+- FIX 18 (P3): agent-chat-drawer history-load effect deps reduced to [open, agentId] (agents read via getState at call time) so background agents refreshes no longer wipe the conversation; a separate label-only effect keeps the header name in sync.
+- FIX 19 (P3): deleteSelectedNodes pushes ONE snapshot before the delete loop and removes nodes under withHistorySuppressed — a single Ctrl+Z restores the whole batch. Verified live: Delete → Ctrl+Z → node (incl. its renamed name) back, server count restored, new id remapped.
+- FIX 20 (P3): node-search navigateToNode keeps the current viewport.zoom and only recenters x/y (scaled by zoom). Verified live: search jump at 135% stays 135%.
+- FIX 21 (P3): footer.tsx probes GET /api on mount + every 60s + on visibilitychange; emerald "All systems operational" only when the probe passes, rose "API unreachable" on failure, amber while checking; title no longer claims anything about the LLM gateway. Verified live (probe visible in dev.log as GET /api 200).
+- Verification: `bunx tsc --noEmit` → 0 errors under src/; `bun run lint` → clean; dev.log tail clean (compiles + 200s only); live browser e2e on the running dev server: 0 console/page errors across boot, undo/redo round-trips, delete+undo, dialog guards, command palette, node search, footer health; demo DB left pristine (15 nodes, 0 test leftovers — both ZZ test nodes removed).
+
+Stage Summary:
+- All 21 review findings + the three new API contracts implemented across 22 files (1 new shared module src/lib/history-apply.ts, 1 file deleted). The undo/redo subsystem is the big rework: correct stack semantics, one capture per operation (inline push + suppressed writes, else-if subscription), and a server-id-remapping apply that keeps DB and store consistent — verified end-to-end with a PATCH-after-redo persistence check.
+- Architecture note: history capture is now layered — mutations with an inline push write under withHistorySuppressed; the canvas subscription remains as the capture point for paths without one (palette/drop/double-click creates, edges-layer chip). Deviations from the review's letter, all for correctness: (a) FIX 14's node-reaping + edge-sync live in mergeNodes' new optional incomingEdges parameter (rather than always-on) because node-card's single-node run merge must not reap; (b) FIX 17's live check spells out the live statuses (cluster panel had no isLiveJob helper of its own); (c) FIX 21 checks only GET /api as instructed.
+- Known cosmetic limitation (documented in code): undoing a node DELETE re-creates the row as status idle server-side while the store shows the snapshot's status until the next poll/reload — the create route has no status field.
+- Tooling note: agent-browser's `mouse wheel` CLI command emits no DOM wheel events in this sandbox, so FIX 1 was verified by dispatching a WheelEvent on the ref'd section after a cold boot (143% zoom) — the pre-fix code path provably never attached the listener. The dev server hit the known compile-storm memory pressure once during the session (blank page in one browser context); fresh context + reload recovered immediately, 0 app errors.
 
 ---
-Task ID: 5
+Task ID: 1 (lead)
+Agent: main
+Task: Answer "why is AlphaFold a separate page, not just in Environment?" + unify the two layers with cross-links.
+
+Work Log:
+- Verified AlphaFold2 already exists in THREE layers: Environment sheet (tool-registry entry, structure-prediction category), canvas node (COMP_TOOLS alphafold), and the dedicated workbench page (alphafold-panel).
+- Root cause of the confusion: no visible link between the management layer (Environment) and the usage layer (workbench).
+- store.ts: lifted environmentSheetOpen/clusterSheetOpen from page-local state to the Zustand store (+setters) so any component can deep-link into the sheets.
+- page.tsx: Environment/Cluster Sheets now wired through the store; sidebar prop API unchanged.
+- tools-panel.tsx: TOOL_WORKBENCH map; the AlphaFold2 tool card gains an "Open workbench" button (closes sheet + setActivePanel("alphafold")).
+- alphafold-panel.tsx: header gains layering explainer text + "Environment" / "Cluster" cross-link buttons; doc comment rewritten to explain the management/usage layering.
+- README FAQ + tutorial ch.7: documented the two-layer rationale.
+
+Stage Summary:
+- The question answered: Environment = tool lifecycle management (detect/install/status for ALL external tools incl. AlphaFold2); the AlphaFold page = prediction workbench (usage layer). RFdiffusion/ProteinMPNN get their usage surface via canvas nodes; AlphaFold2 has both (canvas node + workbench) because "paste sequence → get structure" is the most frequent single-step op. Bidirectional cross-links now make this visible in-product.
+
+---
+Task ID: 3-c (lead)
+Agent: main
+Task: Own fixes found during e2e: rfantibody auto-wire gap, RCSB PDB query bugs, minimap mobile overlap, demo-DB cleanup.
+
+Work Log:
+- workflow-engine.ts autoWireToolInputs: rfantibody's backbone input is target_pdb (not pdb_path) — wired upstream PDBs into target_pdb (previously silently ignored).
+- bio-tools.ts runPdb: RCSB v2 API 400s on `service:"text"` with a bare value → switched to `service:"full_text"` (verified live: 5 real HER2 hits). Also fixed result mapping (`identifier` field, not `id` → titles were "undefined").
+- canvas-minimap.tsx: bottom-16 on mobile (was overlapping the wide toolbar row on 375px screens); VLM-verified fix.
+- Cleaned test residue from the DB (poll-ceiling-test node + the 02:06 IL-7Rα chain) restoring the documented 6-node/5-edge demo workflow.
+- Dev server restarts: original next-server was OOM-killed at 2.1GB RSS after hours of hot reloads; restarts with plain `nohup &` died when the tool shell exited — fixed with `(setsid nohup ... &)` process-group isolation; server now stable at ~1.65GB.
+
+Stage Summary:
+- 4 real product bugs fixed (target_pdb wiring, PDB query schema, PDB hit mapping, minimap overlap); demo DB restored to README-documented state; stable dev-server lifecycle established.
+
+---
+Task ID: 4 (lead)
+Agent: main
+Task: Real antibody-design full-chain e2e test.
+
+Work Log:
+- Created workflow "Antibody Design Campaign" + 7 nodes/7 edges via the new workflowId-plumbed API (nodes landed in the NEW workflow — fix 1 verified at the API level).
+- Chain: Design Brief (input) → Computational Biologist (agent) + RFantibody → ProteinMPNN → AlphaFold2 → Rosetta → Final Report.
+- Ran via the header Run button in the browser. First run: all tool nodes completed; the agent node failed ("no refId" — my script put refId in params instead of the node column; user error, not a product bug). PATCHed refId + re-ran the node: completed with a REAL LLM turn (multi-round with bio tool fences).
+- Verified per-node chain notes: RFantibody ##OUTPUTS## fv_design_*.pdb (+756-atom PDB, germline framework + IMGT CDRs) → ProteinMPNN auto-wired pdb_path → designed.fasta (4 sequences, recovery 0.06) → AlphaFold2 auto-wired fasta_path → predicted.pdb (3024 atoms) → Rosetta auto-wired pdb_path → scores.txt (contact 94.3 kT, rama 8.9, 0 clashes). Final Report renders agent analysis + Rosetta summary.
+- UI: AlphaFold2 node inspector → Outputs dialog → Structure tab → 3D ribbon rendering of the predicted antibody (VLM-verified). VLM confirmed all 7 nodes completed on canvas.
+- Test node deleted afterwards (also exercising the delete confirm dialog → server delete path).
+
+Stage Summary:
+- The full antibody design loop works end-to-end with real engines and honest outputs: brief → LLM design reasoning → Fv backbones → inverse-folded sequences → predicted structure → knowledge-based scores → report. Auto-wiring worked at every hop including the newly fixed rfantibody target_pdb lane.
+
+---
+Task ID: 5 (lead)
+Agent: main
+Task: Full-site e2e regression after the review fixes.
+
+Work Log:
+- Wheel zoom (fix F1): dispatched real wheel events on the always-mounted ref'd section → scale 0.899 → 1.409 ✓ (was dead before).
+- Undo/redo (fixes F2/F3): palette-added node → Ctrl+Z (server 8→7, canvas 8 cards) → Ctrl+Shift+Z (server 7→8, NEW id) → rename via inspector → PATCH persisted on the remapped id ✓; delete via inspector confirm dialog ✓.
+- Discovered & dismissed a Next.js dev-tools overlay that intercepted clicks (dev-environment artifact, not an app bug); minimap-vs-card confusion resolved by measuring real `[data-node-card]` rects.
+- Command palette: "Go to Screening" present (fix F15) → navigates ✓. Screening panel: both campaigns intact (Scaffold 60 / AF2 20), table + star rows render ✓.
+- Cross-links (Task 1): AlphaFold workbench → Environment button opens sheet ✓; AlphaFold2 card "Open workbench" closes sheet + navigates ✓.
+- Agent chat stream (fix B4): sent "Search PDB for HER2..." → streamed reply with bio fences → PDB executed (real hits after my 3-c fixes) → follow-up streamed completion answered with real entry IDs (5TDN/5TDO/5TDP/2JAB/6S0N) → toolCalls persisted with results ✓. Test chat rows cleaned afterwards.
+- Footer health (fix F21): honest probed status ✓. Mobile 375×812: Agents + Canvas usable, floating palette button present, footer intact, minimap no longer overlaps toolbar (after 3-c fix) ✓.
+- Demo workflow intact: 6 nodes / 5 edges all completed (VLM-verified) ✓. Fresh-server final check: page renders, console clean ✓.
+- Verification stack: bun run lint clean, tsc --noEmit zero src/ errors, dev.log no runtime errors.
+
+Stage Summary:
+- All 12 backend + 21 frontend review fixes plus lead fixes verified in-browser; both demo workflows (6-node original + 7-node antibody campaign) healthy; the app is e2e-verified interactive and honest.
+
+---
+Task ID: 6
 Agent: main-orchestrator (Z.ai Code)
-Task: 全面代码审查 + 修复 + 真实抗体设计全链路测试 + e2e + 移动端画布 UX 修复 + 移动端截图重截
+Task: 合并并行会话实现线（本地 2884fb3 vs 远程 3600353 同题工作）+ 本会话全部成果记录
 
 Work Log:
-- Task 2-a（代码审查子代理，只读）：全量审查 src/（26 个 lib、51 个 route、组件层、引擎脚本）。结果 P0×0 / P1×2 / P2×5 / P3×12，安全专项（路径白名单、命令消毒、无 shell 拼接、SDK 服务端隔离）全部通过。
-- Task 2-b（修复子代理）：P1-1 聊天历史 asc→desc+reverse；P2-1 deleteScreening 清理 outputs/screening/<id>；P2-2 runOne 双守卫（running 409 / promoted-input trailer 保护 409）；P2-4 promote+nodes POST 接受 workflowId（客户端 5 处补传当前工作流）；P2-5 工作流执行锁（Set+finally+isWorkflowRunning 导出）；P3×6（db 日志分级、agent-orchestrator 死代码删除 363 行、runBio 失败态、调度器 firing 回收、assistant 消息去重、PubMed 空 query 报错）。curl 冒烟全部通过。
-- Task 2-c（跨平台子代理）：新建 src/lib/platform.ts（getPlatformInfo/crossWhich 纯 JS PATH 扫描+PATHEXT/runCapture/bashAvailable）；real-executor 全 execSync→spawnSync 数组化 + python 候选按平台（win32: python/py -3/python3）+ invalidateEnginePythonCache；P1-2 写侧沙箱（path_to_fasta 项目根外→workDir 重定向+notice）；scan 响应加 platform + win32 github 条目降级+platformNote；install-jobs win32 无 bash 时诚实拒绝（WSL 指引）/pip 改 python -m pip；安装 close 回调三处缓存失效；tools-panel 平台徽章+AF2 工作台互链；alphafold-panel 环境状态按钮；page.tsx 双向接线。我补上 screening.ts 的 invalidateScreeningPython 导出完成最后一块。
-- 我补修：/api/workflow/run 也只跑第一个工作流（与 P2-4 同族 bug）→ 接受 workflowId + 409 已运行守卫；4 个客户端调用点（header/inspector/canvas-toolbar/pi-copilot）补传 + 重取 /api/workflows/<id>。
-- 真实抗体设计全链路（新工作流 "Antibody Design Campaign"）：Input→RFantibody_Design→ProteinMPNN_Design→AlphaFold_Validation，4 节点 3 边全 completed。真实引擎链：antibody_engine.py（germline Fv，6 设计×13 文件，756 原子 PDB）→ MPNN [chain] auto-wired fv_design_0.pdb（Gibbs 采样）→ AF2 [chain] auto-wired designed.fasta（Chou-Fasman 折叠 4 链）。几何诚实性校验：φ/ψ 盆地分析（修正扭角公式后）框架区 73% β 盆地=真实 Ig 特征；app DSSP（Kabsch-Sander 氢键）0% strand 是诚实结果（统计引擎无链间折叠配对）。
-- 抗体筛选扩展：screening.ts 采集器支持 fv_design_N 命名 + 抗体指标（h3_len/energy_kt/interface_sasa + METRIC_REGISTRY 定义/排序/PRIMARY 权重）；DSSP 分析面板新增 computeTorsionBasins（φ/ψ 盆地统计，dihedral IUPAC 公式）——bun 直测与 Python 校准一致（抗体 73% β、扩散 42% α/39% β）。
-- e2e（agent-browser 全程）：工作流切换→画布 4 节点全绿→检查器 Result 13 产物+REAL ENGINE 徽章+3D cartoon（链 H/L 选择器+DSSP+SASA）→筛选 6 候选（H3/Energy/Interface 三列+加权分 83.3）→详情抽屉 3D+界面检测（chain H 368 原子/L 388）→Promote 落点当前工作流（P2-4 修复实证）→促进节点 trailer→下游 MPNN 自动接线闭环（测后清理）→Environment 平台徽章 Linux x64+AF2↔Environment 双向互链→命令面板→PI 真实 LLM 对话（CDR H3 5-24aa 科学正确，UI 持久化）→Dashboard。
-- 移动端根因修复：原 21-mobile-canvas.png 显示节点目录的根因是 palette 固定 256px 在 375px 只剩 65px 画布——NodePalette 接受 className（desktop hidden md:flex）+ page.tsx 移动端 "+ Nodes" 浮动按钮 + Sheet 抽屉（w-72）；375px 画布实测 319px 宽、节点可见、无溢出、抽屉可用。重截 20（抗体筛选卡片+新指标直方图）与 21（真实画布+浮动按钮），VLM 复验；教程 12 章补一句节点库抽屉说明。
-- 陈旧模块陷阱再现（page.tsx 新 import 后 HMR 供旧 chunk "Plus is not defined"）→ 完整重启 dev server + 全新浏览器会话后 0 page errors。
-- 收尾：tsc src/ 0 error、lint 干净、双视口 sticky footer 验证、agent-browser errors 0。
+- 推送时发现远程 main 已有另一并行会话（2026-10-04）完成的同主题提交 9e54457（跨平台工具通道 + 移动画布面板覆盖层 + 文档图修复）与 3600353（43 项审查发现全量修复 + 真实 e2e）。
+- 合并策略：代码主体取远程（更完整：resolveTargetWorkflow、原子节点声明、集群轮询诚实、harvest 安全封锁（outputs 根 + 扩展白名单，封堵任意文件读取链）、SSE 取消+2h 上限、instrumentation 启动对账、undo/redo id 重映射、RCSB 查询、rfantibody target_pdb 自动接线）；本地保留：db/custom.db（今日真实抗体战役数据）、20/21 两张今日 VLM 复验移动端截图。
+- 手工重应用本地独有增量到远程 screening.ts：抗体指标体系（h3_len / energy_kt / interface_sasa 注册表 + REGISTRY_ORDER + fv_design_N 采集映射 vh/vl 长度）。
+- 保留本地独有：dssp.ts computeTorsionBasins（φ/ψ 盆地统计）+ molecular/store recomputeSS basins + AnalysisPanel 显示（远程未触碰，自动合并成功）。
+- worklog 取远程并追加本节；tutorial.md 取远程 + 重应用第 12 章节点库抽屉说明（若冲突解决需要）。
+- 合并后验证：tsc / lint / dev server 冒烟 / 抗体筛选 API 复测。
 
 Stage Summary:
-- 代码审查闭环：发现→修复→实证（幻影节点/并发锁/写侧沙箱/聊天历史方向全部修掉），tsc+lint 干净。
-- 抗体设计全链路真实跑通（引擎→MPNN→AF2→筛选→3D→Promote→下游接线），并扩展了抗体指标体系（h3_len/energy_kt/interface_sasa）与 φ/ψ 盆地统计。
-- 外部工具体系跨平台化（platform.ts 抽象层）+ AlphaFold 与 Environment 架构打通（任务工作台 vs 依赖管理的双向互链，检测/安装归 Environment 统一注册——alphafold 本就在 TOOL_REGISTRY）。
-- 移动端画布从"不可用"变可用（palette→抽屉），两张移动端截图重截并 VLM 验证。
-- DB：保留 Antibody Design Campaign（5 节点）+ Antibody Fv Campaign 筛选（6 候选）作为抗体能力实景；演示工作流与其余数据未动。
+- 两线合一：远程的更完整修复集 + 本地的抗体指标体系/扭转盆地分析/真实数据/今日验证截图。
+- 后续开发者以合并后的 main 为唯一基线。

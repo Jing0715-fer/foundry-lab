@@ -23,8 +23,42 @@ import type {
 export type NodeExecResult = {
   result: string;
   logs: string;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "running";
 };
+
+/**
+ * Resolve which workflow an API request targets.
+ *   - `workflowId` present (multi-workflow switcher / import / promote) →
+ *     THAT workflow; 404 when it no longer exists.
+ *   - absent → the legacy default: the FIRST workflow by createdAt asc
+ *     (identical to the old hard-coded behavior, so single-workflow
+ *     clients keep working unchanged).
+ * Shared by POST /api/workflow/nodes, POST /api/workflow/run and the
+ * screening promote lane so the workflowId contract is enforced in ONE place.
+ */
+export async function resolveTargetWorkflow(
+  workflowId: unknown,
+): Promise<
+  | { ok: true; workflow: { id: string; name: string } }
+  | { ok: false; status: number; error: string }
+> {
+  if (typeof workflowId === "string" && workflowId.trim()) {
+    const wf = await db.workflow.findUnique({ where: { id: workflowId } });
+    if (!wf) {
+      return {
+        ok: false,
+        status: 404,
+        error: `Workflow ${workflowId} not found`,
+      };
+    }
+    return { ok: true, workflow: wf };
+  }
+  const wf = await db.workflow.findFirst({ orderBy: { createdAt: "asc" } });
+  if (!wf) {
+    return { ok: false, status: 404, error: "No workflow exists" };
+  }
+  return { ok: true, workflow: wf };
+}
 
 /** Map a Prisma Node row (any shape) to a NodeDTO. */
 export function toNodeDTO(n: {
@@ -209,9 +243,18 @@ export async function autoWireToolInputs(
 
   if (PDB_INPUT_TOOLS.has(toolKey)) {
     const pdb = files.find((f) => /\.pdb$/i.test(f));
-    if (pdb && !String(filtered.pdb_path ?? "").trim()) {
-      filtered.pdb_path = pdb;
-      notes.push(`[chain] auto-wired pdb_path from upstream output: ${pdb}`);
+    if (pdb) {
+      // RFantibody's backbone input param is target_pdb (not pdb_path) —
+      // wire the upstream PDB there so the engine actually sees it.
+      if (toolKey === "rfantibody") {
+        if (!String(filtered.target_pdb ?? "").trim()) {
+          filtered.target_pdb = pdb;
+          notes.push(`[chain] auto-wired target_pdb from upstream output: ${pdb}`);
+        }
+      } else if (!String(filtered.pdb_path ?? "").trim()) {
+        filtered.pdb_path = pdb;
+        notes.push(`[chain] auto-wired pdb_path from upstream output: ${pdb}`);
+      }
     }
   }
 
@@ -419,11 +462,12 @@ export async function executeNode(
           workflowId,
           filtered,
         );
-        const { summary, stdout, files, exitCode } = await executeCompTool(
-          toolKey,
-          filtered,
-          clusterTarget ? { cluster: clusterTarget } : {},
-        );
+        const { summary, stdout, files, exitCode, pollCeiling } =
+          await executeCompTool(
+            toolKey,
+            filtered,
+            clusterTarget ? { cluster: clusterTarget } : {},
+          );
         // ##OUTPUTS## trailer: the built-in engines print it themselves, native
         // upstream tools do not — append it from the executor's file list so
         // the inspector's Outputs button works for BOTH executors.
@@ -433,6 +477,15 @@ export async function executeNode(
         const logs = chainNotes.length
           ? `${chainNotes.join("\n")}\n${body}`
           : body;
+        // Poll-ceiling outcome: the remote cluster job is STILL RUNNING —
+        // neither completed nor failed. Return status "running" so the
+        // runner leaves the node in the running state (no completedAt, no
+        // progress-100 lie, no downstream cascade); the node's SSE stream
+        // route reconciles it against the ToolJob row the cluster sweep
+        // keeps updating.
+        if (pollCeiling) {
+          return { result: summary, logs, status: "running" };
+        }
         // Honest status: a non-zero exit (native tool error, cluster dispatch
         // failure, invalid input) fails the node instead of a silent
         // "completed" with a failure buried in the logs.
@@ -476,11 +529,12 @@ export async function executeNode(
           workflowId,
           filtered,
         );
-        const { summary, stdout, files, exitCode } = await executeCompTool(
-          toolKey,
-          filtered,
-          clusterTarget ? { cluster: clusterTarget } : {},
-        );
+        const { summary, stdout, files, exitCode, pollCeiling } =
+          await executeCompTool(
+            toolKey,
+            filtered,
+            clusterTarget ? { cluster: clusterTarget } : {},
+          );
         // Same ##OUTPUTS## trailer + honest status as the alphafold branch above.
         const body = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
@@ -488,6 +542,11 @@ export async function executeNode(
         const logs = chainNotes.length
           ? `${chainNotes.join("\n")}\n${body}`
           : body;
+        // Same poll-ceiling honesty as the alphafold branch: remote job still
+        // running → node stays running, nothing cascades, stream reconciles.
+        if (pollCeiling) {
+          return { result: summary, logs, status: "running" };
+        }
         const failed = exitCode !== 0;
         return {
           result: failed

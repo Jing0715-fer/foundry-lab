@@ -38,10 +38,14 @@ export function AgentChatDrawer({
   const toast = useAppStore((s) => s.toast);
   const MAX_CHARS = 2000;
 
-  // Load chat history when opening with a new agentId.
+  // Load chat history when opening with a new agentId. Deps are ONLY
+  // [open, agentId]: including `agents` used to re-run this effect on every
+  // background agents-array refresh (analytics poll, list edit), wiping the
+  // conversation and refetching it mid-chat. The agents array is read at
+  // call time via getState instead.
   React.useEffect(() => {
     if (!open || !agentId) return;
-    const a = agents.find((x) => x.id === agentId) ?? null;
+    const a = useAppStore.getState().agents.find((x) => x.id === agentId) ?? null;
     setAgent(a);
     setLoading(true);
     setMessages([]);
@@ -58,7 +62,18 @@ export function AgentChatDrawer({
         setLoading(false);
       }
     })();
-  }, [open, agentId, agents]);
+  }, [open, agentId]);
+
+  // Keep the header's agent label in sync with the (potentially refreshed)
+  // agents array WITHOUT touching the conversation — a cheap label-only
+  // update, never a refetch.
+  React.useEffect(() => {
+    if (!agentId) {
+      setAgent(null);
+      return;
+    }
+    setAgent(agents.find((x) => x.id === agentId) ?? null);
+  }, [agentId, agents]);
 
   // Auto-scroll to bottom on new messages.
   React.useEffect(() => {

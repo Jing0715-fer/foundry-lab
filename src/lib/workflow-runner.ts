@@ -7,11 +7,20 @@
 //   3. Set all idle nodes to pending, save.
 //   4. For each node in topo order (sequential):
 //      - Skip if not pending or idle.
-//      - Set running, save.
+//      - ATOMIC claim pending/idle → running (scheduler.ts pattern) — a
+//        concurrent run lane loses the race and skips the node instead of
+//        double-executing it.
 //      - gatherInputs from already-completed upstream nodes.
 //      - executeNode.
-//      - Set completed/failed, save result + logs.
+//      - Set completed/failed (progress 100, completedAt) — or leave the
+//        node running when executeNode reports the poll-ceiling outcome
+//        (remote cluster job still executing; the node's SSE stream route
+//        reconciles it against the ToolJob row the cluster sweep updates).
 //   5. Return { started, completed, error? }.
+//
+// A node that ends the loop in "running" state does NOT count as completed,
+// and its downstream nodes never see it completed so nothing cascades on a
+// lie — that's the whole point of the poll-ceiling honesty fix.
 
 import { db } from "@/lib/db";
 import {
@@ -30,136 +39,117 @@ export interface WorkflowRunResult {
   error?: string;
 }
 
-// ── Concurrency lock ─────────────────────────────────────────────────────────
-
-/** Workflows currently executing in this process. runWorkflowById is not
- *  re-entrant for the same workflow: a second concurrent run would double-
- *  execute nodes and thrash node statuses. Manual runs (POST /api/workflow/run)
- *  and the schedule sweeper share this module-level lock. */
-const runningWorkflows = new Set<string>();
-
-/** Whether the given workflow is mid-run in this process. */
-export function isWorkflowRunning(id: string): boolean {
-  return runningWorkflows.has(id);
-}
-
 /** Run the given workflow end-to-end (sequential, topological). */
 export async function runWorkflowById(
   workflowId: string,
 ): Promise<WorkflowRunResult> {
-  // Skip (do NOT throw) when a run is already in flight — the scheduler's
-  // sweeper calls this in a loop and must keep breathing.
-  if (runningWorkflows.has(workflowId)) {
-    console.warn(
-      `[workflow-runner] workflow ${workflowId} is already running in this process — skipping concurrent run`,
-    );
+  const wf = await db.workflow.findUnique({
+    where: { id: workflowId },
+    include: { nodes: true, edges: true },
+  });
+  if (!wf) {
     return {
       ok: false,
       workflowId,
       started: 0,
       completed: 0,
-      error: "Workflow is already running (concurrent run skipped)",
+      error: "Workflow not found",
     };
   }
-  runningWorkflows.add(workflowId);
-  try {
-    const wf = await db.workflow.findUnique({
+
+  const nodes = wf.nodes.map(toNodeDTO);
+  const edges = wf.edges.map(toEdgeDTO);
+  const order = topologicalOrder(nodes, edges);
+  if (!order) {
+    return {
+      ok: false,
+      workflowId,
+      started: 0,
+      completed: 0,
+      error: "Workflow has a cycle",
+    };
+  }
+
+  // Mark all idle nodes as pending.
+  const idleIds = wf.nodes
+    .filter((n) => n.status === "idle")
+    .map((n) => n.id);
+  if (idleIds.length > 0) {
+    await db.node.updateMany({
+      where: { id: { in: idleIds } },
+      data: { status: "pending" },
+    });
+  }
+  const startedCount = idleIds.length;
+
+  let completedCount = 0;
+
+  // Re-fetch nodes after status change so we always work with fresh state.
+  for (const nodeId of order) {
+    const nodeRow = await db.node.findUnique({ where: { id: nodeId } });
+    if (!nodeRow) continue;
+    if (nodeRow.status !== "pending" && nodeRow.status !== "idle") {
+      continue;
+    }
+
+    // Set running — ATOMIC claim (scheduler.ts updateMany pattern): only a
+    // row still in pending/idle flips; a concurrent run (double-clicked Run,
+    // scheduler overlap) that raced us to this node sees count 0 and skips
+    // it instead of double-executing.
+    const claimed = await db.node.updateMany({
+      where: { id: nodeId, status: { in: ["pending", "idle"] } },
+      data: {
+        status: "running",
+        progress: 10,
+        startedAt: nodeRow.startedAt ?? new Date(),
+      },
+    });
+    if (claimed.count === 0) {
+      // Another lane already claimed (or finished) this node.
+      continue;
+    }
+
+    // Gather inputs from already-completed upstream nodes.
+    const freshWf = await db.workflow.findUnique({
       where: { id: workflowId },
       include: { nodes: true, edges: true },
     });
-    if (!wf) {
-      return {
-        ok: false,
-        workflowId,
-        started: 0,
-        completed: 0,
-        error: "Workflow not found",
-      };
-    }
+    const freshNodes = (freshWf?.nodes ?? []).map(toNodeDTO);
+    const freshEdges = (freshWf?.edges ?? []).map(toEdgeDTO);
+    const currentNode = freshNodes.find((n) => n.id === nodeId);
+    if (!currentNode) continue;
+    const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
 
-    const nodes = wf.nodes.map(toNodeDTO);
-    const edges = wf.edges.map(toEdgeDTO);
-    const order = topologicalOrder(nodes, edges);
-    if (!order) {
-      return {
-        ok: false,
-        workflowId,
-        started: 0,
-        completed: 0,
-        error: "Workflow has a cycle",
-      };
-    }
-
-    // Mark all idle nodes as pending.
-    const idleIds = wf.nodes
-      .filter((n) => n.status === "idle")
-      .map((n) => n.id);
-    if (idleIds.length > 0) {
-      await db.node.updateMany({
-        where: { id: { in: idleIds } },
-        data: { status: "pending" },
-      });
-    }
-    const startedCount = idleIds.length;
-
-    let completedCount = 0;
-
-    // Re-fetch nodes after status change so we always work with fresh state.
-    for (const nodeId of order) {
-      const nodeRow = await db.node.findUnique({ where: { id: nodeId } });
-      if (!nodeRow) continue;
-      if (nodeRow.status !== "pending" && nodeRow.status !== "idle") {
-        continue;
-      }
-
-      // Set running.
-      await db.node.update({
-        where: { id: nodeId },
-        data: {
-          status: "running",
-          progress: 10,
-          startedAt: nodeRow.startedAt ?? new Date(),
-        },
-      });
-
-      // Gather inputs from already-completed upstream nodes.
-      const freshWf = await db.workflow.findUnique({
-        where: { id: workflowId },
-        include: { nodes: true, edges: true },
-      });
-      const freshNodes = (freshWf?.nodes ?? []).map(toNodeDTO);
-      const freshEdges = (freshWf?.edges ?? []).map(toEdgeDTO);
-      const currentNode = freshNodes.find((n) => n.id === nodeId);
-      if (!currentNode) continue;
-      const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
-
-      // Execute.
-      const { result, logs, status } = await executeNode(
-        currentNode,
-        inputs,
-        workflowId,
-      );
-
-      await db.node.update({
-        where: { id: nodeId },
-        data: {
-          status,
-          result,
-          logs,
-          progress: 100,
-          completedAt: new Date(),
-        },
-      });
-      if (status === "completed") completedCount++;
-    }
-
-    return {
-      ok: true,
+    // Execute.
+    const { result, logs, status } = await executeNode(
+      currentNode,
+      inputs,
       workflowId,
-      started: startedCount,
-      completed: completedCount,
-    };
-  } finally {
-    runningWorkflows.delete(workflowId);
+    );
+
+    if (status === "running") {
+      // Poll-ceiling outcome (cluster job still running remotely): persist
+      // the honest in-progress result/logs but NO completedAt and NO
+      // progress-100 — the node legitimately stays running.
+      await db.node.update({
+        where: { id: nodeId },
+        data: { status, result, logs, progress: 90 },
+      });
+      continue;
+    }
+
+    await db.node.update({
+      where: { id: nodeId },
+      data: {
+        status,
+        result,
+        logs,
+        progress: 100,
+        completedAt: new Date(),
+      },
+    });
+    if (status === "completed") completedCount++;
   }
+
+  return { ok: true, workflowId, started: startedCount, completed: completedCount };
 }

@@ -18,6 +18,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { toAgentDTO } from "@/lib/run-utils";
 import { chat, type ChatMessage } from "@/lib/llm";
+// nodeSpec is the single source of truth for valid canvas node types
+// (NODE_SPECS — agents + tasks + every comp tool + biotool + input/output).
+import { nodeSpec } from "@/lib/workflow-catalog";
+// Same cycle/duplicate helpers POST /api/workflow/edges uses — the PI's
+// emitted edges must pass the exact same graph invariants as user-drawn ones.
+import { wouldCreateCycle } from "@/lib/canvas-utils";
 
 export const runtime = "nodejs";
 
@@ -190,6 +196,24 @@ Be concise in your prose. Put the structured plan + actions in the JSON block. A
     }
   }
 
+  // Pre-validate create_node action types BEFORE executing anything: an
+  // unknown nodeType (LLM hallucination) is a malformed request → honest 400
+  // with the valid set listed, and NOTHING gets created (no half-applied
+  // plans). nodeSpec/NODE_SPECS is the same catalog the canvas palette uses.
+  for (const action of actions) {
+    if (action.type !== "create_node") continue;
+    if (typeof action.nodeType !== "string" || !nodeSpec(action.nodeType)) {
+      return NextResponse.json(
+        {
+          error:
+            `Invalid action.nodeType "${String(action.nodeType)}" — must be ` +
+            "one of the canvas node types (see the node palette / NODE_SPECS).",
+        },
+        { status: 400 },
+      );
+    }
+  }
+
   // Execute the actions server-side (create nodes, edges).
   // run_workflow is returned to the frontend so it can refresh the canvas
   // and then trigger the workflow run via POST /api/workflow/run.
@@ -197,6 +221,17 @@ Be concise in your prose. Put the structured plan + actions in the JSON block. A
   const nodeNameToId = new Map<string, string>();
   // Seed the map with existing node names → ids so create_edge can find them.
   for (const n of workflow.nodes) nodeNameToId.set(n.name, n.id);
+  // Live edge list (existing + newly created) for duplicate + cycle checks —
+  // the same invariants POST /api/workflow/edges enforces for user-drawn
+  // edges, checked BEFORE creating (the old path only caught duplicates via
+  // the DB unique constraint and never checked cycles at all).
+  const liveEdges: { fromNodeId: string; toNodeId: string; fromPort: string | null; toPort: string | null }[] =
+    workflow.edges.map((e) => ({
+      fromNodeId: e.fromNodeId,
+      toNodeId: e.toNodeId,
+      fromPort: e.fromPort,
+      toPort: e.toPort,
+    }));
 
   for (const action of actions) {
     try {
@@ -262,18 +297,52 @@ Be concise in your prose. Put the structured plan + actions in the JSON block. A
           // Skip silently — the PI may reference a node name we don't have.
           continue;
         }
-        // The Edge model has a unique constraint on
-        // [workflowId, fromNodeId, toNodeId, fromPort, toPort], so a
-        // duplicate edge will throw — that's caught below.
+        const fromPort = action.fromPort ?? null;
+        const toPort = action.toPort ?? null;
+        // Duplicate check (same from/to/ports) — same rule as the edges route.
+        const dup = liveEdges.some(
+          (e) =>
+            e.fromNodeId === fromId &&
+            e.toNodeId === toId &&
+            (e.fromPort ?? null) === fromPort &&
+            (e.toPort ?? null) === toPort,
+        );
+        if (dup) {
+          console.warn(
+            `[pi-orchestrate] skipping duplicate edge ${action.fromNodeName} → ${action.toNodeName}`,
+          );
+          continue;
+        }
+        // Cycle check — same rule (and same helper) as the edges route, run
+        // BEFORE creating so a cyclic PI plan can never reach the DB.
+        if (
+          wouldCreateCycle(
+            liveEdges.map((e) => ({
+              fromNodeId: e.fromNodeId,
+              toNodeId: e.toNodeId,
+            })),
+            fromId,
+            toId,
+          )
+        ) {
+          console.warn(
+            `[pi-orchestrate] skipping edge ${action.fromNodeName} → ${action.toNodeName} (would create a cycle)`,
+          );
+          continue;
+        }
+        // The Edge model's unique constraint on
+        // [workflowId, fromNodeId, toNodeId, fromPort, toPort] stays as the
+        // last-resort belt (races) — caught below.
         await db.edge.create({
           data: {
             workflowId,
             fromNodeId: fromId,
             toNodeId: toId,
-            fromPort: action.fromPort ?? null,
-            toPort: action.toPort ?? null,
+            fromPort,
+            toPort,
           },
         });
+        liveEdges.push({ fromNodeId: fromId, toNodeId: toId, fromPort, toPort });
         executedActions.push(action);
       } else if (action.type === "run_workflow") {
         // Don't run here — return the action so the frontend can trigger it

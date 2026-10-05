@@ -37,12 +37,12 @@ import {
   Info,
   Layers,
   Monitor,
-  AlertTriangle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Progress } from "@/components/ui/progress";
+import { Separator } from "@/components/ui/separator";
 import {
   Dialog,
   DialogContent,
@@ -52,9 +52,18 @@ import {
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { useAppStore } from "@/lib/store";
-import type { PlatformInfoDTO } from "@/lib/types";
 import { PanelSkeleton } from "@/components/empty-state";
 import { cn } from "@/lib/utils";
+
+/** External tools that have a dedicated usage surface (workbench panel)
+ *  beyond the canvas node. Maps registry key → sidebar panel. Lets the
+ *  management layer deep-link into the usage layer so the two stay visibly
+ *  connected (e.g. AlphaFold2's card links to the prediction workbench). */
+const TOOL_WORKBENCH: Partial<
+  Record<string, ReturnType<typeof useAppStore.getState>["activePanel"]>
+> = {
+  alphafold: "alphafold",
+};
 
 // ── API types (mirror /api/tools/scan + /api/tools/install) ─────────────────
 
@@ -67,6 +76,7 @@ interface RuntimeRow {
   installMethod: string;
   installCommand: string;
   installLabel: string;
+  installError: string | null;
   docs: string;
   oneClick: boolean;
   sizeHint: string | null;
@@ -99,9 +109,6 @@ interface ToolRow {
   sizeHint?: string;
   builtinEngine?: string;
   executorReady: boolean;
-  /** Present only on win32 for github-method entries (bash-script installs —
-   *  need WSL); absent/null elsewhere. */
-  platformNote?: string | null;
 }
 
 interface FoundryStatusDTO {
@@ -117,10 +124,19 @@ interface FoundryStatusDTO {
   selftestDetail: string;
 }
 
+interface PlatformDTO {
+  os: "linux" | "macos" | "windows";
+  osLabel: string;
+  arch: string;
+  shell: "bash" | "cmd";
+  wsl: boolean;
+  python: { command: string | null; version: string | null };
+  packageManagers: { key: string; label: string; kind: string; available: boolean }[];
+}
+
 interface ScanResponse {
   scannedAt: string;
-  /** Host platform snapshot (drives the platform badge). */
-  platform: PlatformInfoDTO;
+  platform: PlatformDTO;
   runtime: RuntimeRow[];
   engines: EngineRow[];
   tools: ToolRow[];
@@ -183,13 +199,7 @@ function timeAgo(iso: string): string {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export function ToolsPanel({
-  onOpenAlphafoldWorkbench,
-}: {
-  /** Jump to the AF2 workbench (the AlphaFold panel is the task-submission
-   *  surface — SSH connect, salloc/slurm dispatch, job monitor, 3D viewer). */
-  onOpenAlphafoldWorkbench?: () => void;
-}) {
+export function ToolsPanel() {
   const toast = useAppStore((s) => s.toast);
   const [scan, setScan] = React.useState<ScanResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
@@ -331,21 +341,11 @@ export function ToolsPanel({
       {/* ── Header ───────────────────────────────────────────────────────── */}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0 flex-1 space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex items-center gap-2">
             <Wrench className="size-5 text-primary" />
             <h2 className="text-lg font-semibold tracking-tight">
               Environment &amp; Toolchain
             </h2>
-            {scan?.platform && (
-              <Badge
-                variant="outline"
-                className="gap-1 font-mono text-[10px]"
-                title={`Host platform — PATH separator "${scan.platform.pathSep}"`}
-              >
-                <Monitor className="size-3" />
-                {scan.platform.label}
-              </Badge>
-            )}
           </div>
           <p className="text-sm text-muted-foreground">
             Installation status for every dependency the studio uses — runtime,
@@ -384,6 +384,64 @@ export function ToolsPanel({
             <Button size="sm" variant="outline" onClick={() => void runScan()}>
               Retry
             </Button>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* ── Platform banner (cross-OS detection & install lanes) ───── */}
+      {scan && (
+        <Card className="border-border/60 bg-gradient-to-br from-card to-muted/30">
+          <CardContent className="flex flex-wrap items-center gap-x-5 gap-y-2 p-4 text-sm">
+            <div className="flex items-center gap-2 font-medium">
+              <Monitor className="size-4 text-primary" />
+              {scan.platform.osLabel}
+              <span className="text-xs font-normal text-muted-foreground">
+                {scan.platform.arch} · {scan.platform.shell}
+              </span>
+            </div>
+            <Separator orientation="vertical" className="hidden h-5 bg-border/60 sm:block" />
+            <div className="text-sm">
+              <span className="text-muted-foreground">Python: </span>
+              <span className="font-mono text-xs">
+                {scan.platform.python.command
+                  ? `${scan.platform.python.command}${scan.platform.python.version ? ` (${scan.platform.python.version})` : ""}`
+                  : "not found"}
+              </span>
+            </div>
+            <Separator orientation="vertical" className="hidden h-5 bg-border/60 sm:block" />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-sm text-muted-foreground">Package managers:</span>
+              {scan.platform.packageManagers.filter((p) => p.available).length === 0 ? (
+                <span className="text-xs text-muted-foreground">none detected</span>
+              ) : (
+                scan.platform.packageManagers
+                  .filter((p) => p.available)
+                  .map((p) => (
+                    <span
+                      key={p.key}
+                      className="rounded-full border bg-background px-2 py-0.5 text-xs"
+                      title={p.label}
+                    >
+                      {p.key}
+                    </span>
+                  ))
+              )}
+            </div>
+            {scan.platform.os === "windows" && (
+              <div className="flex items-center gap-1.5">
+                <Separator orientation="vertical" className="hidden h-5 bg-border/60 sm:block" />
+                <span
+                  className={cn(
+                    "rounded-full border px-2 py-0.5 text-xs",
+                    scan.platform.wsl
+                      ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                      : "border-muted bg-muted/50 text-muted-foreground",
+                  )}
+                >
+                  {scan.platform.wsl ? "WSL available (POSIX install lane)" : "no WSL — POSIX installs unavailable"}
+                </span>
+              </div>
+            )}
           </CardContent>
         </Card>
       )}
@@ -491,9 +549,6 @@ export function ToolsPanel({
                       engines={scan.engines}
                       onInstall={() => void startInstall(t.key, t.label)}
                       installing={startingInstall === t.key}
-                      onOpenAlphafoldWorkbench={
-                        t.key === "alphafold" ? onOpenAlphafoldWorkbench : undefined
-                      }
                     />
                   ))}
                 </div>
@@ -687,6 +742,18 @@ function RuntimeCard({
           <p className="line-clamp-2 text-xs text-muted-foreground">
             {row.description}
           </p>
+          {/* Resolved cross-OS install info: the command shown is exactly
+              what the button runs (per-OS variant / system package manager). */}
+          {!row.installed && row.installCommand && (
+            <p className="truncate font-mono text-[10px] text-muted-foreground/80">
+              {row.installCommand}
+            </p>
+          )}
+          {!row.installed && row.installError && (
+            <p className="text-[11px] leading-snug text-amber-600 dark:text-amber-400">
+              {row.installError}
+            </p>
+          )}
         </div>
         <div className="shrink-0">
           {!row.installed && row.oneClick ? (
@@ -849,15 +916,15 @@ function ToolCard({
   engines,
   onInstall,
   installing,
-  onOpenAlphafoldWorkbench,
 }: {
   row: ToolRow;
   engines: EngineRow[];
   onInstall: () => void;
   installing: boolean;
-  /** Set only on the alphafold row — jumps to the AF2 workbench. */
-  onOpenAlphafoldWorkbench?: () => void;
 }) {
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const setEnvironmentSheetOpen = useAppStore((s) => s.setEnvironmentSheetOpen);
+  const workbenchPanel = TOOL_WORKBENCH[row.key];
   const engine = engines.find((e) => e.key === row.builtinEngine);
   const { size, detail } = splitSizeHint(row.sizeHint ?? "");
   return (
@@ -886,19 +953,6 @@ function ToolCard({
         <p className="line-clamp-2 text-xs text-muted-foreground">
           {row.description}
         </p>
-
-        {/* win32 platform warning (github-method installs are bash scripts) */}
-        {row.platformNote && (
-          <div
-            className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 px-2 py-1.5"
-            role="note"
-          >
-            <AlertTriangle className="mt-0.5 size-3 shrink-0 text-amber-600 dark:text-amber-400" />
-            <p className="text-[11px] leading-snug text-amber-700 dark:text-amber-400">
-              {row.platformNote}
-            </p>
-          </div>
-        )}
 
         {/* Fallback engine row */}
         {engine && (
@@ -949,15 +1003,20 @@ function ToolCard({
               native execution active
             </Badge>
           )}
-          {onOpenAlphafoldWorkbench && (
+          {workbenchPanel && (
             <Button
               size="sm"
-              variant="outline"
-              onClick={onOpenAlphafoldWorkbench}
-              title="AlphaFold 的任务提交工作台 — SSH 连接、salloc/slurm 派发、作业监控与 3D 查看"
+              variant="secondary"
+              onClick={() => {
+                // Deep-link from the management layer (this Environment
+                // sheet) into the usage layer (the tool's workbench panel).
+                setEnvironmentSheetOpen(false);
+                setActivePanel(workbenchPanel);
+              }}
+              className="gap-1"
             >
-              <Boxes className="size-3.5" />
-              打开 AF2 工作台
+              <Boxes className="size-3.5 shrink-0" />
+              <span className="truncate">Open workbench</span>
             </Button>
           )}
           <Button size="sm" variant="ghost" asChild>

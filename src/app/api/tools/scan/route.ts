@@ -3,16 +3,13 @@
 //     - runtime:  python3, numpy, scipy, biopython, git (with versions)
 //     - engines:  built-in real algorithm engines (self-test status)
 //     - tools:    external comp tools — native installed? engine fallback?
-//   Plus a summary block for the header counters and a `platform` snapshot
-//   (os / label) for the Environment panel's platform badge.
+//   Plus a summary block for the header counters.
 //
-// Detection is cross-platform: PATH lookups go through crossWhich, version
-// probes run via runCapture (spawnSync ARRAY form — no shell strings), and
-// python module versions use the resolved engine python. On win32, github-
-// method one-click installs are reported as NOT one-click with a WSL note
-// (their install commands are bash scripts); pip entries stay one-click.
+// Detection shells out to `which` / `python3 -c "import <module>"` and runs
+// each engine's fast self-test (sub-100ms each after the first compile).
 
 import { NextResponse } from "next/server";
+import { execSync } from "child_process";
 import {
   TOOL_REGISTRY,
   RUNTIME_ENTRIES,
@@ -23,85 +20,64 @@ import {
   scanAllTools,
   selfTestEngines,
   resolveEnginePython,
-  pythonSpawnTokens,
 } from "@/lib/real-executor";
 import { getFoundryStatus } from "@/lib/foundry";
 import { listInstallJobs } from "@/lib/install-jobs";
-import { getPlatformInfo, runCapture } from "@/lib/platform";
-
-/** win32: github-method one-click installs are bash scripts — mark them
- *  not-one-click with a WSL platformNote. Pip/runtime entries are untouched. */
-function applyWindowsInstallNotes<T extends { installMethod: string; oneClick: boolean }>(
-  row: T,
-): T & { platformNote?: string } {
-  if (
-    process.platform === "win32" &&
-    row.installMethod === "github" &&
-    row.oneClick
-  ) {
-    return {
-      ...row,
-      oneClick: false,
-      platformNote: "Windows 需通过 WSL 安装（此命令为 bash 脚本）",
-    };
-  }
-  return row;
-}
+import { getPlatformInfo, resolveInstallSpec } from "@/lib/platform-env";
 
 export async function GET() {
   const py = resolveEnginePython();
   const platform = getPlatformInfo();
-  const pyTok = py ? pythonSpawnTokens(py) : null;
 
   const runtime = RUNTIME_ENTRIES.map((entry) => {
     const installed = isEntryInstalled(entry.detect);
     let version: string | null = null;
     if (installed) {
-      if (
-        entry.detect.type === "binary" &&
-        entry.detect.binary &&
-        entry.detect.versionFlag
-      ) {
-        // e.g. `git --version` / `python3 --version` — array form, no shell.
-        const out = runCapture(
-          entry.detect.binary,
-          [entry.detect.versionFlag],
-          8000,
-        );
-        version = out?.trim().split("\n")[0] ?? null;
-      } else if (
-        entry.detect.type === "python" &&
-        entry.detect.pythonModule &&
-        pyTok
-      ) {
-        const mod =
-          entry.detect.pythonModule === "Bio" ? "Bio" : entry.detect.pythonModule;
-        const out = runCapture(
-          pyTok.cmd,
-          [
-            ...pyTok.preArgs,
-            "-c",
-            `import ${mod}; print(getattr(${mod}, '__version__', 'ok'))`,
-          ],
-          8000,
-        );
-        version = out?.trim().split("\n")[0] || null;
+      try {
+        if (entry.detect.type === "binary" && entry.detect.versionFlag) {
+          // stdio:"pipe" captures stderr — no shell redirection needed, so
+          // this works under cmd.exe on Windows too.
+          version =
+            execSync(`${entry.detect.binary} ${entry.detect.versionFlag}`, {
+              stdio: "pipe",
+              timeout: 8000,
+            })
+              .toString()
+              .trim()
+              .split("\n")[0] ?? null;
+        } else if (entry.detect.type === "python" && entry.detect.pythonModule) {
+          const mod =
+            entry.detect.pythonModule === "Bio" ? "Bio" : entry.detect.pythonModule;
+          version =
+            execSync(
+              `${py ?? "python3"} -c "import ${mod}; print(getattr(${mod}, '__version__', 'ok'))"`,
+              { stdio: "pipe", timeout: 8000 },
+            )
+              .toString()
+              .trim() || null;
+        }
+      } catch {
+        version = null;
       }
     }
-    return applyWindowsInstallNotes({
+    // Effective install spec on THIS machine (per-OS variant / system
+    // package manager / default) — what the UI shows = what the button runs.
+    const spec = resolveInstallSpec(entry);
+    return {
       key: entry.key,
       label: entry.label,
       description: entry.description,
       installed,
       version,
       installMethod: entry.install.method,
-      installCommand: entry.install.command,
-      installLabel: entry.install.label,
+      installCommand: spec.command,
+      installLabel: spec.label,
+      installError: spec.error ?? null,
       docs: entry.install.docs,
-      oneClick: entry.install.oneClick,
+      oneClick: spec.oneClick,
       sizeHint: entry.install.sizeHint ?? null,
       category: entry.category,
-    });
+    };
   });
 
   const engines = selfTestEngines().map((t) => {
@@ -119,7 +95,7 @@ export async function GET() {
     };
   });
 
-  const tools = scanAllTools().map(applyWindowsInstallNotes);
+  const tools = scanAllTools();
 
   // Foundry platform status (official RosettaCommons rc-foundry stack:
   // version, torch/device, installed checkpoints, real capabilities).
@@ -133,7 +109,23 @@ export async function GET() {
 
   return NextResponse.json({
     scannedAt: new Date().toISOString(),
-    platform,
+    platform: {
+      os: platform.os,
+      osLabel: platform.osLabel,
+      arch: platform.arch,
+      shell: platform.shell,
+      wsl: platform.wsl,
+      python: {
+        command: platform.python.command,
+        version: platform.python.version,
+      },
+      packageManagers: platform.packageManagers.map((p) => ({
+        key: p.key,
+        label: p.label,
+        kind: p.kind,
+        available: p.available,
+      })),
+    },
     runtime,
     engines,
     tools,

@@ -15,6 +15,7 @@ import {
   ChevronDown,
   ChevronRight,
   Search,
+  X,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -133,13 +134,13 @@ async function createNodeAtCenter(spec: NodeSpec): Promise<void> {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
+        // Target the CURRENT workflow (multi-workflow contract) — without
+        // this the server creates the node in its first-workflow default.
+        workflowId: workflow?.id,
         type: spec.type,
         name: spec.label,
         x,
         y,
-        // Target the workflow the user is looking at (multi-workflow apps);
-        // undefined falls back to the server's first-workflow behavior.
-        workflowId: workflow?.id,
       }),
     });
     if (!res.ok) {
@@ -201,7 +202,11 @@ const PaletteItem = React.memo(function PaletteItem({
       type="button"
       draggable
       onDragStart={onDragStart}
-      onClick={() => createNodeAtCenter(spec)}
+      onClick={() => {
+        createNodeAtCenter(spec);
+        // On phones the palette is an overlay — dismiss it after adding.
+        useAppStore.getState().setMobilePaletteOpen(false);
+      }}
       className="group flex w-full items-start gap-2.5 rounded-lg border border-transparent p-2 text-left transition-colors hover:border-border hover:bg-accent/60 cursor-grab active:cursor-grabbing"
       title={`Drag onto canvas, or click to add · ${spec.label}`}
     >
@@ -266,11 +271,19 @@ function CategorySection({
 }
 
 /** The left-column node palette.
- * `className` controls visibility/layout: desktop mounts it inline
- * ("hidden md:flex"), mobile mounts it inside a Sheet drawer ("flex w-full"). */
-export function NodePalette({ className }: { className?: string }) {
+ *
+ * Responsive behavior:
+ * - md+: static sidebar column (w-64, border-r) as before.
+ * - <md: hidden by default; toggled from the canvas toolbar into an overlay
+ *   (absolute inset-y-0 left-0, z-40, shadow + backdrop). This keeps the
+ *   canvas usable on phones — previously the fixed w-64 column left only
+ *   ~60px of canvas visible at 375px.
+ */
+export function NodePalette() {
   const query = useAppStore((s) => s.paletteQuery);
   const setQuery = useAppStore((s) => s.setPaletteQuery);
+  const mobileOpen = useAppStore((s) => s.mobilePaletteOpen);
+  const setMobileOpen = useAppStore((s) => s.setMobilePaletteOpen);
 
   const filtered = React.useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -285,19 +298,52 @@ export function NodePalette({ className }: { className?: string }) {
 
   const groups = React.useMemo(() => groupByCategory(filtered), [filtered]);
 
+  // Close the mobile overlay when the palette unmounts / panel switches.
+  React.useEffect(() => {
+    return () => setMobileOpen(false);
+  }, [setMobileOpen]);
+
   return (
-    <aside
-      className={cn(
-        "flex h-full w-64 shrink-0 flex-col border-r bg-background",
-        className,
+    <>
+      {/* Mobile backdrop — click to dismiss the overlay. */}
+      {mobileOpen && (
+        <div
+          className="absolute inset-0 z-30 bg-black/25 md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden
+        />
       )}
-    >
+      <aside
+        className={cn(
+          "flex h-full w-64 shrink-0 flex-col border-r bg-background",
+          // <md: overlay on top of the canvas instead of a fixed column.
+          // `invisible` when closed keeps the translated-off panel from
+          // intercepting pointer events over the icon rail; visibility is
+          // transitioned (discrete) so it flips instantly on open and only
+          // after the slide-out finishes on close.
+          "absolute inset-y-0 left-0 z-40 shadow-xl transition-[transform,visibility] duration-200 md:static md:shadow-none",
+          mobileOpen
+            ? "visible translate-x-0"
+            : "invisible -translate-x-full md:visible md:translate-x-0",
+        )}
+      >
       <header className="flex flex-col gap-2 border-b p-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold">Nodes</h2>
-          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-            {filtered.length}/{NODE_SPECS.length}
-          </span>
+          <div className="flex items-center gap-1">
+            <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+              {filtered.length}/{NODE_SPECS.length}
+            </span>
+            {/* Mobile-only close button for the overlay. */}
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+              onClick={() => setMobileOpen(false)}
+              aria-label="Close node palette"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
         </div>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -334,6 +380,7 @@ export function NodePalette({ className }: { className?: string }) {
         Drag onto canvas · click to add
       </footer>
     </aside>
+    </>
   );
 }
 

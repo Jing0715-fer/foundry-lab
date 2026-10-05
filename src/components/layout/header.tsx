@@ -85,10 +85,30 @@ export function Header() {
       const res = await fetch("/api/workflow/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        // Target the CURRENT workflow (multi-workflow contract). The server
+        // 409s when any node is already running — surfaced as its own toast
+        // instead of a scary "Run failed".
         body: JSON.stringify({ workflowId: workflow.id }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (res.status === 409) {
+        toast({ title: "Workflow is already running" });
+        return;
+      }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
       const data = await res.json();
+      // Refetch the CURRENT workflow (by id — /api/workflow would return the
+      // FIRST workflow and clobber a switched one) so node statuses flip to
+      // their terminal values immediately. The 3s poll is gated on local
+      // busy statuses that never change without this refetch, which used to
+      // leave every card "idle" after a header run.
+      const wfRes = await fetch(`/api/workflows/${workflow.id}`);
+      if (wfRes.ok) {
+        const wf = await wfRes.json();
+        useAppStore.getState().setWorkflow(wf);
+      }
       toast({
         title: "Workflow complete",
         description: `Started ${data?.started ?? 0} • Completed ${

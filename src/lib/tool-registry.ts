@@ -26,7 +26,9 @@ export type ToolCategory =
   | "platform";
 
 export type DetectType = "binary" | "python" | "path";
-export type InstallMethod = "pip" | "github" | "binary" | "runtime";
+export type InstallMethod = "pip" | "github" | "binary" | "runtime" | "system";
+/** OS keys for per-OS install command variants. */
+export type OsKey = "linux" | "macos" | "windows";
 
 /** Optional native-execution extras shared by every mode. */
 export interface NativeExecutionExtras {
@@ -85,6 +87,9 @@ export interface ToolRegistryEntry {
     method: InstallMethod;
     /** The real command that gets run on one-click install. */
     command: string;
+    /** Optional per-OS override of `command` (resolved at install/scan time).
+     *  When the current OS has no variant, `command` is used as-is. */
+    commandByOs?: Partial<Record<OsKey, string>>;
     /** Human-readable summary of what the command does. */
     label: string;
     docs: string;
@@ -92,6 +97,12 @@ export interface ToolRegistryEntry {
     oneClick: boolean;
     /** Rough install size / download warning. */
     sizeHint?: string;
+    /** method "system" only: the entry key whose per-package-manager install
+     *  commands live in platform-env SYSTEM_INSTALL_COMMANDS. The effective
+     *  command is resolved from the package managers detected on this
+     *  machine at scan/install time (oneClick flips on automatically when a
+     *  matching manager exists). */
+    systemKey?: string;
   };
   /** For external tools: the built-in engine that takes over when the native
    *  tool is missing (engine key from BUILTIN_ENGINES below). */
@@ -109,8 +120,9 @@ export const RUNTIME_ENTRIES: ToolRegistryEntry[] = [
       "Interpreter for the built-in real algorithm engines (numpy-based scientific computing).",
     detect: { type: "binary", binary: "python3", versionFlag: "--version" },
     install: {
-      method: "runtime",
+      method: "system",
       command: "",
+      systemKey: "python3",
       label: "System package",
       docs: "https://www.python.org/downloads/",
       oneClick: false,
@@ -168,8 +180,9 @@ export const RUNTIME_ENTRIES: ToolRegistryEntry[] = [
     description: "Required for one-click installs of GitHub-based external tools.",
     detect: { type: "binary", binary: "git", versionFlag: "--version" },
     install: {
-      method: "runtime",
+      method: "system",
       command: "",
+      systemKey: "git",
       label: "System package",
       docs: "https://git-scm.com",
       oneClick: false,

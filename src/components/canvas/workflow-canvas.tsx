@@ -17,11 +17,19 @@ import {
   Trash2,
   X,
   Group as GroupIcon,
+  AlertTriangle,
   type LucideIcon,
 } from "lucide-react";
-import type { NodeDTO, NodeType, NodeSpec } from "@/lib/types";
+import type { NodeDTO, NodeType, NodeSpec, WorkflowDTO } from "@/lib/types";
 import { useAppStore, clampDrop } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
+import {
+  applyHistorySnapshot,
+  captureCurrentSnapshot,
+  isApplyingHistory,
+  withHistorySuppressed,
+} from "@/lib/history-apply";
+import { Button } from "@/components/ui/button";
 import {
   NODE_SPECS,
   CARD_W,
@@ -83,7 +91,6 @@ export function WorkflowCanvas() {
   const selectMany = useAppStore((s) => s.selectMany);
   const select = useAppStore((s) => s.select);
   const setBand = useAppStore((s) => s.setBand);
-  const setWorkflow = useAppStore((s) => s.setWorkflow);
   const upsertNode = useAppStore((s) => s.upsertNode);
   const cancelConnect = useAppStore((s) => s.cancelConnect);
   const toast = useAppStore((s) => s.toast);
@@ -96,9 +103,6 @@ export function WorkflowCanvas() {
   const rootRef = React.useRef<HTMLElement | null>(null);
   const panState = React.useRef<{ startX: number; startY: number; vx: number; vy: number } | null>(null);
   const fetchedRef = React.useRef(false);
-
-  // Guard ref so undo/redo (which mutates the store) doesn't itself push history.
-  const isApplyingHistoryRef = React.useRef(false);
 
   const [createMenu, setCreateMenu] = React.useState<CreateMenuState | null>(null);
   const [searchOpen, setSearchOpen] = React.useState(false);
@@ -179,44 +183,82 @@ export function WorkflowCanvas() {
   }, [selectedIds]);
 
   // --- Bulk-delete every node in the current selection. ------------------
-  // Mirrors node-card.tsx's single-node delete: push history snapshot,
-  // optimistically strip from local state, fire all DELETE fetches in
-  // parallel, toast the result.
+  // Pushes a history snapshot BEFORE the removal (so Ctrl+Z restores the
+  // whole batch in one step), optimistically strips the nodes + their edges
+  // in ONE store transition (suppressed — the inline snapshot above is the
+  // single capture), fires every DELETE in parallel, and RESTORES the nodes
+  // whose DELETE actually failed (HTTP failures used to leave them deleted
+  // locally while they still existed server-side).
   const handleBulkDelete = React.useCallback(async () => {
     const s = useAppStore.getState();
     const ids = s.selectedIds;
     if (ids.length === 0) return;
-    if (s.workflow) {
+    const removed = new Set(ids);
+    const before = s.workflow;
+    if (before) {
       useHistoryStore.getState().push({
-        nodes: s.workflow.nodes,
-        edges: s.workflow.edges,
+        nodes: before.nodes,
+        edges: before.edges,
         viewport: s.viewport,
       });
-      const removed = new Set(ids);
-      s.setWorkflow({
-        ...s.workflow,
-        nodes: s.workflow.nodes.filter((n) => !removed.has(n.id)),
-        edges: s.workflow.edges.filter(
-          (e) => !removed.has(e.fromNodeId) && !removed.has(e.toNodeId),
-        ),
+      // One transition, capture-suppressed: the inline push above already
+      // recorded the pre-delete state — a second (subscription) capture
+      // would make undo restore the same state twice in a row.
+      withHistorySuppressed(() => {
+        s.setWorkflow({
+          ...before,
+          nodes: before.nodes.filter((n) => !removed.has(n.id)),
+          edges: before.edges.filter(
+            (e) => !removed.has(e.fromNodeId) && !removed.has(e.toNodeId),
+          ),
+        });
       });
     }
     s.select(null);
     setSelectionBar(null);
     setBulkDeleteOpen(false);
-    try {
-      await Promise.all(
-        ids.map((id) =>
-          fetch(`/api/workflow/nodes/${id}`, { method: "DELETE" }),
-        ),
-      );
+    // allSettled + per-request res.ok counting (Promise.all resolves even
+    // on HTTP 500 — it only rejects on network errors, so a failed DELETE
+    // used to count as success).
+    const results = await Promise.allSettled(
+      ids.map((id) => fetch(`/api/workflow/nodes/${id}`, { method: "DELETE" })),
+    );
+    let okCount = 0;
+    const failedIds = new Set<string>();
+    results.forEach((r, i) => {
+      if (r.status === "fulfilled" && r.value.ok) okCount++;
+      else failedIds.add(ids[i]);
+    });
+    if (failedIds.size === 0) {
       toast({
-        title: `Deleted ${ids.length} node${ids.length > 1 ? "s" : ""}`,
+        title: `Deleted ${okCount} node${okCount > 1 ? "s" : ""}`,
         variant: "success",
       });
-    } catch {
-      toast({ title: "Some deletes failed", variant: "destructive" });
+      return;
     }
+    // Rollback: re-add the nodes whose DELETE failed (they still exist
+    // server-side) plus the edges that connected them to surviving nodes.
+    const cur = useAppStore.getState().workflow;
+    if (cur && before) {
+      const failedNodes = before.nodes.filter((n) => failedIds.has(n.id));
+      const restoredEdges = before.edges.filter(
+        (e) =>
+          (failedIds.has(e.fromNodeId) || failedIds.has(e.toNodeId)) &&
+          !cur.edges.some((x) => x.id === e.id),
+      );
+      withHistorySuppressed(() => {
+        useAppStore.getState().setWorkflow({
+          ...cur,
+          nodes: [...cur.nodes, ...failedNodes],
+          edges: [...cur.edges, ...restoredEdges],
+        });
+      });
+    }
+    toast({
+      title: "Some deletes failed",
+      description: `${okCount} deleted · ${failedIds.size} kept (restored)`,
+      variant: "destructive",
+    });
   }, [toast]);
 
   // --- Group the current selection (from the floating action bar). ------
@@ -242,121 +284,79 @@ export function WorkflowCanvas() {
   }, []);
 
   // --- Initial workflow fetch (defensive; the page may also fetch). --------
+  // Boot failures surface through store.setError so the canvas can swap its
+  // loading overlay for an error + Retry card (the page-level catch does the
+  // same). loadWorkflow is shared with the Retry button.
+  const loadWorkflow = React.useCallback(async () => {
+    const s = useAppStore.getState();
+    s.setLoading(true);
+    s.setError(null);
+    try {
+      const res = await fetch("/api/workflow");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const w: WorkflowDTO = await res.json();
+      useAppStore.getState().setWorkflow(w);
+    } catch (e) {
+      useAppStore.getState().setError(
+        e instanceof Error ? e.message : "Could not load the workflow.",
+      );
+    } finally {
+      useAppStore.getState().setLoading(false);
+    }
+  }, []);
+
   React.useEffect(() => {
     if (fetchedRef.current) return;
     fetchedRef.current = true;
     if (workflow) return;
-    void (async () => {
-      try {
-        const res = await fetch("/api/workflow");
-        if (!res.ok) throw new Error("fetch failed");
-        const w = await res.json();
-        setWorkflow(w);
-      } catch {
-        // Stay in loading state; other agents may retry.
-      }
-    })();
-  }, [workflow, setWorkflow]);
+    void loadWorkflow();
+  }, [workflow, loadWorkflow]);
 
   // --- History: subscribe to workflow changes — push the PREVIOUS state
-  // whenever an edge is removed (covers edges-layer delete chip, which is
-  // not in our owned file list). Node delete / edge connect / auto-arrange
-  // are handled by direct inline pushes in node-card.tsx and
-  // canvas-toolbar.tsx (the files that own those operations).
+  // whenever an edge is removed (covers edges-layer delete chip, which has
+  // no inline push). Node delete / edge connect / bulk delete / node-create
+  // sites push their own inline snapshot and write under
+  // withHistorySuppressed, so they never reach this subscription — it only
+  // captures the paths without an inline push (edges-layer chip, palette
+  // click, empty-state chips, double-click create, HTML5 drop).
   React.useEffect(() => {
     const unsub = useAppStore.subscribe((state, prevState) => {
-      if (isApplyingHistoryRef.current) return;
+      // Undo/redo restorations and suppressed inline mutations must not
+      // re-capture themselves as new history entries.
+      if (isApplyingHistory()) return;
       const prevWf = prevState.workflow;
       const curWf = state.workflow;
       if (!prevWf || !curWf) return;
-      // Edge removed? (covers edges-layer delete chip)
+      // At most ONE snapshot per subscription tick: a single transition can
+      // change both node and edge counts (bulk delete, cascade) — the old
+      // if-chain pushed the same pre-state twice, making undo "sticky"
+      // (two presses restored the same snapshot).
+      const prevSnap = {
+        nodes: prevWf.nodes,
+        edges: prevWf.edges,
+        viewport: prevState.viewport,
+      };
       if (curWf.edges.length < prevWf.edges.length) {
-        useHistoryStore.getState().push({
-          nodes: prevWf.nodes,
-          edges: prevWf.edges,
-          viewport: prevState.viewport,
-        });
-      }
-      // Node removed? (covers inspector/node-card delete)
-      if (curWf.nodes.length < prevWf.nodes.length) {
-        useHistoryStore.getState().push({
-          nodes: prevWf.nodes,
-          edges: prevWf.edges,
-          viewport: prevState.viewport,
-        });
-      }
-      // Node added? (covers palette click / empty-state chips / double-click create)
-      if (curWf.nodes.length > prevWf.nodes.length) {
-        useHistoryStore.getState().push({
-          nodes: prevWf.nodes,
-          edges: prevWf.edges,
-          viewport: prevState.viewport,
-        });
-      }
-      // Edge added? (covers port-connect)
-      if (curWf.edges.length > prevWf.edges.length) {
-        useHistoryStore.getState().push({
-          nodes: prevWf.nodes,
-          edges: prevWf.edges,
-          viewport: prevState.viewport,
-        });
+        // Edge removed? (covers edges-layer delete chip)
+        useHistoryStore.getState().push(prevSnap);
+      } else if (curWf.nodes.length < prevWf.nodes.length) {
+        // Node removed? (covers paths without an inline push)
+        useHistoryStore.getState().push(prevSnap);
+      } else if (curWf.nodes.length > prevWf.nodes.length) {
+        // Node added? (covers palette click / empty-state chips / drop)
+        useHistoryStore.getState().push(prevSnap);
+      } else if (curWf.edges.length > prevWf.edges.length) {
+        // Edge added? (covers port-connect failures without inline push)
+        useHistoryStore.getState().push(prevSnap);
       }
     });
     return unsub;
   }, []);
 
-  // --- Apply an undo/redo snapshot to the app store. --------------------
-  const applySnapshot = React.useCallback((snap: {
-    nodes: NodeDTO[];
-    edges: import("@/lib/types").EdgeDTO[];
-    viewport: { x: number; y: number; zoom: number };
-  }) => {
-    isApplyingHistoryRef.current = true;
-    const s = useAppStore.getState();
-    if (s.workflow) {
-      const curNodes = s.workflow.nodes;
-      const snapIds = new Set(snap.nodes.map((n) => n.id));
-      const curIds = new Set(curNodes.map((n) => n.id));
-      // Delete nodes in current but not in snapshot.
-      for (const n of curNodes) {
-        if (!snapIds.has(n.id)) {
-          void fetch(`/api/workflow/nodes/${n.id}`, { method: "DELETE" }).catch(() => {});
-        }
-      }
-      // Re-create nodes in snapshot but not in current.
-      for (const n of snap.nodes) {
-        if (!curIds.has(n.id)) {
-          void fetch("/api/workflow/nodes", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ type: n.type, name: n.name, x: n.x, y: n.y, refId: n.refId ?? undefined, params: n.params }),
-          }).catch(() => {});
-        }
-      }
-      // Sync edges.
-      const snapEdgeKeys = new Set(snap.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
-      const curEdgeKeys = new Set(s.workflow.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
-      for (const e of s.workflow.edges) {
-        if (!snapEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
-          void fetch(`/api/workflow/edges/${e.id}`, { method: "DELETE" }).catch(() => {});
-        }
-      }
-      for (const e of snap.edges) {
-        if (!curEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
-          void fetch("/api/workflow/edges", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fromNodeId: e.fromNodeId, toNodeId: e.toNodeId, fromPort: e.fromPort, toPort: e.toPort }),
-          }).catch(() => {});
-        }
-      }
-      s.setWorkflow({ ...s.workflow, nodes: snap.nodes, edges: snap.edges });
-    }
-    s.setViewport(snap.viewport);
-    window.setTimeout(() => {
-      isApplyingHistoryRef.current = false;
-    }, 0);
-  }, []);
+  // --- Undo/redo application is shared (src/lib/history-apply.ts). --------
+  // The old local copy re-POSTed restored nodes but kept the OLD local ids
+  // (the server mints new ones) so later PATCHes 404'd; the shared helper
+  // remaps ids for both nodes and edges and keeps DB + store consistent.
 
   // --- Keyboard shortcuts: Ctrl+Z undo, Ctrl+Shift+Z (or Ctrl+Y) redo. ---
   React.useEffect(() => {
@@ -364,21 +364,36 @@ export function WorkflowCanvas() {
       const mod = e.ctrlKey || e.metaKey;
       if (!mod) return;
       const key = e.key.toLowerCase();
+      // The CURRENT state is captured at call time and pushed onto the
+      // opposite stack (undo→future, redo→past) — the store's undo/redo no
+      // longer re-push the snapshot being RESTORED (that made undo a
+      // toggle: redo re-restored the same pre-op state forever).
+      const current = captureCurrentSnapshot();
+      if (!current) return;
       if (key === "z" && !e.shiftKey) {
         e.preventDefault();
-        const snap = useHistoryStore.getState().undo();
-        if (snap) applySnapshot(snap);
+        const snap = useHistoryStore.getState().undo(current);
+        if (snap) void applyHistorySnapshot(snap);
       } else if ((key === "z" && e.shiftKey) || key === "y") {
         e.preventDefault();
-        const snap = useHistoryStore.getState().redo();
-        if (snap) applySnapshot(snap);
+        const snap = useHistoryStore.getState().redo(current);
+        if (snap) void applyHistorySnapshot(snap);
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [applySnapshot]);
+  }, []);
 
   // --- Wheel: zoom-to-cursor (passive:false so we can preventDefault). -----
+  // The ref'd <section> below is ALWAYS mounted — including while the
+  // workflow is still loading or failed (the loading/error states render as
+  // overlays INSIDE the section instead of replacing it). This effect used
+  // to run once on first mount while an early-returned loading branch —
+  // WITHOUT the ref — was rendered, so rootRef.current was null and the
+  // wheel listener never attached; the [setViewport] deps never re-ran once
+  // the workflow arrived, leaving zoom dead until a panel switch remounted
+  // the whole canvas. With a stable ref'd section the listener attaches on
+  // the first mount and survives every state change.
   React.useEffect(() => {
     const el = rootRef.current;
     if (!el) return;
@@ -543,6 +558,10 @@ export function WorkflowCanvas() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            // Contract (task 3-a): create the node in the CURRENT workflow —
+            // omitting workflowId makes the server fall back to its first-
+            // workflow default, which breaks the multi-workflow switcher.
+            workflowId: useAppStore.getState().workflow?.id,
             type: spec.type,
             name: extra.name ?? spec.label,
             x: pos.x,
@@ -575,6 +594,8 @@ export function WorkflowCanvas() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            // Target the CURRENT workflow (multi-workflow contract).
+            workflowId: useAppStore.getState().workflow?.id,
             type: spec.type,
             name: spec.label,
             x: pos.x,
@@ -617,6 +638,8 @@ export function WorkflowCanvas() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // Target the CURRENT workflow (multi-workflow contract).
+          workflowId: useAppStore.getState().workflow?.id,
           type,
           name: spec?.label ?? type,
           x: pos.x,
@@ -632,22 +655,17 @@ export function WorkflowCanvas() {
     }
   };
 
-  // --- Loading state. -----------------------------------------------------
-  if (!workflow) {
-    return (
-      <section className="canvas-grid relative flex-1 overflow-hidden bg-background">
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-3 text-muted-foreground">
-            <Loader2 className="h-7 w-7 animate-spin" />
-            <p className="text-sm">Loading workflow…</p>
-          </div>
-        </div>
-      </section>
-    );
-  }
+  // --- Loading / error states. --------------------------------------------
+  // IMPORTANT: these render as OVERLAYS inside the ALWAYS-MOUNTED, ref'd
+  // <section> below — never as an early-return replacement branch (see the
+  // wheel effect comment: a replacement branch without the ref left the
+  // wheel listener unattached forever). Boot errors (store.error, set by
+  // page.tsx / loadWorkflow) swap the spinner for an honest error card with
+  // a Retry button instead of spinning forever.
+  const bootError = useAppStore((s) => s.error);
 
-  const nodes = workflow.nodes;
-  const edges = workflow.edges;
+  const nodes = workflow?.nodes ?? [];
+  const edges = workflow?.edges ?? [];
   const zoom = viewport.zoom;
 
   // Band rect for rendering (normalized).
@@ -703,6 +721,39 @@ export function WorkflowCanvas() {
       {/* LiveWire overlay (screen-relative). */}
       <LiveWire nodes={nodes} />
 
+      {/* Loading / boot-error overlays — while the workflow itself hasn't
+          loaded. Fully opaque (bg-background) so they also block canvas
+          pointer interactions until there is something to interact with. */}
+      {!workflow && bootError && (
+        <div className="absolute inset-0 z-50 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center">
+          <div className="flex size-12 items-center justify-center rounded-full bg-rose-500/10 text-rose-600 dark:text-rose-400">
+            <AlertTriangle className="size-6" />
+          </div>
+          <div className="flex flex-col gap-1">
+            <h3 className="text-base font-medium">Couldn&apos;t load the workflow</h3>
+            <p className="max-w-sm text-sm text-muted-foreground">
+              {bootError}
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void loadWorkflow()}
+            className="mt-1 gap-1.5"
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+      {!workflow && !bootError && (
+        <div className="absolute inset-0 z-50 flex items-center justify-center bg-background">
+          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+            <Loader2 className="h-7 w-7 animate-spin" />
+            <p className="text-sm">Loading workflow…</p>
+          </div>
+        </div>
+      )}
+
       {/* Band selection overlay.
           • items-start on the wrapper so any future inline children align
             to the band's top-left rather than centering.
@@ -732,7 +783,7 @@ export function WorkflowCanvas() {
       )}
 
       {/* Empty state. */}
-      {nodes.length === 0 && (
+      {workflow && nodes.length === 0 && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6">
           <div className="pointer-events-auto flex max-w-md flex-col items-center gap-4 rounded-2xl border border-dashed border-border bg-card/70 px-8 py-8 text-center shadow-sm backdrop-blur-sm">
             {/* Large icon in a muted circle */}

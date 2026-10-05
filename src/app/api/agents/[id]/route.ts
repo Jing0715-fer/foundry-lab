@@ -72,12 +72,22 @@ export async function PUT(
   return NextResponse.json(toAgentDTO(updated));
 }
 
-/** DELETE /api/agents/:id — delete agent (cascades chat messages). */
+/** DELETE /api/agents/:id — delete agent (cascades chat messages).
+ *  A missing id surfaces as an honest 404 (Prisma P2025) instead of a raw 500. */
 export async function DELETE(
   _req: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
-  await db.agent.delete({ where: { id } });
-  return NextResponse.json({ ok: true });
+  try {
+    await db.agent.delete({ where: { id } });
+    return NextResponse.json({ ok: true });
+  } catch (e) {
+    // P2025 = "Record to delete does not exist" → honest 404, not a 500.
+    if ((e as { code?: string }).code === "P2025") {
+      return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+    }
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: msg }, { status: 500 });
+  }
 }

@@ -4,6 +4,7 @@ import React from "react";
 import type { EdgeDTO, NodeDTO } from "@/lib/types";
 import { computeAllEdgeGeoms, contentBox } from "@/lib/canvas-utils";
 import { useAppStore } from "@/lib/store";
+import { withHistorySuppressed } from "@/lib/history-apply";
 
 interface EdgesLayerProps {
   edges: EdgeDTO[];
@@ -58,10 +59,26 @@ function EdgesLayerImpl({ edges, nodes }: EdgesLayerProps) {
         const res = await fetch(`/api/workflow/edges/${edge.id}`, {
           method: "DELETE",
         });
-        if (!res.ok) throw new Error("delete failed");
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         toast({ title: "Edge removed" });
       } catch {
-        toast({ title: "Failed to remove edge", variant: "destructive" });
+        // Rollback: re-add the edge exactly as it was (capture-suppressed —
+        // the canvas subscription already recorded the pre-delete state,
+        // and the broken mid-state must never become an undo target).
+        withHistorySuppressed(() => {
+          const wf = useAppStore.getState().workflow;
+          if (wf && !wf.edges.some((e) => e.id === edge.id)) {
+            useAppStore.getState().setWorkflow({
+              ...wf,
+              edges: [...wf.edges, edge],
+            });
+          }
+        });
+        toast({
+          title: "Failed to remove edge",
+          description: "The connection is still on the server — restored.",
+          variant: "destructive",
+        });
       }
     },
     [removeEdge, toast],

@@ -144,7 +144,10 @@ export function CanvasMinimap({ onClose }: { onClose: () => void }) {
 
   return (
     <div
-      className="absolute bottom-3 right-3 z-20 rounded-lg border bg-card/90 shadow-lg backdrop-blur-sm"
+      // Mobile: the toolbar row (bottom-left) is wide on narrow screens, so
+      // the minimap lifts above it (bottom-16) to avoid overlapping; on md+
+      // it sits level with the toolbar again.
+      className="absolute bottom-16 right-3 z-20 rounded-lg border bg-card/90 shadow-lg backdrop-blur-sm md:bottom-3"
       // Prevent the minimap from triggering canvas pan/zoom handlers.
       onPointerDown={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}

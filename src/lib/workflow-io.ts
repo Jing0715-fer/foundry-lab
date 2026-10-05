@@ -19,12 +19,12 @@
 // edges can reference nodes positionally. On import, new backend IDs are
 // allocated by POST /api/workflow/nodes and remapped via this index.
 //
-// IMPORTANT foundation constraint: POST /api/workflow/nodes always attaches
-// the new node to the FIRST workflow (oldest by createdAt asc). It does not
-// accept a workflowId. So importWorkflow cannot create a separate new
-// workflow — instead it clears the current workflow's contents (deletes all
-// existing nodes + edges cascade-cleaned by the DELETE route) and recreates
-// the imported nodes/edges inside the current workflow.
+// POST /api/workflow/nodes accepts an optional `workflowId` in the body: when
+// present the node is created in THAT workflow, otherwise it falls back to
+// the FIRST workflow (oldest by createdAt asc). importWorkflow takes an
+// optional `workflowId` and forwards it on every node create so the imported
+// graph lands on the caller's CURRENT workflow (multi-workflow switcher);
+// when omitted, the legacy clear+rebuild-the-first-workflow behavior is kept.
 
 import type { WorkflowDTO, NodeDTO, EdgeDTO } from "./types";
 
@@ -220,25 +220,29 @@ export function parseWorkflowJSON(text: string): ImportedWorkflow {
 }
 
 /**
- * Import a workflow into the backend. Replaces the contents of the current
+ * Import a workflow into the backend. Replaces the contents of the target
  * workflow: deletes all existing nodes (cascade-cleans edges), then creates
  * the imported nodes + edges. Returns the updated WorkflowDTO so callers can
  * push it into their store.
  *
- * NOTE: The foundation `POST /api/workflow/nodes` route always attaches to
- * the FIRST workflow (oldest by createdAt asc) and does not accept a
- * workflowId. Creating a separate new workflow would orphan the imported
- * nodes, so we instead clear + refill the current one. The imported
+ * `workflowId` (optional) — the workflow to clear + rebuild. Callers pass the
+ * CURRENT workflow from the store (multi-workflow switcher); when omitted the
+ * legacy target is used (GET /api/workflow = the first workflow). The imported
  * `data.name` is reflected in the returned DTO but is NOT persisted —
- * the foundation has no PATCH /api/workflow route.
+ * persist it separately via PATCH /api/workflows/:id when needed.
  */
 export async function importWorkflow(
   data: ImportedWorkflow,
+  workflowId?: string,
 ): Promise<WorkflowDTO> {
-  // 1. Fetch the current workflow.
-  const wfRes = await fetch("/api/workflow");
+  // 1. Fetch the target workflow — the caller's workflowId when given
+  //    (multi-workflow switcher), else the legacy /api/workflow default.
+  const wfUrl = workflowId ? `/api/workflows/${workflowId}` : "/api/workflow";
+  const wfRes = await fetch(wfUrl);
   if (!wfRes.ok) {
-    throw new Error(`Failed to fetch current workflow (HTTP ${wfRes.status})`);
+    throw new Error(
+      `Failed to fetch target workflow (${wfUrl}, HTTP ${wfRes.status})`,
+    );
   }
   const wf: WorkflowDTO = await wfRes.json();
 
@@ -267,6 +271,10 @@ export async function importWorkflow(
         y: n.y,
         params: n.params,
         refId: n.refId,
+        // Target workflow (multi-workflow switcher). Omitted when the caller
+        // didn't pass one — the backend then uses its legacy first-workflow
+        // fallback, keeping old call sites working unchanged.
+        ...(workflowId ? { workflowId } : {}),
       }),
     });
     if (!res.ok) {

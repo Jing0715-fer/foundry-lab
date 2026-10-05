@@ -17,7 +17,7 @@
 5. [智能体（Agents）：会调用工具的 AI 同事](#5-智能体agents会调用工具的-ai-同事)
 6. [大规模筛选评估与排序（核心功能）](#6-大规模筛选评估与排序核心功能)
 7. [AlphaFold2 结构预测](#7-alphafold2-结构预测)
-8. [环境与工具链管理](#8-环境与工具链管理)
+8. [环境与工具链管理（跨系统检测与安装）](#8-环境与工具链管理跨系统检测与安装)
 9. [集群执行：SSH / Slurm / GPU](#9-集群执行ssh--slurm--gpu)
 10. [版本快照、定时运行与导入导出](#10-版本快照定时运行与导入导出)
 11. [效率工具：命令面板与快捷键](#11-效率工具命令面板与快捷键)
@@ -471,6 +471,14 @@ score = 100 · Σ(wᵢ · normᵢ) / Σwᵢ     norm = (v−min)/(max−min)
 
 ![AlphaFold 面板](images/16-alphafold-panel.png)
 
+> **为什么 AlphaFold2 有独立页面？** 它分两层各司其职：
+> **Environment（环境面板）= 管理层** —— AlphaFold2 与其他外部工具一样
+> 登记在"Structure Prediction"分类下，负责检测/安装/回退状态；
+> **本页 = 使用层（工作台）** —— 面向"粘贴序列 → 出结构"的高频单步操作。
+> 两层已交叉链接：环境面板的 AlphaFold2 卡片带 **Open workbench**
+> 按钮直达本页，本页头部带 **Environment / Cluster** 入口返回管理层。
+> 它同时也可以作为画布节点嵌入自动化工作流（见第 3 章）。
+
 两条执行通道：
 
 | 通道 | 条件 | 流程 |
@@ -487,13 +495,27 @@ score = 100 · Σ(wᵢ · normᵢ) / Σwᵢ     norm = (v−min)/(max−min)
 
 ---
 
-## 8. 环境与工具链管理
+## 8. 环境与工具链管理（跨系统检测与安装）
 
-导航栏 → **Environment**（侧滑抽屉）：
+导航栏 → **Environment**（侧滑抽屉）。面板最上方是**平台横幅**：
 
 ![环境面板](images/17-environment.png)
 
-三个层级：
+```
+🖥 Debian GNU/Linux 13 (trixie) · x64 · bash
+Python: /home/z/.venv/bin/python3 (Python 3.12.14)
+Package managers: [apt-get] [uv] [pip]
+```
+
+- **操作系统**：实时探测（Linux 读 `/etc/os-release`，macOS 调
+  `sw_vers`，Windows 解析 `ver`），含发行版名；
+- **Python 解析**：按 python3 → venv → python → Windows `py -3` 顺序
+  找到引擎可用的解释器（能 `import numpy` 的那个）；
+- **包管理器探测**：apt / dnf / yum / pacman / zypper / apk / nix /
+  brew / winget / choco / scoop（系统级）+ conda / mamba / uv / pixi
+  （通用）+ pip（Python 级），探测到哪个就亮哪个 chip。
+
+横幅之下是三个层级：
 
 1. **Runtime**：python3 / numpy / scipy / biopython / git 实时版本探测；
 2. **Engines**：5 个内置真实算法引擎逐个**自检**（PASS/FAIL）：
@@ -502,11 +524,37 @@ score = 100 · Σ(wᵢ · normᵢ) / Σwᵢ     norm = (v−min)/(max−min)
 3. **External**：RFdiffusion、ProteinMPNN、Rosetta… 的安装状态
    （含回退映射说明）。
 
-**一键安装**：未安装的工具带 **Install** 按钮（含体积预估），
-点击后走真实安装（pip / git clone + pip），终端输出**实时流式**显示，
-安装完成自动重扫状态。安装位置与引擎运行时一致。
+### 8.1 跨系统检测原理
+
+二进制探测**不经过 shell**：直接扫描 `PATH` 目录（Windows 还会带上
+`PATHEXT` 的 .exe/.bat/.cmd 扩展名逐个匹配），所以 Linux / macOS /
+Windows 行为完全一致，不依赖 `which` / `where` 的差异。Python 模块探测
+用解析到的解释器真实 `import` 一次。
+
+### 8.2 一键安装：按系统选通道
+
+点 **Install** 后，安装命令按当前系统走不同通道，日志第一行会标注
+使用的通道：
+
+| 你的系统 | 命令类型 | 执行通道 |
+|---|---|---|
+| Linux / macOS | 任意 | `bash -c`（无 bash 时退化 `sh`） |
+| Windows | pip 类 | `cmd.exe`（命令重写为 `py -3 -m pip …`，规避 PEP-668） |
+| Windows | POSIX 脚本（git clone 流程等） | `wsl -e bash -c`（**WSL**） |
+| Windows | POSIX 脚本且无 WSL | 拒绝并提示 `wsl --install`，同时告知可用内置引擎回退 |
+
+**系统级依赖**（python3 / git）的一键安装按探测到的包管理器生成真实
+命令：Debian/Ubuntu → `sudo apt-get install -y python3`；macOS →
+`brew install python3`；Windows → `winget install -e --id Python.Python.3.12`
+（或 choco / scoop）。扫描时实时判定"是否可一键装"，界面上显示的命令
+就是按钮实际执行的命令。
+
+安装过程终端输出**实时流式**显示，安装完成自动重扫状态。安装位置与
+引擎运行时一致（pip 类装进解析到的解释器环境）。
 
 > 💡 没装任何外部工具也完全可用 —— 所有工具自动回退到内置引擎。
+> Windows 用户建议装 WSL：POSIX 系工具（RFdiffusion 等）的安装脚本
+> 会自动经 WSL 执行。
 
 ---
 
@@ -595,15 +643,21 @@ education / production 分类）。
 应用为移动端完整适配（375px 宽验证无溢出）：
 
 - **导航栏**收缩为图标条；
-- **表格 → 卡片列表**：筛选结果在手机上以卡片呈现，统计条保留：
+- **表格 → 卡片列表**：筛选结果在手机上以卡片呈现（排名、评分条、
+  指标），顶部统计卡与质量直方图保留：
 
-![移动端筛选](images/20-mobile-screening.png)
+![移动端筛选卡片](images/20-mobile-screening.png)
 
-- **节点库 → 抽屉**：窄屏下左侧节点库收纳为画布左上角的
-  **`+ Nodes`** 浮动按钮，点击以抽屉展开（桌面端仍为常驻侧栏）；
-- 画布支持触摸拖动/缩放：
+- **画布全屏可用**：节点目录在手机上默认收起，画布占满全宽，
+  触摸拖动 / 缩放 / 小地图照常工作：
 
 ![移动端画布](images/21-mobile-canvas.png)
+
+- **节点目录按需滑出**：画布左下工具栏的第一个按钮（面板图标）
+  唤出节点目录浮层；点选节点后自动收起，也可点浮层右上角 ×
+  或直接点半透明遮罩关闭：
+
+![移动端节点目录浮层](images/22-mobile-palette.png)
 
 - 所有抽屉（Environment / Cluster / PI Copilot）在窄屏全屏展开；
 - 触控目标 ≥ 44px。

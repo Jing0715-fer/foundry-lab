@@ -106,20 +106,40 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
 - DB 驱动的定时任务清扫器（随 `instrumentation.ts` 启动）：
   预约运行走与手动运行**同一条执行通道**，重启后错过的计划自动补跑。
 
-### 🖥️ 环境与工具链管理
+### 🖥️ 环境与工具链管理（跨平台）
 
-Environment 面板：运行时探测（python3 / numpy / scipy / biopython）、
-5 个内置引擎自检、外部工具状态 + 一键真实安装（pip / git clone，
-流式终端输出，装完自动重扫）。
+Environment 面板顶部是**平台横幅**：实时显示操作系统（含发行版）、架构、
+shell、解析到的 Python 解释器，以及探测到的包管理器
+（apt / dnf / pacman / zypper / brew / winget / choco / scoop / conda /
+mamba / uv / pixi / pip …）。
+
+- **检测跨系统**：二进制探测不依赖 `which`（直接扫描 PATH + Windows
+  PATHEXT 扩展名），Linux / macOS / Windows 行为完全一致；Python 解析
+  覆盖 python3 / venv / Windows `py -3` 启动器。
+- **安装分通道**：pip 类命令重写到本机解释器执行（`<py> -m pip`，
+  规避 PEP-668 拒装）；POSIX 安装脚本（git clone 流程、venv bin 路径）
+  在 Linux/macOS 走 bash，在 Windows 自动路由到 **WSL bash**（无 WSL
+  时给出可操作的提示而不是失败）。
+- **系统级依赖一键安装**：python3 / git 缺失时按检测到的包管理器生成
+  真实安装命令（如 `sudo apt-get install -y python3`、
+  `brew install python3`、`winget install -e --id Python.Python.3.12`），
+  一键可装性由扫描时实时判定。
+- 安装过程流式终端日志、装完自动重扫；注册表支持按 OS 配置安装命令
+  变体（`commandByOs`）。
 
 ![环境扫描面板](docs/images/17-environment.png)
 
 ### 📱 响应式与快捷操作
 
-移动端完整可用（卡片列表替代表格）、`Ctrl+K` 命令面板、完整键盘快捷键、
-新手引导巡览。
+移动端完整可用：筛选结果自动切换为**卡片列表**（排名/评分条/指标），
+节点画布**全屏可用**（节点目录变为按需滑出的浮层，加完节点自动收起），
+`Ctrl+K` 命令面板、完整键盘快捷键、新手引导巡览。
 
-![移动端](docs/images/20-mobile-screening.png) ![命令面板](docs/images/05-command-palette.png)
+![移动端筛选卡片](docs/images/20-mobile-screening.png)
+
+![移动端画布](docs/images/21-mobile-canvas.png)
+
+![命令面板](docs/images/05-command-palette.png)
 
 ---
 
@@ -248,6 +268,11 @@ bun run dev            # http://localhost:3000
 **Q：没有 GPU 集群能用吗？**
 可以。所有计算工具都有内置真实算法引擎回退，本机 `python3+numpy` 即可运行完整工作流。
 
+**Q：支持哪些操作系统？**
+Linux（apt/dnf/pacman/zypper/apk/nix）、macOS（brew）、Windows
+（winget/choco/scoop + WSL）。检测与安装跨系统一致：pip 类安装走本机
+Python，POSIX 安装脚本在 Windows 上经 WSL bash 执行。
+
 **Q：数据是模拟的吗？**
 不是。引擎产物（PDB/FASTA/metrics.json）由真实算法计算生成并落盘；
 筛选指标从这些真实产物收割。应用中不存在假数据路径。
@@ -255,6 +280,16 @@ bun run dev            # http://localhost:3000
 **Q：LLM 智能体会调用工具吗？**
 会。聊天中的智能体可自主发起 BLAST / PubMed 等真实 API 调用（最多 5 轮循环），
 调用过程与结果在聊天流内可见。
+
+**Q：AlphaFold2 是外部应用，为什么有独立页面而不只在"环境"里？**
+它在两层各司其职：**Environment（环境面板）是管理层** —— AlphaFold2
+与 RFdiffusion / ProteinMPNN / Rosetta 一样登记在外部工具清单中（结构预测
+分类），负责检测、安装提示与回退引擎状态；**侧边栏的 AlphaFold 页面是
+使用层（工作台）** —— 面向"粘贴序列 → 出结构"这类高频单步操作，提供
+集群连接、提交模式、作业监控与 3D 查看。RFdiffusion / ProteinMPNN 的
+使用层是画布节点，AlphaFold2 两者兼备（画布节点 + 工作台）。两层已做
+交叉链接：环境面板的 AlphaFold2 卡片带"Open workbench"按钮，工作台
+头部带"Environment / Cluster"入口。
 
 ---
 

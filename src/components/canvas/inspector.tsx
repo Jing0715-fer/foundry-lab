@@ -26,6 +26,7 @@ import {
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
+import { withHistorySuppressed } from "@/lib/history-apply";
 import { NODE_COLORS, nodeSpec } from "@/lib/workflow-catalog";
 import type { NodeDTO, NodeSpec, ParamSchema, AgentDTO } from "@/lib/types";
 import { Input } from "@/components/ui/input";
@@ -109,23 +110,71 @@ const STATUS_STYLES: Record<string, string> = {
   failed: "bg-rose-500/15 text-rose-600 dark:text-rose-300 border-rose-500/30",
 };
 
-/** Debounced PATCH for node updates. */
+/** Fire one merged PATCH body. Module-level so the unmount cleanup can use
+ *  it without re-binding (it touches nothing reactive). */
+function flushPendingPatch(id: string, body: Record<string, unknown>): void {
+  void (async () => {
+    try {
+      const res = await fetch(`/api/workflow/nodes/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      // The server is the source of truth for this node's name/params
+      // again — drop the dirty mark that protected them from the poll.
+      if (res.ok) useAppStore.getState().clearNodeDirty(id);
+    } catch {
+      /* swallow — optimistic state already applied; retried on next edit */
+    }
+  })();
+}
+
+/** Debounced PATCH for node updates.
+ *
+ *  One pending body + timer PER NODE: a rename followed within the debounce
+ *  window by a param edit MERGES into a single PATCH instead of cancelling
+ *  the rename (the old single-timer version silently dropped the earlier
+ *  field). Successful PATCHes also clear the node's dirty mark so the 3s
+ *  status poll may resume merging server rows (see store.mergeNodes). */
 function useDebouncedPatch() {
-  const timer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
-  return React.useCallback((id: string, body: Record<string, unknown>, delay = 350) => {
-    if (timer.current) clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
-      try {
-        await fetch(`/api/workflow/nodes/${id}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-      } catch {
-        /* swallow — optimistic state already applied */
+  const pending = React.useRef(
+    new Map<
+      string,
+      { body: Record<string, unknown>; timer: ReturnType<typeof setTimeout> | null }
+    >(),
+  );
+
+  const patch = React.useCallback(
+    (id: string, body: Record<string, unknown>, delay = 350) => {
+      const entry =
+        pending.current.get(id) ?? { body: {} as Record<string, unknown>, timer: null };
+      // Merge the new fields over the not-yet-flushed body (later edits of
+      // the SAME field win, different fields accumulate).
+      entry.body = { ...entry.body, ...body };
+      if (entry.timer) clearTimeout(entry.timer);
+      entry.timer = setTimeout(() => {
+        pending.current.delete(id);
+        flushPendingPatch(id, entry.body);
+      }, delay);
+      pending.current.set(id, entry);
+    },
+    [],
+  );
+
+  // Flush any still-pending bodies when the inspector unmounts (selection
+  // cleared / panel switched) so the last keystroke isn't lost to the timer.
+  React.useEffect(() => {
+    const map = pending.current;
+    return () => {
+      for (const [id, entry] of map) {
+        if (entry.timer) clearTimeout(entry.timer);
+        flushPendingPatch(id, entry.body);
       }
-    }, delay);
+      map.clear();
+    };
   }, []);
+
+  return patch;
 }
 
 /** Agent picker — used for agent nodes' refId param. */
@@ -1055,11 +1104,15 @@ function NodeInspectorImpl() {
   const isRunning = node.status === "running" || running;
 
   const onRename = (name: string) => {
+    // Mark dirty BEFORE the optimistic write so the 3s status poll can't
+    // clobber the new name while the debounced PATCH is still pending.
+    useAppStore.getState().markNodeDirty(node.id);
     upsertNode({ ...node, name });
     patch(node.id, { name });
   };
 
   const onPatchParam = (key: string, value: string | number | boolean) => {
+    useAppStore.getState().markNodeDirty(node.id);
     // For agent nodes, refId is a top-level field (not in params JSON).
     if (node.type === "agent" && key === "refId") {
       const updated = { ...node, refId: String(value) || null };
@@ -1113,6 +1166,8 @@ function NodeInspectorImpl() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          // Target the node's own workflow (multi-workflow contract).
+          workflowId: node.workflowId,
           type: node.type,
           name: `${node.name} copy`,
           x: node.x + 40,
@@ -1135,25 +1190,30 @@ function NodeInspectorImpl() {
   };
 
   const onRunAll = async () => {
+    const wf = useAppStore.getState().workflow;
+    if (!wf) return;
     setRunningAll(true);
     try {
-      const wfId = useAppStore.getState().workflow?.id;
       const res = await fetch("/api/workflow/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflowId: wfId }),
+        // Target the CURRENT workflow; the server 409s when a node is
+        // already running (double-execution guard).
+        body: JSON.stringify({ workflowId: wf.id }),
       });
+      if (res.status === 409) {
+        toast({ title: "Workflow is already running" });
+        return;
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
-      // Refetch the workflow to pull fresh node statuses.
-      const wfRes = wfId
-        ? await fetch(`/api/workflows/${wfId}`)
-        : await fetch("/api/workflow");
+      // Refetch the CURRENT workflow to pull fresh node statuses.
+      const wfRes = await fetch(`/api/workflows/${wf.id}`);
       if (wfRes.ok) {
-        const wf = await wfRes.json();
-        useAppStore.getState().setWorkflow(wf);
+        const fresh = await wfRes.json();
+        useAppStore.getState().setWorkflow(fresh);
       }
       toast({ title: "Workflow run complete", variant: "success" });
     } catch (e) {
@@ -1165,22 +1225,52 @@ function NodeInspectorImpl() {
   };
 
   const onDelete = async () => {
-    // Push history before removing the node.
+    // Push history, remove optimistically — and RESTORE the node when the
+    // server DELETE fails (the old code awaited the fetch without checking
+    // res.ok, so an HTTP 500 still toasted "Node deleted").
     const s = useAppStore.getState();
-    if (s.workflow) {
+    const before = s.workflow;
+    if (before) {
       useHistoryStore.getState().push({
-        nodes: s.workflow.nodes,
-        edges: s.workflow.edges,
+        nodes: before.nodes,
+        edges: before.edges,
         viewport: s.viewport,
       });
     }
+    // Suppressed: the inline push above is the single capture for this op.
+    withHistorySuppressed(() => removeNode(node.id));
     try {
-      await fetch(`/api/workflow/nodes/${node.id}`, { method: "DELETE" });
+      const res = await fetch(`/api/workflow/nodes/${node.id}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      toast({ title: "Node deleted", description: node.name, variant: "success" });
     } catch {
-      /* ignore — remove from local state anyway */
+      // Rollback: re-add the node + its edges exactly as they were.
+      const cur = useAppStore.getState().workflow;
+      if (cur && before) {
+        const nodeRow = before.nodes.find((n) => n.id === node.id);
+        const lostEdges = before.edges.filter(
+          (e) =>
+            (e.fromNodeId === node.id || e.toNodeId === node.id) &&
+            !cur.edges.some((x) => x.id === e.id),
+        );
+        if (nodeRow) {
+          withHistorySuppressed(() => {
+            useAppStore.getState().setWorkflow({
+              ...cur,
+              nodes: [...cur.nodes, nodeRow],
+              edges: [...cur.edges, ...lostEdges],
+            });
+          });
+        }
+      }
+      toast({
+        title: "Delete failed",
+        description: "The node is still on the server — restored locally.",
+        variant: "destructive",
+      });
     }
-    removeNode(node.id);
-    toast({ title: "Node deleted", description: node.name });
   };
 
   return (
@@ -1379,7 +1469,8 @@ function NodeInspectorImpl() {
               <AlertDialogHeader>
                 <AlertDialogTitle>Delete “{node.name}”?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  This removes the node and any connected edges. This cannot be undone.
+                  This removes the node and any connected edges. You can undo
+                  this with Ctrl+Z (Cmd+Z on Mac).
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

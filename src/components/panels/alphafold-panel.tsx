@@ -2,9 +2,17 @@
 
 // AlphaFold2 Structure Prediction panel — the app's single prediction tool.
 //
+// Layering note: AlphaFold2 is an EXTERNAL application, so its lifecycle
+// (detection / install / fallback-engine status) lives in the Environment
+// sheet alongside every other external tool. THIS page is the usage layer —
+// the interactive prediction workbench (sequence in → structure out), the
+// same way RFdiffusion/ProteinMPNN get their usage surface via canvas nodes.
+// The header cross-links both directions so the relationship stays visible.
+//
 // Sections (top → bottom):
 //   ① Header      — title + live status badges (# connections, cluster
-//                   alphafold2 probe state, local engine self-test)
+//                   alphafold2 probe state, local engine self-test) +
+//                   layer cross-links (Environment / Cluster)
 //   ② Guide       — the cluster tutorial as numbered steps with copyable
 //                   code blocks, the output-file table and the paths card
 //                   (Collapsible; open by default, remembered in
@@ -96,6 +104,7 @@ import {
   Info,
   Layers,
   Loader2,
+  Monitor,
   Pencil,
   Play,
   RefreshCw,
@@ -103,7 +112,6 @@ import {
   Square,
   Terminal,
   Trash2,
-  Wrench,
   XCircle,
   Zap,
 } from "lucide-react";
@@ -295,15 +303,7 @@ function inputSummary(params: Record<string, unknown>): string {
 
 // ── panel ───────────────────────────────────────────────────────────────────
 
-interface AlphaFoldPanelProps {
-  /** Opens the Environment sheet — dependency detection & one-click installs
-   *  are unified there (AlphaFold itself is scanned via TOOL_REGISTRY). */
-  onOpenEnvironment?: () => void;
-}
-
-export default function AlphaFoldPanel({
-  onOpenEnvironment,
-}: AlphaFoldPanelProps) {
+export default function AlphaFoldPanel() {
   const toast = useAppStore((s) => s.toast);
 
   // ── connections ─────────────────────────────────────────────────────────
@@ -979,6 +979,10 @@ export default function AlphaFoldPanel({
 
   // ── render ───────────────────────────────────────────────────────────────
 
+  // Cross-links into the management layer (open the sheets over this page).
+  const setEnvironmentSheetOpen = useAppStore((s) => s.setEnvironmentSheetOpen);
+  const setClusterSheetOpen = useAppStore((s) => s.setClusterSheetOpen);
+
   return (
     <div className="mx-auto w-full max-w-4xl space-y-6 p-4 sm:p-6">
       {/* ── ① Header ─────────────────────────────────────────────────── */}
@@ -992,6 +996,12 @@ export default function AlphaFoldPanel({
             Jumper et al. 2021 — five models per target, ranked by pLDDT. The
             cluster flow:{" "}
             <span className="font-mono text-xs">mgt → salloc → gpu05 → module load alphafold2</span>
+          </p>
+          <p className="max-w-xl text-xs text-muted-foreground">
+            The interactive workbench for the AlphaFold2 external application —
+            its detection, install and fallback-engine status live in{" "}
+            <span className="font-medium text-foreground">Environment</span>, and it can
+            also run as a canvas node inside workflows.
           </p>
         </div>
         <div className="flex flex-col items-start gap-2 sm:items-end">
@@ -1041,17 +1051,25 @@ export default function AlphaFoldPanel({
               </Badge>
             )}
           </div>
-          <div className="flex flex-wrap items-center gap-2">
-            {onOpenEnvironment && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={onOpenEnvironment}
-                title="依赖检测与安装统一在 Environment 管理"
-              >
-                <Wrench className="size-3.5" /> 环境状态
-              </Button>
-            )}
+          <div className="flex flex-wrap items-center gap-1.5">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setEnvironmentSheetOpen(true)}
+              aria-label="Open the Environment panel (tool detection and installs)"
+              title="Environment — external-tool detection, installs and engine status"
+            >
+              <Monitor className="size-3.5" /> Environment
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setClusterSheetOpen(true)}
+              aria-label="Open the Cluster panel (SSH connections and cluster jobs)"
+              title="Cluster — SSH/HPC connections, probes and cluster jobs"
+            >
+              <Server className="size-3.5" /> Cluster
+            </Button>
             <Button
               variant="outline"
               size="sm"

@@ -32,7 +32,10 @@ export function NodeSearch({ onClose }: { onClose: () => void }) {
     setHighlighted(0);
   }, [query, workflow]);
 
-  // Navigate to a node: center it in the viewport + select it
+  // Navigate to a node: center it in the viewport + select it. The CURRENT
+  // zoom is preserved (it used to hard-reset to 1, yanking the user from a
+  // comfortable zoom level to 100% on every search jump) — only the pan
+  // (x/y) is recentered around the node.
   const navigateToNode = React.useCallback(
     (node: NodeDTO) => {
       select(node.id);
@@ -41,10 +44,10 @@ export function NodeSearch({ onClose }: { onClose: () => void }) {
       const canvasEl = document.querySelector('[data-canvas="viewport"]');
       const w = canvasEl?.clientWidth ?? 900;
       const h = canvasEl?.clientHeight ?? 600;
+      const zoom = useAppStore.getState().viewport.zoom;
       setViewport({
-        x: Math.round(w / 2 - (node.x + CARD_W / 2)),
-        y: Math.round(h / 2 - (node.y + CARD_H / 2)),
-        zoom: 1,
+        x: Math.round(w / 2 - (node.x + CARD_W / 2) * zoom),
+        y: Math.round(h / 2 - (node.y + CARD_H / 2) * zoom),
       });
       onClose();
     },

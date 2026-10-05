@@ -14,14 +14,18 @@ import {
   Map as MapIcon,
   Download,
   FileImage,
+  PanelLeft,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
+import {
+  applyHistorySnapshot,
+  captureCurrentSnapshot,
+} from "@/lib/history-apply";
 import { ZOOM_MIN, ZOOM_MAX, CARD_W, CARD_H } from "@/lib/workflow-catalog";
 import { autoLayout } from "@/lib/canvas-utils";
-import type { NodeDTO, EdgeDTO } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -99,6 +103,10 @@ export function CanvasToolbar() {
   const minimapOpen = useMinimapStore((s) => s.open);
   const toggleMinimap = useMinimapStore((s) => s.toggle);
 
+  // Mobile node palette overlay (shared with NodePalette via the app store).
+  const mobilePaletteOpen = useAppStore((s) => s.mobilePaletteOpen);
+  const setMobilePaletteOpen = useAppStore((s) => s.setMobilePaletteOpen);
+
   // Reactive subscriptions for undo/redo availability.
   const pastCount = useHistoryStore((s) => s.past.length);
   const futureCount = useHistoryStore((s) => s.future.length);
@@ -135,67 +143,27 @@ export function CanvasToolbar() {
   const onResetView = () => setViewport({ x: 120, y: 80, zoom: 1 });
 
   // --- Undo / Redo --------------------------------------------------------
-  const applySnapshot = (snap: {
-    nodes: NodeDTO[];
-    edges: EdgeDTO[];
-    viewport: { x: number; y: number; zoom: number };
-  }) => {
-    const s = useAppStore.getState();
-    if (s.workflow) {
-      const curNodes = s.workflow.nodes;
-      const snapIds = new Set(snap.nodes.map((n) => n.id));
-      const curIds = new Set(curNodes.map((n) => n.id));
-      // Delete nodes that are in current but not in snapshot (undo of a create).
-      for (const n of curNodes) {
-        if (!snapIds.has(n.id)) {
-          void fetch(`/api/workflow/nodes/${n.id}`, { method: "DELETE" }).catch(() => {});
-        }
-      }
-      // Re-create nodes that are in snapshot but not in current (undo of a delete).
-      for (const n of snap.nodes) {
-        if (!curIds.has(n.id)) {
-          void fetch("/api/workflow/nodes", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            // Keep re-created nodes on the workflow being undone (not the
-            // server's first-workflow fallback).
-            body: JSON.stringify({ type: n.type, name: n.name, x: n.x, y: n.y, refId: n.refId ?? undefined, params: n.params, workflowId: s.workflow.id }),
-          }).catch(() => {});
-        }
-      }
-      // Sync edges: delete edges in current but not in snapshot, create edges in snapshot but not in current.
-      const snapEdgeKeys = new Set(snap.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
-      const curEdgeKeys = new Set(s.workflow.edges.map((e) => `${e.fromNodeId}->${e.toNodeId}`));
-      for (const e of s.workflow.edges) {
-        if (!snapEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
-          void fetch(`/api/workflow/edges/${e.id}`, { method: "DELETE" }).catch(() => {});
-        }
-      }
-      for (const e of snap.edges) {
-        if (!curEdgeKeys.has(`${e.fromNodeId}->${e.toNodeId}`)) {
-          void fetch("/api/workflow/edges", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ fromNodeId: e.fromNodeId, toNodeId: e.toNodeId, fromPort: e.fromPort, toPort: e.toPort }),
-          }).catch(() => {});
-        }
-      }
-      s.setWorkflow({ ...s.workflow, nodes: snap.nodes, edges: snap.edges });
-    }
-    s.setViewport(snap.viewport);
-  };
-
+  // Shares the guarded applyHistorySnapshot with the canvas's Ctrl+Z path
+  // (src/lib/history-apply.ts). The previous LOCAL copy had no history-
+  // capture guard, so every toolbar undo/redo re-recorded itself as a NEW
+  // history entry — undo became a toggle that never made progress. The
+  // shared helper also remaps re-created node/edge ids so the restored rows
+  // keep working for later PATCH/DELETE calls.
   const onUndo = () => {
-    const snap = useHistoryStore.getState().undo();
+    const current = captureCurrentSnapshot();
+    if (!current) return;
+    const snap = useHistoryStore.getState().undo(current);
     if (!snap) return;
-    applySnapshot(snap);
+    void applyHistorySnapshot(snap);
     toast({ title: "Undo" });
   };
 
   const onRedo = () => {
-    const snap = useHistoryStore.getState().redo();
+    const current = captureCurrentSnapshot();
+    if (!current) return;
+    const snap = useHistoryStore.getState().redo(current);
     if (!snap) return;
-    applySnapshot(snap);
+    void applyHistorySnapshot(snap);
     toast({ title: "Redo" });
   };
 
@@ -262,25 +230,30 @@ export function CanvasToolbar() {
 
   const onRunAll = async () => {
     if (runningAll) return;
+    const wf = useAppStore.getState().workflow;
+    if (!wf) return;
     setRunningAll(true);
     try {
-      const wfId = useAppStore.getState().workflow?.id;
       const res = await fetch("/api/workflow/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ workflowId: wfId }),
+        // Target the CURRENT workflow (multi-workflow contract); the server
+        // 409s when any node is already running (double-execution guard).
+        body: JSON.stringify({ workflowId: wf.id }),
       });
+      if (res.status === 409) {
+        toast({ title: "Workflow is already running" });
+        return;
+      }
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || `HTTP ${res.status}`);
       }
       // Refetch the workflow to pull fresh node statuses.
-      const wfRes = wfId
-        ? await fetch(`/api/workflows/${wfId}`)
-        : await fetch("/api/workflow");
+      const wfRes = await fetch(`/api/workflows/${wf.id}`);
       if (wfRes.ok) {
-        const wf = await wfRes.json();
-        useAppStore.getState().setWorkflow(wf);
+        const fresh = await wfRes.json();
+        useAppStore.getState().setWorkflow(fresh);
       }
       toast({ title: "Workflow run complete", variant: "success" });
     } catch (e) {
@@ -303,6 +276,22 @@ export function CanvasToolbar() {
           "flex items-center gap-1 rounded-lg border bg-card p-1 shadow-sm",
         )}
       >
+        {/* Mobile-only: toggle the node palette overlay. On phones the
+            palette no longer eats the canvas — it slides in on demand.
+            The button keeps its compact size-8 look but grows an invisible
+            pseudo-element hit pad (-inset-1.5 → 44px square) so the touch
+            target meets mobile a11y guidance. */}
+        <ToolButton
+          label={mobilePaletteOpen ? "Hide node palette" : "Show node palette"}
+          variant="ghost"
+          size="icon"
+          className="relative size-8 after:absolute after:-inset-1.5 after:content-[''] md:hidden"
+          onClick={() => setMobilePaletteOpen(!mobilePaletteOpen)}
+          aria-expanded={mobilePaletteOpen}
+        >
+          <PanelLeft className="size-4" />
+        </ToolButton>
+
         {/* Undo */}
         <ToolButton
           label="Undo (Ctrl+Z)"

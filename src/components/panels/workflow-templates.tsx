@@ -165,7 +165,9 @@ export function WorkflowTemplates({
     try {
       const text = await file.text();
       const data = parseWorkflowJSON(text);
-      const result = await importWorkflow(data);
+      // Pass the CURRENT workflow id so the import clears + rebuilds the
+      // workflow the user is looking at (multi-workflow contract).
+      const result = await importWorkflow(data, workflow?.id);
       setWorkflow(result);
       toast({
         title: "Workflow imported",
@@ -218,6 +220,9 @@ export function WorkflowTemplates({
         }
 
         const body: Record<string, unknown> = {
+          // Target the CURRENT workflow (multi-workflow contract) — the
+          // template replaces the graph the user is looking at.
+          workflowId: workflow?.id,
           type: n.type,
           name: n.name,
           x: n.x,
@@ -267,8 +272,12 @@ export function WorkflowTemplates({
         }
       }
 
-      // 5. Refresh the workflow from the server (canonical truth).
-      const wfRes = await fetch("/api/workflow");
+      // 5. Refresh the workflow from the server (canonical truth) — by id,
+      //      so a non-first current workflow isn't clobbered by /api/workflow
+      //      (which always returns the FIRST workflow).
+      const wfRes = await fetch(
+        workflow?.id ? `/api/workflows/${workflow.id}` : "/api/workflow",
+      );
       if (wfRes.ok) {
         const wf = await wfRes.json();
         setWorkflow({

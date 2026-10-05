@@ -14,6 +14,40 @@ export interface ToastItem {
   variant?: "default" | "destructive" | "success";
 }
 
+// --- Polling-merge bookkeeping (module-level — see mergeNodes) --------------
+
+/**
+ * Timestamps (ms) of node ids that entered the local store recently, keyed
+ * by id. mergeNodes-with-edges refuses to REAP a local id that is missing
+ * from an incoming poll while its entry is younger than
+ * LOCAL_NODE_GRACE_MS — this covers the race where a create POST resolves
+ * while an older poll request was already in flight (that poll's response
+ * predates the new node and would otherwise delete it locally the very
+ * moment it appears). Entries are dropped as soon as an incoming poll
+ * echoes the id back (the server knows about it).
+ */
+const localNodeArrivedAt = new Map<string, number>();
+const LOCAL_NODE_GRACE_MS = 5000;
+
+/** Optimistic edges are tagged with a "tmp_" id prefix until the server
+ *  confirms the real row (see attemptConnect in node-card.tsx). */
+const TEMP_EDGE_PREFIX = "tmp_";
+
+function isTempEdge(e: EdgeDTO): boolean {
+  return e.id.startsWith(TEMP_EDGE_PREFIX);
+}
+
+/** Shallow params equality — params values are primitives by DTO contract. */
+function paramsEqual(
+  a: Record<string, string | number | boolean>,
+  b: Record<string, string | number | boolean>,
+): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((k) => a[k] === b[k]);
+}
+
 interface AppState {
   // workflow
   workflow: WorkflowDTO | null;
@@ -33,12 +67,26 @@ interface AppState {
   agents: AgentDTO[];
   agentsLoading: boolean;
 
+  /** Node ids with local, not-yet-persisted name/param edits (the debounced
+   *  PATCH is still in its 350ms window or in flight). mergeNodes protects
+   *  these fields from being clobbered by the 3s status poll; ids are
+   *  cleared when the PATCH resolves or the server echoes the edit back. */
+  dirtyNodeIds: string[];
+
   // ui
   activePanel: "canvas" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "screening" | "dashboard";
   paletteQuery: string;
+  /** Mobile-only: node palette shown as an overlay over the canvas (<md). */
+  mobilePaletteOpen: boolean;
   inspectorTab: string;
   toasts: ToastItem[];
   sidebarCollapsed: boolean;
+  /** Environment sheet (tool lifecycle management) open state — global so
+   * any component (e.g. the AlphaFold workbench header) can deep-link into
+   * the management layer from the usage layer. */
+  environmentSheetOpen: boolean;
+  /** Cluster sheet (SSH/HPC lane) open state — same cross-link rationale. */
+  clusterSheetOpen: boolean;
 
   // actions: workflow
   setWorkflow: (w: WorkflowDTO | null) => void;
@@ -51,7 +99,16 @@ interface AppState {
   rollbackEdge: (tempId: string) => void;
   removeEdge: (id: string) => void;
   setNodeStatus: (id: string, status: NodeDTO["status"], progress?: number, result?: string, logs?: string) => void;
-  mergeNodes: (incoming: NodeDTO[]) => void;
+  /** Merge polled node rows into the store. Pass the incoming EDGES array
+   *  as the second argument when the caller polled a whole workflow: the
+   *  merge then also (a) reaps local nodes whose ids are absent from the
+   *  incoming set (server-side delete) and (b) replaces edges wholesale —
+   *  except optimistic "tmp_" edges whose server confirmation is pending. */
+  mergeNodes: (incoming: NodeDTO[], incomingEdges?: EdgeDTO[]) => void;
+  /** Mark a node as having local, unsaved name/param edits. */
+  markNodeDirty: (id: string) => void;
+  /** Clear the dirty mark (PATCH resolved / server echoed the edit). */
+  clearNodeDirty: (id: string) => void;
 
   // actions: canvas
   select: (id: string | null) => void;
@@ -73,8 +130,11 @@ interface AppState {
   // actions: ui
   setActivePanel: (p: AppState["activePanel"]) => void;
   setPaletteQuery: (q: string) => void;
+  setMobilePaletteOpen: (b: boolean) => void;
   setInspectorTab: (t: string) => void;
   setSidebarCollapsed: (b: boolean) => void;
+  setEnvironmentSheetOpen: (b: boolean) => void;
+  setClusterSheetOpen: (b: boolean) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
   dismissToast: (id: string) => void;
 }
@@ -94,14 +154,26 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   agents: [],
   agentsLoading: false,
+  dirtyNodeIds: [],
 
   activePanel: "canvas",
   paletteQuery: "",
+  mobilePaletteOpen: false,
   inspectorTab: "params",
   toasts: [],
   sidebarCollapsed: false,
+  environmentSheetOpen: false,
+  clusterSheetOpen: false,
 
-  setWorkflow: (w) => set({ workflow: w, loading: false, error: null }),
+  setWorkflow: (w) =>
+    set((s) => ({
+      workflow: w,
+      loading: false,
+      error: null,
+      // A workflow SWITCH invalidates the pending-edit marks of the old
+      // graph (their debounced PATCHes targeted the old nodes).
+      ...(w && s.workflow && w.id !== s.workflow.id ? { dirtyNodeIds: [] } : {}),
+    })),
   setLoading: (b) => set({ loading: b }),
   setError: (e) => set({ error: e, loading: false }),
 
@@ -109,6 +181,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => {
       if (!s.workflow) return {};
       const exists = s.workflow.nodes.some((x) => x.id === n.id);
+      // Track when an id first enters the local store so mergeNodes can
+      // distinguish "server deleted it" from "an in-flight poll predates
+      // this node" (see localNodeArrivedAt above).
+      if (!exists) localNodeArrivedAt.set(n.id, Date.now());
+      else localNodeArrivedAt.delete(n.id);
       const nodes = exists
         ? s.workflow.nodes.map((x) => (x.id === n.id ? n : x))
         : [...s.workflow.nodes, n];
@@ -188,13 +265,83 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
-  mergeNodes: (incoming) =>
+  mergeNodes: (incoming, incomingEdges) =>
     set((s) => {
       if (!s.workflow) return {};
+      const dirty = new Set(s.dirtyNodeIds);
+      const now = Date.now();
       const byId = new Map(s.workflow.nodes.map((n) => [n.id, n]));
-      for (const n of incoming) byId.set(n.id, { ...byId.get(n.id), ...n });
-      return { workflow: { ...s.workflow, nodes: [...byId.values()] } };
+      let nextDirty = s.dirtyNodeIds;
+      for (const n of incoming) {
+        // The server now knows about this id — future polls may reap it if
+        // it ever disappears again.
+        localNodeArrivedAt.delete(n.id);
+        const cur = byId.get(n.id);
+        if (cur && dirty.has(n.id)) {
+          // Protect locally-edited fields while the debounced PATCH is still
+          // pending: keep the user's name/params/position and take only the
+          // live run state (status/progress/logs/result/timestamps) from the
+          // server — otherwise the 3s poll visually reverts the edit mid-
+          // keystroke.
+          byId.set(n.id, {
+            ...cur,
+            status: n.status,
+            progress: n.progress,
+            result: n.result,
+            logs: n.logs,
+            startedAt: n.startedAt,
+            completedAt: n.completedAt,
+            updatedAt: n.updatedAt,
+          });
+          // The edit landed when the server row mirrors the local edits —
+          // then the dirty mark (and the protection) can be dropped.
+          const landed = n.name === cur.name && paramsEqual(n.params, cur.params);
+          if (landed && nextDirty.includes(n.id)) {
+            nextDirty = nextDirty.filter((x) => x !== n.id);
+          }
+        } else {
+          byId.set(n.id, { ...cur, ...n });
+        }
+      }
+      let nodes = [...byId.values()];
+      // Whole-workflow polls: also drop local nodes the server no longer
+      // has (someone else / another tab deleted them). Optimistic creations
+      // inside the grace window are exempt — see localNodeArrivedAt.
+      if (incomingEdges) {
+        const incomingIds = new Set(incoming.map((n) => n.id));
+        nodes = nodes.filter((n) => {
+          if (incomingIds.has(n.id)) return true;
+          const arrivedAt = localNodeArrivedAt.get(n.id);
+          if (arrivedAt !== undefined && now - arrivedAt < LOCAL_NODE_GRACE_MS) {
+            return true;
+          }
+          localNodeArrivedAt.delete(n.id);
+          return false;
+        });
+      }
+      // Edges: replace wholesale with the incoming set when the caller
+      // polled a whole workflow, EXCEPT optimistic "tmp_" edges whose
+      // server confirmation (confirmEdge) is still in flight — dropping
+      // those would lose the pending connection locally even though the
+      // server row exists.
+      const edges = incomingEdges
+        ? [
+            ...incomingEdges,
+            ...s.workflow.edges.filter((e) => isTempEdge(e)),
+          ]
+        : s.workflow.edges;
+      return {
+        workflow: { ...s.workflow, nodes, edges },
+        ...(nextDirty !== s.dirtyNodeIds ? { dirtyNodeIds: nextDirty } : {}),
+      };
     }),
+
+  markNodeDirty: (id) =>
+    set((s) =>
+      s.dirtyNodeIds.includes(id) ? {} : { dirtyNodeIds: [...s.dirtyNodeIds, id] },
+    ),
+  clearNodeDirty: (id) =>
+    set((s) => ({ dirtyNodeIds: s.dirtyNodeIds.filter((x) => x !== id) })),
 
   select: (id) => set({ selectedId: id, selectedIds: id ? [id] : [] }),
   toggleSelect: (id) =>
@@ -227,8 +374,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   setActivePanel: (p) => set({ activePanel: p }),
   setPaletteQuery: (q) => set({ paletteQuery: q }),
+  setMobilePaletteOpen: (b) => set({ mobilePaletteOpen: b }),
   setInspectorTab: (t) => set({ inspectorTab: t }),
   setSidebarCollapsed: (b) => set({ sidebarCollapsed: b }),
+  setEnvironmentSheetOpen: (b) => set({ environmentSheetOpen: b }),
+  setClusterSheetOpen: (b) => set({ clusterSheetOpen: b }),
 
   toast: (t) => {
     const id = Math.random().toString(36).slice(2, 9);

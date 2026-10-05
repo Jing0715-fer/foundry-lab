@@ -115,8 +115,10 @@ export function PiCopilot() {
       };
       setMessages((prev) => [...prev, assistantMsg]);
 
-      // Refresh the workflow to show new nodes.
-      const wfRes = await fetch("/api/workflow");
+      // Refresh the CURRENT workflow (by id — /api/workflow always returns
+      // the FIRST workflow and would silently switch the canvas away from a
+      // non-first current one) to show new nodes.
+      const wfRes = await fetch(`/api/workflows/${workflow.id}`);
       if (wfRes.ok) {
         const wf = await wfRes.json();
         setWorkflow(wf);
@@ -128,16 +130,15 @@ export function PiCopilot() {
           title: "PI is running the workflow...",
           variant: "default",
         });
-        const wfId = workflow?.id;
+        // Target the CURRENT workflow (multi-workflow contract); 409 means
+        // a node is already running — not an error worth a red toast.
         await fetch("/api/workflow/run", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ workflowId: wfId }),
+          body: JSON.stringify({ workflowId: workflow.id }),
         });
         // Refresh again after run.
-        const wfRes2 = wfId
-          ? await fetch(`/api/workflows/${wfId}`)
-          : await fetch("/api/workflow");
+        const wfRes2 = await fetch(`/api/workflows/${workflow.id}`);
         if (wfRes2.ok) {
           const wf2 = await wfRes2.json();
           setWorkflow(wf2);

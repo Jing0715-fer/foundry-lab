@@ -1,11 +1,14 @@
 // POST /api/workflow/nodes — create a Node.
-// body.workflowId (optional string): target workflow, validated via
-// findUnique (404→400 if it doesn't exist). Falls back to the first workflow
-// so single-workflow clients keep working.
+//
+// Target workflow resolution:
+//   - body.workflowId present (multi-workflow switcher) → the node is created
+//     in THAT workflow; 404 when the id doesn't exist.
+//   - absent → the legacy default: the FIRST workflow (oldest by createdAt
+//     asc), so pre-switcher clients keep working unchanged.
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { toNodeDTO } from "@/lib/workflow-engine";
+import { toNodeDTO, resolveTargetWorkflow } from "@/lib/workflow-engine";
 
 export async function POST(request: Request) {
   try {
@@ -27,22 +30,13 @@ export async function POST(request: Request) {
       );
     }
 
-    const hasWorkflowId = typeof workflowId === "string" && workflowId.trim() !== "";
-    const wf = hasWorkflowId
-      ? await db.workflow.findUnique({
-          where: { id: (workflowId as string).trim() },
-        })
-      : await db.workflow.findFirst({ orderBy: { createdAt: "asc" } });
-    if (hasWorkflowId && !wf) {
+    // Resolve the target workflow (explicit workflowId → that one, else the
+    // first workflow by createdAt asc). 404 when an explicit id is missing.
+    const target = await resolveTargetWorkflow(workflowId);
+    if (!target.ok) {
       return NextResponse.json(
-        { error: `Workflow not found: ${workflowId}` },
-        { status: 400 },
-      );
-    }
-    if (!wf) {
-      return NextResponse.json(
-        { error: "No workflow exists" },
-        { status: 404 },
+        { error: target.error },
+        { status: target.status },
       );
     }
 
@@ -53,7 +47,7 @@ export async function POST(request: Request) {
 
     const node = await db.node.create({
       data: {
-        workflowId: wf.id,
+        workflowId: target.workflow.id,
         type,
         name,
         refId: typeof refId === "string" ? refId : null,

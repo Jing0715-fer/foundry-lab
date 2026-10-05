@@ -17,11 +17,15 @@
 // All candidate pdbPath/fastaPath live under <cwd>/outputs/ so
 // /api/tools/file?path=<abs> can serve them.
 
-import { execSync, spawn } from "child_process";
+import { spawn } from "child_process";
 import { existsSync, promises as fsp } from "fs";
 import { basename, dirname, extname, join, resolve, sep } from "path";
 import { db } from "./db";
 import { toNodeDTO } from "./workflow-engine";
+// Shared engine-python resolver (single source of truth with real-executor +
+// the scan route — see fix for the review's "private python candidate list
+// drifts from the platform layer" finding).
+import { resolveEnginePython } from "./real-executor";
 import type {
   NodeDTO,
   PromoteResultDTO,
@@ -39,30 +43,9 @@ const SCREENING_ROOT = join(OUTPUTS_ROOT, "screening");
 const ALGORITHMS_DIR = resolve(CWD, "scripts", "algorithms");
 const ENGINE_TIMEOUT_MS = 120_000;
 
-/** python3 candidates probed with `import numpy` (engine runtime requirement). */
-const PYTHON_CANDIDATES = ["python3", "/home/z/.venv/bin/python3", "/usr/bin/python3"];
-let cachedPython: string | null | undefined;
-
-function resolveEnginePython(): string | null {
-  if (cachedPython !== undefined) return cachedPython;
-  for (const cand of PYTHON_CANDIDATES) {
-    try {
-      execSync(`${cand} -c "import numpy" 2>/dev/null`, { stdio: "pipe" });
-      cachedPython = cand;
-      return cand;
-    } catch {
-      /* try next */
-    }
-  }
-  cachedPython = null;
-  return null;
-}
-
-/** Invalidate the resolved-python cache (called after a runtime install
- * job completes so the next scan picks up the new interpreter). */
-export function invalidateScreeningPython(): void {
-  cachedPython = undefined;
-}
+// (Python resolution: the shared resolveEnginePython from real-executor.ts —
+// platform-env's candidate list (venv → python3 → python → py -3, numpy
+// probed) is the ONE list every engine lane uses.)
 
 // ── Errors ───────────────────────────────────────────────────────────────────
 
@@ -485,34 +468,6 @@ interface HarvestedCandidate {
   fileCount: number;
 }
 
-/**
- * Copy a file that lives OUTSIDE <cwd>/outputs/ into
- * outputs/screening/<screeningId>/ (keeps basename; prefixes an index on
- * collision; reuses an identical-size copy so rescans stay idempotent).
- */
-async function copyIntoScreeningDir(stagingDir: string, src: string): Promise<string> {
-  await fsp.mkdir(stagingDir, { recursive: true }).catch(() => {});
-  const dest = join(stagingDir, basename(src));
-  if (!existsSync(dest)) {
-    await fsp.copyFile(src, dest).catch(() => {});
-    return existsSync(dest) ? dest : src;
-  }
-  try {
-    const [s1, s2] = await Promise.all([fsp.stat(src), fsp.stat(dest)]);
-    if (s1.size === s2.size) return dest; // same file copied on an earlier harvest
-  } catch {
-    /* fall through to index prefix */
-  }
-  for (let i = 1; i < 1000; i++) {
-    const alt = join(stagingDir, `${i}_${basename(src)}`);
-    if (!existsSync(alt)) {
-      await fsp.copyFile(src, alt).catch(() => {});
-      return existsSync(alt) ? alt : src;
-    }
-  }
-  return src;
-}
-
 /** Sort run dirs by mtime (then path) for stable runN assignment. */
 async function sortDirsByMtime(dirs: string[]): Promise<string[]> {
   const stamped = await Promise.all(
@@ -571,11 +526,13 @@ function applyRunMetrics(
 ): number | null {
   let length: number | null = null;
 
-  // 1) Diffusion / antibody engines: designs[] array — design_N.pdb (and
-  //    antibody fv_design_N.pdb) → entry design === N+1, else designs[N].
+  // 1) Diffusion engine: designs[] array — design_N.pdb → entry design === N+1.
   const designs =
     runJson && Array.isArray(runJson.designs) ? (runJson.designs as Record<string, unknown>[]) : null;
   if (designs) {
+    // Diffusion design_N.pdb AND antibody fv_design_N.pdb (suffix match) —
+    // entry design === N+1, else fall back to array index (antibody is 1-based
+    // by file order).
     const m = /design[_-]?(\d+)$/i.exec(stem);
     if (m) {
       const idx = parseInt(m[1], 10);
@@ -659,9 +616,10 @@ function buildRunDetail(runJson: Record<string, unknown> | null, dir: string): s
 
 /**
  * Harvest candidates from a list of files (node ##OUTPUTS## trailers, job
- * outputFiles, demo engine runs). Only existing files are kept; files outside
- * outputs/ are copied into outputs/screening/<id>/; remaining files are
- * grouped by parent directory ("run") and turned into candidates:
+ * outputFiles, demo engine runs). Only existing files are kept; only files
+ * whose resolved absolute path is UNDER <cwd>/outputs/ (where every engine
+ * and cluster sync-back writes) are harvested; remaining files are grouped by
+ * parent directory ("run") and turned into candidates:
  *   - every *.pdb → one candidate (metrics from the run's metrics.json /
  *     ranking_debug.json; cheap structural PDB parse as fallback for length;
  *     paired <stem>.fasta/.fa → fastaPath + sequence),
@@ -689,15 +647,43 @@ async function harvestFromFiles(
     }
   }
 
-  // 2. Files outside outputs/ → copy into outputs/screening/<id>/.
-  const stagingDir = join(SCREENING_ROOT, screeningId);
+  // 2. SECURITY — trust boundary. Node logs (and therefore their ##OUTPUTS##
+  //    trailers) and ToolJob rows are client-writable (PATCH /api/workflow/
+  //    nodes/[id] accepts arbitrary `logs`), so every listed path here is
+  //    UNTRUSTED input. The old behavior copied any existing file into
+  //    outputs/screening/<id>/ where GET /api/tools/file happily serves it —
+  //    an arbitrary-file-read chain (e.g. a crafted trailer naming
+  //    /etc/passwd). Two defenses, matching the /api/tools/file guard:
+  //      (a) the resolved absolute path must be INSIDE the project's
+  //          outputs/ root (all legit engine/cluster/demo artifacts live
+  //          there — behavior for them is unchanged; nothing from outside
+  //          is ever copied in anymore);
+  //      (b) only structure/sequence/metric file extensions are harvested
+  //          (.pdb/.ent/.fasta/.fa/.json) — anything else is skipped with a
+  //          debug log line, not an error (a stray metrics file shouldn't
+  //          fail a whole campaign).
+  const HARVEST_EXTENSIONS = new Set([
+    ".pdb",
+    ".ent", // legacy PDB extension
+    ".fasta",
+    ".fa",
+    ".json",
+  ]);
   const placed: string[] = [];
   for (const f of existingFiles) {
-    if (f.startsWith(OUTPUTS_ROOT + sep)) {
-      placed.push(f);
-    } else {
-      placed.push(await copyIntoScreeningDir(stagingDir, f));
+    const ext = extname(f).toLowerCase();
+    if (!HARVEST_EXTENSIONS.has(ext)) {
+      console.log(`[screening] harvest skipped non-whitelisted extension: ${f}`);
+      continue;
     }
+    const insideOutputs = f === OUTPUTS_ROOT || f.startsWith(OUTPUTS_ROOT + sep);
+    if (!insideOutputs) {
+      console.log(
+        `[screening] harvest skipped file outside the outputs/ root (possible path-injection in source trailer): ${f}`,
+      );
+      continue;
+    }
+    placed.push(f);
   }
 
   // 3. Group by parent directory ("run").
@@ -1253,17 +1239,12 @@ export async function deleteScreening(id: string): Promise<void> {
   const existing = await db.screening.findUnique({ where: { id } });
   if (!existing) throw new ScreeningError("Screening not found", 404);
   await db.screening.delete({ where: { id } });
-  // Best-effort cleanup of the campaign's harvested engine artifacts
-  // (outputs/screening/<id>/ can reach hundreds of MB for demo runs).
-  // Failure is logged and ignored — the DB row is already gone.
-  try {
-    await fsp.rm(join(SCREENING_ROOT, id), { recursive: true, force: true });
-  } catch (err) {
-    console.warn(
-      `[screening] deleteScreening: failed to remove artifacts for ${id}:`,
-      err instanceof Error ? err.message : err,
-    );
-  }
+  // Also remove the campaign's on-disk staging tree (outputs/screening/<id>/ —
+  // demo runs + any harvested copies). Best-effort: a missing or read-only
+  // dir must not fail the DELETE itself.
+  await fsp
+    .rm(join(SCREENING_ROOT, id), { recursive: true, force: true })
+    .catch(() => {});
 }
 
 const CANDIDATE_STATUSES: readonly string[] = [
@@ -1383,6 +1364,13 @@ export async function promoteCandidates(
   if (nodeName !== undefined && (typeof nodeName !== "string" || !nodeName.trim())) {
     throw new ScreeningError("nodeName must be a non-empty string", 400);
   }
+  // Optional target workflow (the frontend promote-dialog passes the
+  // CURRENT workflow from the store). Absent → legacy behavior: the first
+  // workflow by createdAt asc. Unknown id → honest 404 instead of quietly
+  // promoting onto some other workflow.
+  if (workflowId !== undefined && (typeof workflowId !== "string" || !workflowId.trim())) {
+    throw new ScreeningError("workflowId must be a non-empty workflow id", 400);
+  }
 
   const screening = await db.screening.findUnique({ where: { id } });
   if (!screening) throw new ScreeningError("Screening not found", 404);
@@ -1409,28 +1397,24 @@ export async function promoteCandidates(
     if (files.length >= 20) break;
   }
 
-  // Placement: max node x + 340, y 60 (fallback 120/80). Target workflow =
-  // the client-specified workflowId (validated) so promoted nodes land on
-  // the workflow the user is actually looking at; fallback = first workflow
-  // (multi-workflow apps would otherwise scatter "phantom" nodes).
-  const wf =
-    typeof workflowId === "string" && workflowId
-      ? await db.workflow.findUnique({
-          where: { id: workflowId },
-          include: { nodes: true },
-        })
-      : await db.workflow.findFirst({
-          orderBy: { createdAt: "asc" },
-          include: { nodes: true },
-        });
-  if (workflowId && !wf) {
-    throw new ScreeningError(
-      `Workflow not found: ${workflowId}`,
-      400,
-    );
-  }
+  // Placement: on the TARGET workflow (explicit workflowId, else the first
+  // workflow): max node x + 340, y 60 (fallback 120/80).
+  const wf = workflowId
+    ? await db.workflow.findUnique({
+        where: { id: workflowId },
+        include: { nodes: true },
+      })
+    : await db.workflow.findFirst({
+        orderBy: { createdAt: "asc" },
+        include: { nodes: true },
+      });
   if (!wf) {
-    throw new ScreeningError("No workflow exists to place the promoted node on", 404);
+    throw new ScreeningError(
+      workflowId
+        ? `Workflow ${workflowId} not found`
+        : "No workflow exists to place the promoted node on",
+      404,
+    );
   }
   const nodeXs = wf.nodes.map((n) =>
     typeof n.x === "number" ? n.x : (n.x as { toNumber(): number }).toNumber(),

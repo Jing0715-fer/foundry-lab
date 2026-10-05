@@ -83,6 +83,10 @@ export function TemplateMarketplace({
       try {
         const { toast, setActivePanel, workflow, setWorkflow } =
           useAppStore.getState();
+        // The current workflow id (multi-workflow contract): the template
+        // replaces the graph the user is looking at, and the refresh below
+        // re-reads THAT workflow instead of the first one.
+        const workflowId = workflow?.id;
 
         // 1. Resolve refTitle → agent ID (fetch /api/agents once).
         let agents: AgentDTO[] = [];
@@ -112,6 +116,8 @@ export function TemplateMarketplace({
           }
 
           const body: Record<string, unknown> = {
+            // Target the CURRENT workflow (multi-workflow contract).
+            workflowId,
             type: n.type,
             name: n.name,
             x: n.x,
@@ -159,8 +165,11 @@ export function TemplateMarketplace({
           }
         }
 
-        // 5. Refresh the workflow from the server (canonical truth).
-        const wfRes = await fetch("/api/workflow");
+        // 5. Refresh the workflow from the server (canonical truth) — by id
+        //    so a non-first current workflow isn't clobbered.
+        const wfRes = await fetch(
+          workflowId ? `/api/workflows/${workflowId}` : "/api/workflow",
+        );
         if (wfRes.ok) {
           const wf = await wfRes.json();
           setWorkflow({

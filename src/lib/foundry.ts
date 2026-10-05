@@ -14,10 +14,9 @@
 // managed by the `foundry install` CLI. See scripts/foundry/run_mpnn.py for
 // the real MPNN inference bridge.
 
-import { spawnSync } from "child_process";
+import { execSync } from "child_process";
 import { existsSync } from "fs";
 import { join, resolve } from "path";
-import { runCapture } from "./platform";
 
 export interface FoundryCheckpoint {
   /** File name, e.g. ligandmpnn_v_32_010_25.pt */
@@ -60,15 +59,10 @@ export interface FoundryStatus {
 // ── Python resolution ───────────────────────────────────────────────────────
 
 const FOUNDRY_PY_CANDIDATES = (): string[] => {
-  // venv layout differs by platform: bin/python vs Scripts\python.exe
-  const venvLayout =
-    process.platform === "win32"
-      ? join("external-tools", "foundry", ".venv", "Scripts", "python.exe")
-      : join("external-tools", "foundry", ".venv", "bin", "python");
   const list = [
     process.env.FOUNDRY_PYTHON,
     "/home/z/.venv-foundry/bin/python",
-    join(process.cwd(), venvLayout),
+    join(process.cwd(), "external-tools/foundry/.venv/bin/python"),
   ].filter((p): p is string => !!p);
   return list;
 };
@@ -77,22 +71,19 @@ let cachedPython: string | null | undefined;
 
 /**
  * Resolve a python interpreter that can import the foundry MPNN stack.
- * `null` when foundry is not installed on this host. spawnSync ARRAY form —
- * no shell, so venv paths with spaces survive.
+ * `null` when foundry is not installed on this host.
  */
 export function resolveFoundryPython(): string | null {
   if (cachedPython !== undefined) return cachedPython;
   for (const cand of FOUNDRY_PY_CANDIDATES()) {
     if (!existsSync(cand)) continue;
     try {
-      const res = spawnSync(cand, ["-c", "import foundry, mpnn"], {
-        stdio: "pipe",
-        timeout: 30000,
-      });
-      if (res.status === 0 && !res.error) {
-        cachedPython = cand;
-        return cand;
-      }
+      execSync(
+        `${cand} -c "import foundry, mpnn"`,
+        { stdio: "pipe", timeout: 30000 },
+      );
+      cachedPython = cand;
+      return cand;
     } catch {
       /* candidate lacks the package — try next */
     }
@@ -112,8 +103,16 @@ export function invalidateFoundryCache(): void {
 const STATUS_TTL_MS = 60_000;
 let statusCache: { at: number; status: FoundryStatus } | undefined;
 
-// The old string-shelling `sh()` was replaced by platform.runCapture —
-// spawnSync ARRAY form (no shell), stdout only, null on failure/timeout.
+/** Shell out safely with a hard timeout; returns trimmed output or null. */
+function sh(cmd: string, timeoutMs = 30000): string | null {
+  try {
+    return execSync(cmd, { stdio: "pipe", timeout: timeoutMs })
+      .toString()
+      .trim();
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Full platform status (cached 60s). Cheap after the first call.
@@ -127,10 +126,7 @@ export function getFoundryStatus(): FoundryStatus {
   const status: FoundryStatus = {
     installed: !!py,
     python: py,
-    // venv CLI entry: bin/foundry (POSIX) / Scripts\foundry.exe (win32)
-    cli: py
-      ? resolve(py, "..", process.platform === "win32" ? "foundry.exe" : "foundry")
-      : null,
+    cli: py ? resolve(join(py, "..", "foundry")) : null,
     version: null,
     torch: null,
     cuda: false,
@@ -145,37 +141,27 @@ export function getFoundryStatus(): FoundryStatus {
   }
 
   // Wheel version + torch build + cuda in one process (imports are heavy).
-  const meta = runCapture(
-    py,
-    [
-      "-c",
-      "import importlib.metadata as im, torch; " +
-        "print(im.version('rc-foundry')); " +
-        "print(torch.__version__); " +
-        "print(torch.cuda.is_available())",
-    ],
+  const meta = sh(
+    `${py} -c "import importlib.metadata as im, torch; print(im.version('rc-foundry')); print(torch.__version__); print(torch.cuda.is_available())"`,
     45000,
   );
   if (meta) {
-    const [ver, torchV, cuda] = meta.trim().split(/\r?\n/);
+    const [ver, torchV, cuda] = meta.split("\n");
     status.version = ver || null;
     status.torch = torchV || null;
     status.cuda = cuda === "True";
   }
 
   // Checkpoints via the official CLI (honors FOUNDRY_CHECKPOINT_DIRS).
-  const listing = status.cli
-    ? runCapture(status.cli, ["list-installed"], 60000)
-    : null;
+  const listing = sh(`${status.cli} list-installed`, 60000);
   if (listing) {
-    for (const line of listing.split(/\r?\n/)) {
-      // Paths may be POSIX (/x/y.pt) or win32 (C:\x\y.pt)
-      const m = line.match(/\s*((?:[A-Za-z]:)?[\/\\]\S+\.pt)\s+([\d.]+\s*GB)/);
+    for (const line of listing.split("\n")) {
+      const m = line.match(/\s*(\/\S+\.pt)\s+([\d.]+\s*GB)/);
       if (m) {
         const p = m[1];
         status.checkpoints.push({
           path: p,
-          name: p.split(/[\/\\]/).pop() ?? p,
+          name: p.split("/").pop() ?? p,
           size: m[2].replace(/\s+/, " "),
         });
       }
@@ -191,12 +177,11 @@ export function getFoundryStatus(): FoundryStatus {
   status.capabilities.rf3 = hasCkpt(/rf3/i);
 
   // Fast import selftest of the runner bridge (no weights touched).
-  const raw = runCapture(
-    py,
-    [join(process.cwd(), "scripts", "foundry", "run_mpnn.py"), "--selftest"],
+  // (No `| tail` pipe — that is POSIX-only; slice the output in JS instead.)
+  const st = sh(
+    `${py} ${join(process.cwd(), "scripts", "foundry", "run_mpnn.py")} --selftest`,
     90000,
   );
-  const st = raw ? raw.trim().split(/\r?\n/).slice(-3).join("\n") : null; // old `| tail -3`
   status.selftestOk = !!st && st.includes("SELFTEST OK");
   status.selftestDetail = st ? st.split("\n").slice(-1)[0] : "selftest did not run";
   // Full capability requires the engine to actually import.

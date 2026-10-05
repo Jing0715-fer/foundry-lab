@@ -560,8 +560,9 @@ export function ScreeningPanel() {
       const res = await fetch(`/api/screening/${screening.id}/promote`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        // Target the workflow the store is currently viewing — matches the
-        // upsertNode() below (which merges into that same workflow's view).
+        // Target the CURRENT workflow (multi-workflow contract, task 3-a):
+        // without workflowId the server promotes into its first-workflow
+        // default, which would land the node on the wrong canvas.
         body: JSON.stringify({
           ids: selectedIds,
           nodeName,
