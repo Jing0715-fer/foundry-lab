@@ -58,10 +58,30 @@ export function CanvasMinimap({ onClose }: { onClose: () => void }) {
   const nodes = workflow?.nodes ?? [];
   const edges = workflow?.edges ?? [];
 
+  // B3 consistency: collapsed sweep groups show ONE aggregate dot (at the
+  // group's anchor) instead of their member dots — matches the canvas.
+  const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
+  const mmNodes = React.useMemo(() => {
+    if (collapsedSweepGroups.length === 0) return nodes;
+    const hidden = new Set<string>();
+    const anchors: NodeDTO[] = [];
+    for (const n of nodes) {
+      if (n.sweepGroup && collapsedSweepGroups.includes(n.sweepGroup)) {
+        if (!hidden.has(n.id) && !anchors.some((a) => a.sweepGroup === n.sweepGroup)) {
+          // First member of the group acts as the aggregate dot.
+          anchors.push(n);
+        }
+        hidden.add(n.id);
+      }
+    }
+    const visible = nodes.filter((n) => !hidden.has(n.id));
+    return [...visible, ...anchors];
+  }, [nodes, collapsedSweepGroups]);
+
   // Compute the world-space content box (with the large padding baked into
   // contentBox — gives breathing room so nodes near the edges don't touch the
   // minimap border).
-  const box = React.useMemo(() => contentBox(nodes), [nodes]);
+  const box = React.useMemo(() => contentBox(mmNodes), [mmNodes]);
 
   // Scale: fit the content box inside the minimap, preserving aspect ratio.
   // Clamp to a sane minimum so an empty canvas doesn't blow up to Infinity.
@@ -175,10 +195,12 @@ export function CanvasMinimap({ onClose }: { onClose: () => void }) {
         onClick={handleClick}
         style={{ background: "hsl(var(--muted) / 0.4)" }}
       >
-        {/* Edges (drawn first so they sit under the node rects). */}
+        {/* Edges (drawn first so they sit under the node rects). Collapsed
+            group members are hidden, so an edge endpoint attached to one is
+            re-anchored onto the group's aggregate dot (mmNodes lookup). */}
         {edges.map((edge: EdgeDTO) => {
-          const from = nodes.find((n) => n.id === edge.fromNodeId);
-          const to = nodes.find((n) => n.id === edge.toNodeId);
+          const from = mmNodes.find((n) => n.id === edge.fromNodeId);
+          const to = mmNodes.find((n) => n.id === edge.toNodeId);
           if (!from || !to) return null;
           const x1 = from.x + CARD_W;
           const y1 = from.y + CARD_H / 2;
@@ -197,7 +219,7 @@ export function CanvasMinimap({ onClose }: { onClose: () => void }) {
         })}
 
         {/* Nodes (scaled CARD_W × CARD_H rects colored by status). */}
-        {nodes.map((n: NodeDTO) => {
+        {mmNodes.map((n: NodeDTO) => {
           const spec = nodeSpec(n.type);
           const fill = STATUS_HEX[n.status] ?? STATUS_HEX.idle;
           return (

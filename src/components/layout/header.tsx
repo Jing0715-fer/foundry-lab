@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useTheme } from "next-themes";
-import { FlaskConical, Moon, Play, Sun, Github, Loader2, CircleHelp, Keyboard } from "lucide-react";
+import { FlaskConical, Moon, Play, Sun, Github, Loader2, CircleHelp, Keyboard, ListVideo } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -61,9 +61,14 @@ export function Header() {
   }, []);
 
   // Detect any node currently in "running" state — used to add a subtle pulse
-  // to the Run Workflow button so users see activity is in flight.
+  // to the Run Workflow button so users see activity is in flight, and as the
+  // Runs badge count (B4: the global queue is one click away).
   const hasRunningNode = React.useMemo(
     () => (workflow?.nodes ?? []).some((n) => n.status === "running"),
+    [workflow?.nodes],
+  );
+  const runningCount = React.useMemo(
+    () => (workflow?.nodes ?? []).filter((n) => n.status === "running").length,
     [workflow?.nodes],
   );
 
@@ -113,7 +118,7 @@ export function Header() {
         title: "Workflow complete",
         description: `Started ${data?.started ?? 0} • Completed ${
           data?.completed ?? 0
-        }`,
+        }${data?.peakConcurrency > 1 ? ` • ${data.peakConcurrency} parallel lanes` : ""}`,
         variant: "success",
       });
     } catch (err) {
@@ -174,6 +179,29 @@ export function Header() {
           )}
           <span className="hidden sm:inline">Run Workflow</span>
         </Button>
+
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="relative"
+              onClick={() => useAppStore.getState().setRunsSheetOpen(true)}
+              aria-label="Open global run queue"
+            >
+              <ListVideo className="size-4" />
+              {runningCount > 0 && (
+                <span
+                  className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-1 text-[9px] font-semibold tabular-nums text-white"
+                  aria-label={`${runningCount} nodes running`}
+                >
+                  {runningCount}
+                </span>
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Runs — global run queue</TooltipContent>
+        </Tooltip>
 
         <Tooltip>
           <TooltipTrigger asChild>

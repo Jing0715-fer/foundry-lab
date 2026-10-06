@@ -3350,3 +3350,65 @@ Work Log:
 
 Stage Summary:
 - 下一阶段方向以本轮 7 项实测结论为据；B 线（画布与执行引擎）成为 P0。
+---
+Task ID: 19-a
+Agent: qa-code-reviewer (Z.ai Code)
+Task: B 线（画布与执行引擎）四改动深度代码审查（B1 防重叠 / B2 并行执行 / B3 聚合组卡 / B4 Runs 视图）。
+
+Work Log:
+- 通读 git diff（14 个修改文件）+ 3 个新文件（sweep-group-card.tsx / runs-sheet.tsx / api/runs/route.ts），对照 scheduler.ts、单节点 run route、nodes POST、store.setWorkflow、history 订阅、workflow-engine 并行安全逐项推演。
+- A（最高优先）结论：worker pool 无死锁（每个 finally 必重触发 pump+settle；resolve 仅在 queue 空 && inFlight=0）；核心不变量证明成立——初始 blockers 只数 pending/idle 上游，而 completed/failed 上游非 runnable → 永不产生 finally 减计数事件，两边集合精确相等，任务提示的"提前归零"担忧不成立，claim 失败入队无害；异常路径 catch 标 failed + finally 保证解锁与 inFlight--，无楔死；与单节点 run route/scheduler 的 claim 双输/双赢经 SQLite 单连接串行化排除；scheduler 接口（ok/started/completed/error）向后兼容 peakConcurrency 新字段。
+- 发现 P1×4：① sweep route:229 无条件 anchorY=min(...,4000) 可把已找到的空位拉回重叠区（源 y≳3900 时可自叠回源卡）且 24 组合底边超 WORLD_MAX；② /api/runs 全量拉取 result/logs 大字段后才 trim（与注释相反，3s 轮询放大），修复=查询级 select；③ runs-sheet Row 的 <button> 内嵌 Retry <button>（非法 HTML + a11y）；④ 框选用全量 workflow.nodes 原坐标 → 可选中并批量删除折叠组不可见成员。
+- P2×12：isTerminal 死代码、peakConcurrency/started 竞态虚报、每节点全量重取 workflow + shift O(n²)、executeNode 无看门狗（挂起楔死 pool，顺序版遗留）、dropAvoiding 事后 clamp 撤销避让 + palette/command-palette 无边界钳制的不对称、minimap 边仍画向隐藏成员原坐标 + 锚点取数组序、组卡 role=button 含可聚焦后代、折叠后 selectedId 指向隐藏成员无视觉反馈、NodeSearch/NodeGroupLayer 未过滤折叠成员、completedInWindow 被 80 行截断、Retry await 全程执行（toast 时机矛盾）+ 轮询无序号守卫、首载失败显示为空队列；另注释漂移、组卡不可拖、db/custom.db/dev.pid 入 diff 等。
+- 复跑 tsc --noEmit：src/ 零错误（报错仅 examples/skills 预存）；新增代码零 console 遗留、零裸浮 Promise。
+- 报告全文写入 /home/z/my-project/qa-review-b-lane.md（P0 无 / P1 4 / P2 12，含逐条文件:行号、影响、修复建议与"已验证无问题"清单）。
+
+Stage Summary:
+- B2 并行执行引擎核心正确性论证通过（无死锁/无双执行/异常不楔死/接口兼容），可保留；B1/B3/B4 各有 1 项 P1 应修（sweep clamp 语义、runs 查询 select 化、嵌套按钮、框选不可见成员），均为局部小改，不动架构。修复顺序建议：P1-2 → P1-4 → P1-3 → P1-1。未修改任何代码（纯审查）。
+
+---
+Task ID: 19-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P1×4 + P2×5 + lint/tsc 复验
+
+Work Log:
+- P1-1（sweep 上界截断）：`Math.min(anchorY,4000)` 事后截断可把找到的空位拉回重叠区 → 改为搜索循环条件（`anchorY > WORLD_MAX-gridH-100` 即停，接受最不坏位置），删除 4000 魔数。
+- P1-2（runs 查询读放大）：findMany 无 select 全量拉 result/logs 大字段 → 查询级 `SELECT`（8 列 + workflow join）+ MAX_ACTIVE=200 + failed/completed 计数改独立 `db.node.count`（不受显示上限截断）。
+- P1-3（button 嵌套）：RunsSheet Row 根 `<button>` 内嵌 Retry `<Button>` 非法 HTML → Row 改 `div[role=button]` + tabIndex + Enter/Space 键盘支持 + focus-visible 样式。
+- P1-4（框选暗选折叠成员）：band 命中改用 visibleNodes（防折叠组暗选 + 浮空删除条）。
+- P2 顺手修：runner isTerminal 死代码删除；minimap 边端点改查 mmNodes（消折叠悬空线）；findFreeSpot 出界候选视为占用（消 dropAvoiding 事后 clamp 撤销避让）；RunsSheet 首载失败显示明确错误（区别空队列）；runner 泄漏兜底注释保留。
+- 复验：lint 零告警、tsc src/ 零错误、GET /api/runs 冒烟正常（summary 计数准确）。
+
+Stage Summary:
+- QA 审查的全部 P1 闭环；P2 修 5 项（其余 7 项为体验优化已记 ROADMAP E 线）。
+
+---
+Task ID: 20
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：B 线全功能浏览器验证 + 真实执行 + 回归 + 演示 DB 零污染（agent-browser + VLM）
+
+Work Log:
+- 环境准备：独立测试工作流 "B-Lane QA Test"（API 构建：rfdiffusion 源 + 3 次 sweep = 8 变体）。
+- **B1 验证**：同源两次 sweep 实测 y=310/640 完全错开；9 节点程序化 AABB 检测 **0 重叠对**（VLM 初判"层叠感"为误判，程序化证据推翻）；VLM 确认画布无叠放。
+- **B2 验证**：9 节点并行 run `peakConcurrency=3` 全 completed（27s）；4 变体 sweep run peakConcurrency=3、**3 节点同毫秒启动（时间线毫秒级证据）**、墙钟 17.3s（串行 ~35s）；num_designs 1/2/3/4/6/8 全部真实反映到 PDB 文件数（程序化文件计数）；409 双击守卫正常。语义确认：变体只继承源的入边——无上游源的变体是无依赖根节点（并行正确，语义记入 ROADMAP C5 文档化项）。
+- **B3 验证（含一个 P0 级 bug 发现与修复）**：agent-browser 物理 click 徽标无效果 → JS click() 生效 → 定位根因：node-card `onCardPointerDown` 无差别 `setPointerCapture` 吞掉卡内 button 的派生 click（**真实用户同样无法点击**，JS click 测不出）→ 修复：pointerdown 排除交互元素（button/a/input/select/[role=button]）。复测：物理点击徽标 → 组卡出现（.group-card=1、徽标 8→6）；VLM 确认组卡完整（FlaskConical/2 variants/进度条 2/2 100%/done 徽标/Compare+Expand 按钮）；组卡 Compare → 对话框（2 行变体/指标列/Best 榜冠/Create screening campaign 按钮）；点击组卡主体 → 展开恢复（0 组卡/8 徽标）。
+- **B4 验证**：header Runs 按钮（running 徽标）；Sheet 三分区 + summary（0 running · 0 queued · 1 failed · 21 completed 48h）；**实时性**：后台触发 run 2s 后打开 Sheet → Running&Queued 区 1 running + 2 queued（VLM 确认 spinner/进度条）→ 完成后 3s 轮询自动迁移 Recent；**行点击跳转**：Recent 行 → Sheet 关闭 + 工作流切换 + 节点选中高亮 + Inspector 打开（VLM 确认 num_designs=3/total_length=100 参数吻合）。
+- **回归**：移动端 375px 画布零横向溢出 + Runs Sheet 全宽适配（VLM 评级"表现优秀"）；My First Workflow 14 节点/12 边零污染；跨工作流切换后 Ctrl+Z 无操作（历史栈清空修复保持）；控制台/页面错误零。
+- 清理：两个测试工作流删除，演示 DB 恢复基线（Antibody Campaign 5 节点 + My First Workflow 14 节点）。
+
+Stage Summary:
+- B1-B4 全链路 e2e 通过（含真实引擎执行与文件级证据）；发现并修复 1 个 P0 级真实交互 bug（pointer-capture 吞 click）——已写入 ROADMAP 验收标准（卡内 button 必须真实指针事件实测）；演示 DB 零污染。
+
+---
+Task ID: 21
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：ROADMAP 重写 + README 更新 + git 提交
+
+Work Log:
+- docs/ROADMAP.md 重写：B 线四项交付记录 + 测试结论表（9 项：B2 并行实证/无上游源变体语义/pointer-capture 教训/executeNode 无看门狗/Retry 长任务 spinner/组卡不可拖/文档不一致延续项）+ 下一阶段 = C 线 P1（数据与可信度 + sweep 语义文档化）+ 新增 E 线 P1.5（执行健壮性与交互打磨：看门狗/Retry 反馈/组卡拖拽/运行中止）+ 验收标准新增"卡内交互元素必须真实指针事件实测"条款。
+- README.md：参数扫描章节扩写 B 线五项能力（组卡/并行/防重叠/Runs 队列）；API 表新增 GET /api/runs。
+- 最终检查：lint 零告警、tsc src/ 零错误、dev.log 无运行时错误、演示 DB 基线完整。
+- git 提交推送。
+
+Stage Summary:
+- B 线（画布与执行引擎）全部交付并三重验证（API 冒烟/QA 审查/浏览器 e2e 含真实执行）；下一阶段方向以本轮 9 项实测结论为据：C 线（数据与可信度）与 E 线（执行健壮性）并行推进。

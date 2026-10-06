@@ -64,6 +64,9 @@ export async function POST(request: Request) {
     return NextResponse.json({
       started: result.started,
       completed: result.completed,
+      // B2 parallel lane telemetry: peak simultaneous executions of this
+      // run (3 = the pool cap was reached; 1 = strictly sequential DAG).
+      peakConcurrency: result.peakConcurrency,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

@@ -12,7 +12,8 @@ import {
 } from "@/components/ui/command";
 import { useAppStore } from "@/lib/store";
 import { useChatStore } from "@/lib/chat-store";
-import { nodeSpec } from "@/lib/workflow-catalog";
+import { nodeSpec, CARD_W, CARD_H } from "@/lib/workflow-catalog";
+import { findFreeSpot } from "@/lib/canvas-utils";
 import {
   downloadWorkflowJSON,
   importWorkflow,
@@ -41,48 +42,10 @@ import {
   Loader2,
 } from "lucide-react";
 
-const CARD_W = 248;
-const CARD_H = 116;
-const PAD = 40;
-
 /**
- * Find a free spot near the viewport center that doesn't overlap existing
- * nodes. Uses a spiral search — same idea as the palette's findFreeSpot but
- * inlined here so we don't have to touch palette.tsx (out of scope).
+ * (findFreeSpot now lives in lib/canvas-utils.ts — shared with the palette
+ * and the canvas drop lanes. B1 dedupe.)
  */
-function findFreeSpot(
-  existing: { x: number; y: number }[],
-  centerX: number,
-  centerY: number,
-): { x: number; y: number } {
-  if (existing.length === 0) return { x: centerX, y: centerY };
-  const overlaps = (c: { x: number; y: number }) =>
-    existing.some(
-      (e) =>
-        Math.abs(e.x - c.x) < CARD_W + PAD * 0.5 &&
-        Math.abs(e.y - c.y) < CARD_H + PAD * 0.5,
-    );
-  const candidates: { x: number; y: number }[] = [
-    { x: centerX, y: centerY },
-  ];
-  for (let ring = 1; ring <= 6; ring++) {
-    const stepX = CARD_W + PAD;
-    const stepY = CARD_H + PAD;
-    for (let dx = -ring; dx <= ring; dx++) {
-      for (let dy = -ring; dy <= ring; dy++) {
-        if (Math.abs(dx) !== ring && Math.abs(dy) !== ring) continue;
-        candidates.push({
-          x: centerX + dx * stepX,
-          y: centerY + dy * stepY,
-        });
-      }
-    }
-  }
-  for (const c of candidates) {
-    if (!overlaps(c)) return { x: Math.round(c.x), y: Math.round(c.y) };
-  }
-  return { x: Math.round(centerX + 40), y: Math.round(centerY + 40) };
-}
 
 /** Compute the world-coord center of the current canvas viewport. */
 function viewportCenterWorld(): { x: number; y: number } {

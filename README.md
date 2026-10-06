@@ -95,6 +95,18 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   标签（`变体名/design_0`），参数轴自动绑定指标权重预设（如 `total_length`
   变体 → 几何指标加权）。变体节点卡片常驻 `sweep` 徽标，撤销/重做后组链接
   依然保持（组 id 随节点重建传递）。
+- **变体聚合组卡**：点击变体卡上的 `sweep` 徽标 → 整组折叠为一张**组卡**
+  （实时进度 = 完成数/总数、状态徽标、Compare 入口），点击组卡随时展开。
+  大 sweep 不再淹没画布；折叠态连线自动聚合到组卡锚点（含小地图）。
+- **并行执行通道**：工作流按 DAG 依赖并行执行——无依赖的 sweep 变体同时
+  运行（内置引擎并发上限 3），完成提示展示实际并行车道数；失败节点不阻断
+  下游（与串行语义一致）。
+- **自动布局防重叠**：新建 / sweep 变体网格 / 拖放落点全部做占用检测，
+  冲突自动偏移到最近空位——两次 sweep 同源、连续快速新建都不会叠卡。
+- **全局运行队列（Runs）**：顶栏 Runs 按钮（运行中数量徽标）打开跨工作流
+  的实时队列：运行中/排队（3 秒轮询 + 进度条）、近 48h 失败节点一键
+  **重试**（单节点重跑并级联下游）、最近完成（时长统计）；行点击直接
+  跳到对应工作流并选中该节点。
 
 ### 🖼️ 3D 结构查看器
 
@@ -275,6 +287,7 @@ bun run dev            # http://localhost:3000
 | POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
 | GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
 | POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
+| GET | `/api/runs` | 全局运行队列（跨工作流 active/failed/recent + 汇总） |
 | POST | `/api/workflows/:id/versions/:v/restore` | 恢复版本快照 |
 | POST | `/api/workflows/:id/schedule` | 预约定时运行 |
 | GET/POST | `/api/agents` | 智能体 CRUD |

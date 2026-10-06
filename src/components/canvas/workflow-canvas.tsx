@@ -21,7 +21,12 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { NodeDTO, NodeType, NodeSpec, WorkflowDTO } from "@/lib/types";
-import { useAppStore, clampDrop } from "@/lib/store";
+import { useAppStore } from "@/lib/store";
+import { dropAvoiding } from "@/lib/canvas-utils";
+import {
+  deriveSweepGroups,
+  SweepGroupCard,
+} from "@/components/canvas/sweep-group-card";
 import { useHistoryStore } from "@/lib/history-store";
 import {
   applyHistorySnapshot,
@@ -494,8 +499,11 @@ export function WorkflowCanvas() {
       const vp = viewport;
       const tiny = (x1 - x0) < 4 && (y1 - y0) < 4;
       if (!tiny) {
+        // B3 consistency: band-select hits VISIBLE nodes only — a band over a
+        // collapsed group card area must not silently select the hidden
+        // members (which would float a delete-bar over invisible targets).
         const hitIds =
-          workflow?.nodes
+          visibleNodes
             .filter((n) => {
               const nx = n.x * vp.zoom + vp.x;
               const ny = n.y * vp.zoom + vp.y;
@@ -557,7 +565,13 @@ export function WorkflowCanvas() {
           extra.name = agents[0].title;
         }
       }
-      const pos = clampDrop(worldCenterX, worldCenterY);
+      // B1 anti-overlap: clamp to world bounds, then spiral away from any
+      // existing card (two quick-starts in a row no longer stack).
+      const pos = dropAvoiding(
+        (useAppStore.getState().workflow?.nodes ?? []).map((n) => ({ x: n.x, y: n.y })),
+        worldCenterX,
+        worldCenterY,
+      );
       try {
         const res = await fetch("/api/workflow/nodes", {
           method: "POST",
@@ -592,7 +606,12 @@ export function WorkflowCanvas() {
     async (spec: NodeSpec) => {
       if (!createMenu) return;
       const { worldX, worldY } = createMenu;
-      const pos = clampDrop(worldX, worldY);
+      // B1 anti-overlap: menu position + spiral away from existing cards.
+      const pos = dropAvoiding(
+        (useAppStore.getState().workflow?.nodes ?? []).map((n) => ({ x: n.x, y: n.y })),
+        worldX,
+        worldY,
+      );
       setCreateMenu(null);
       try {
         const res = await fetch("/api/workflow/nodes", {
@@ -636,7 +655,13 @@ export function WorkflowCanvas() {
     const vp = viewport;
     const wx = (sx - vp.x) / vp.zoom;
     const wy = (sy - vp.y) / vp.zoom;
-    const pos = clampDrop(wx, wy);
+    // B1 anti-overlap: drop point + spiral away from existing cards (a drop
+    // onto an occupied spot lands beside it, not on top of it).
+    const pos = dropAvoiding(
+      (useAppStore.getState().workflow?.nodes ?? []).map((n) => ({ x: n.x, y: n.y })),
+      wx,
+      wy,
+    );
     const spec = nodeSpec(type);
     try {
       const res = await fetch("/api/workflow/nodes", {
@@ -672,6 +697,38 @@ export function WorkflowCanvas() {
   const nodes = workflow?.nodes ?? [];
   const edges = workflow?.edges ?? [];
   const zoom = viewport.zoom;
+
+  // ── B3: sweep aggregate groups ─────────────────────────────────────
+  // Collapsed groups render ONE aggregate card instead of their members;
+  // wires (EdgesLayer/LiveWire) see members mapped onto the card position.
+  const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
+  const sweepGroups = React.useMemo(() => deriveSweepGroups(nodes), [nodes]);
+  const collapsedGroups = React.useMemo(
+    () =>
+      [...sweepGroups.values()].filter((g) =>
+        collapsedSweepGroups.includes(g.groupId),
+      ),
+    [sweepGroups, collapsedSweepGroups],
+  );
+  const collapsedMemberIds = React.useMemo(
+    () => new Set(collapsedGroups.flatMap((g) => g.members.map((m) => m.id))),
+    [collapsedGroups],
+  );
+  const visibleNodes = React.useMemo(
+    () => nodes.filter((n) => !collapsedMemberIds.has(n.id)),
+    [nodes, collapsedMemberIds],
+  );
+  const layoutNodes = React.useMemo(() => {
+    if (collapsedGroups.length === 0) return nodes;
+    const posById = new Map<string, { x: number; y: number }>();
+    for (const g of collapsedGroups) {
+      for (const m of g.members) posById.set(m.id, { x: g.x, y: g.y });
+    }
+    return nodes.map((n) => {
+      const p = posById.get(n.id);
+      return p ? { ...n, x: p.x, y: p.y } : n;
+    });
+  }, [nodes, collapsedGroups]);
 
   // Band rect for rendering (normalized).
   const bandRect = band
@@ -715,8 +772,12 @@ export function WorkflowCanvas() {
       >
         {/* Node-group overlays (behind nodes, above grid). */}
         <NodeGroupLayer />
-        <EdgesLayer edges={edges} nodes={nodes} />
-        {nodes.map((n) => (
+        <EdgesLayer edges={edges} nodes={layoutNodes} />
+        {/* B3: collapsed sweep groups — one aggregate card per group. */}
+        {collapsedGroups.map((g) => (
+          <SweepGroupCard key={g.groupId} group={g} />
+        ))}
+        {visibleNodes.map((n) => (
           <div key={n.id} data-node-card>
             <NodeCard node={n} />
           </div>
@@ -724,7 +785,7 @@ export function WorkflowCanvas() {
       </div>
 
       {/* LiveWire overlay (screen-relative). */}
-      <LiveWire nodes={nodes} />
+      <LiveWire nodes={layoutNodes} />
 
       {/* Loading / boot-error overlays — while the workflow itself hasn't
           loaded. Fully opaque (bg-background) so they also block canvas

@@ -21,7 +21,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { randomUUID } from "crypto";
 import { db } from "@/lib/db";
 import { toNodeDTO, toEdgeDTO } from "@/lib/workflow-engine";
-import { nodeSpec } from "@/lib/workflow-catalog";
+import { nodeSpec, CARD_W, CARD_H, WORLD_MAX } from "@/lib/workflow-catalog";
 import type { SweepResponseDTO, SweepValue } from "@/lib/types";
 
 const MAX_COMBINATIONS = 24;
@@ -196,6 +196,42 @@ export async function POST(
     // ---- Incoming edges to replicate per variant ---------------------------
     const incoming = await db.edge.findMany({ where: { toNodeId: source.id } });
 
+    // ---- Grid anchor anti-overlap (test finding #3) ------------------------
+    // A second sweep of the same source would otherwise land its variant grid
+    // at EXACTLY the same spot as the first (both anchor at source.x/y),
+    // stacking cards on top of each other. Compute the grid rectangle, then
+    // walk the whole block DOWN until it clears every existing node's card
+    // AABB (a unit test in e2e: two sweeps of one source land disjoint).
+    const gridRows = Math.ceil(combos.length / GRID_COLS);
+    const gridW = GRID_COLS * GRID_DX;
+    const gridH = gridRows * GRID_DY;
+    const EXISTING_GAP = 60; // whitespace between the block and foreign cards
+    const existingNodes = await db.node.findMany({
+      where: { workflowId: source.workflowId },
+      select: { x: true, y: true },
+    });
+    const blockHits = (ax: number, ay: number) =>
+      existingNodes.some(
+        (n) =>
+          n.x < ax + gridW + EXISTING_GAP &&
+          n.x + CARD_W > ax - EXISTING_GAP &&
+          n.y < ay + gridH + EXISTING_GAP &&
+          n.y + CARD_H > ay - EXISTING_GAP,
+      );
+    let anchorX = source.x;
+    let anchorY = source.y + GRID_DY;
+    // Walk down in whole-block strides until free AND in-bounds. The
+    // world-edge check is part of the loop CONDITION (not a post-hoc
+    // Math.min clamp, which could drag a found free spot back ONTO other
+    // cards when the source sits near the bottom edge): once past maxY we
+    // stop and accept the least-bad position — the user can drag it apart.
+    const maxY = WORLD_MAX - gridH - 100;
+    for (let stride = 0; stride < 200; stride++) {
+      if (anchorY > maxY) break; // can't go further down — accept as-is
+      if (!blockHits(anchorX, anchorY)) break; // free and in-bounds — accept
+      anchorY += gridH + EXISTING_GAP * 2;
+    }
+
     // ---- Create variants (grid below the source) ---------------------------
     const baseName = source.name.length > 24 ? `${source.name.slice(0, 24)}…` : source.name;
     // One group id for the whole batch — the variants stay linkable after the
@@ -211,8 +247,8 @@ export async function POST(
       const name = `${baseName} · ${tag}`.slice(0, 64);
       const col = i % GRID_COLS;
       const row = Math.floor(i / GRID_COLS);
-      const x = source.x + col * GRID_DX;
-      const y = source.y + GRID_DY * (row + 1);
+      const x = anchorX + col * GRID_DX;
+      const y = anchorY + row * GRID_DY;
 
       const nodeParams = { ...baseParams, ...combo };
       const created = await db.node.create({

@@ -22,6 +22,7 @@ import { ScreeningPanel } from "@/components/panels/screening-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
 import { DashboardPanel } from "@/components/panels/dashboard-panel";
 import { ClusterPanel } from "@/components/panels/cluster-panel";
+import { RunsSheet } from "@/components/panels/runs-sheet";
 import { PiCopilot } from "@/components/panels/pi-copilot";
 import { AgentChatDrawer } from "@/components/panels/agent-chat-drawer";
 import { CommandPalette } from "@/components/command-palette";
@@ -418,6 +419,7 @@ export default function Home() {
         </SheetContent>
       </Sheet>
       <CommandPalette />
+      <RunsSheet />
       <OnboardingTour />
     </div>
   );

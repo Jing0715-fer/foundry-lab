@@ -224,6 +224,17 @@ function NodeCardImpl({ node }: NodeCardProps) {
     if (e.button !== 0) return;
     // Ignore if the target is a port button (ports stop propagation).
     if ((e.target as HTMLElement).closest("[data-port]")) return;
+    // Ignore interactive descendants (the sweep-collapse badge, port labels,
+    // future buttons): setPointerCapture here would hijack their click —
+    // pointer events (and the derived click) would retarget to the card and
+    // the button's onClick would never fire.
+    if (
+      (e.target as HTMLElement).closest(
+        "button, a, input, textarea, select, [contenteditable='true'], [role='button']",
+      )
+    ) {
+      return;
+    }
     (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
     dragState.current = {
       pointerId: e.pointerId,
@@ -628,14 +639,22 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   {status}
                 </span>
                 {node.sweepGroup && (
-                  <span
-                    className="flex shrink-0 items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-medium text-primary"
-                    title="Parameter-sweep variant — select it and hit Compare to see the whole group"
+                  <button
+                    type="button"
+                    className="flex shrink-0 items-center gap-0.5 rounded bg-primary/10 px-1.5 py-0.5 text-[9.5px] font-medium text-primary transition-colors hover:bg-primary/20"
+                    title="Parameter-sweep variant — click to collapse the whole group into one aggregate card"
                     data-sweep-variant-badge
+                    onClick={(e) => {
+                      // B3: collapse entry on the expanded variant card.
+                      e.stopPropagation();
+                      if (node.sweepGroup) {
+                        useAppStore.getState().toggleSweepCollapse(node.sweepGroup);
+                      }
+                    }}
                   >
                     <Grid3X3 className="size-2.5" />
                     sweep
-                  </span>
+                  </button>
                 )}
                 {spec && (
                   <span className="truncate text-[10.5px] text-muted-foreground">

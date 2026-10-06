@@ -25,6 +25,7 @@ import {
   NODE_COLORS,
   nodeSpec,
 } from "@/lib/workflow-catalog";
+import { findFreeSpot } from "@/lib/canvas-utils";
 import type { NodeSpec } from "@/lib/types";
 import { Input } from "@/components/ui/input";
 import {
@@ -80,42 +81,6 @@ function groupByCategory(specs: NodeSpec[]): { category: string; items: NodeSpec
     }
   }
   return out;
-}
-
-/** Find a free spot on the canvas for a new node (avoids overlapping existing nodes). */
-function findFreeSpot(
-  existing: { x: number; y: number }[],
-  centerX: number,
-  centerY: number,
-): { x: number; y: number } {
-  const CARD_W = 248;
-  const CARD_H = 116;
-  const PAD = 40;
-  if (existing.length === 0) return { x: centerX, y: centerY };
-  // Try the center first, then a spiral of expanding positions.
-  const candidates: { x: number; y: number }[] = [{ x: centerX, y: centerY }];
-  for (let ring = 1; ring <= 6; ring++) {
-    const step = CARD_W + PAD;
-    for (let dx = -ring; dx <= ring; dx++) {
-      for (let dy = -ring; dy <= ring; dy++) {
-        if (Math.abs(dx) !== ring && Math.abs(dy) !== ring) continue;
-        candidates.push({
-          x: centerX + dx * step,
-          y: centerY + dy * (CARD_H + PAD),
-        });
-      }
-    }
-  }
-  const overlaps = (c: { x: number; y: number }) =>
-    existing.some(
-      (e) =>
-        Math.abs(e.x - c.x) < CARD_W + PAD * 0.5 &&
-        Math.abs(e.y - c.y) < CARD_H + PAD * 0.5,
-    );
-  for (const c of candidates) {
-    if (!overlaps(c)) return { x: Math.round(c.x), y: Math.round(c.y) };
-  }
-  return { x: Math.round(centerX + 40), y: Math.round(centerY + 40) };
 }
 
 /** Drop a new node at the approximate viewport center, avoiding existing nodes. */

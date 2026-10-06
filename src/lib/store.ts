@@ -88,6 +88,11 @@ interface AppState {
   environmentSheetOpen: boolean;
   /** Cluster sheet (SSH/HPC lane) open state — same cross-link rationale. */
   clusterSheetOpen: boolean;
+  /** Runs sheet (global run queue, B4) open state. */
+  runsSheetOpen: boolean;
+  /** Sweep-group ids currently collapsed into an aggregate group card (B3).
+   * UI-only state — never persisted; members stay in the workflow/DB. */
+  collapsedSweepGroups: string[];
 
   // actions: workflow
   setWorkflow: (w: WorkflowDTO | null) => void;
@@ -136,6 +141,9 @@ interface AppState {
   setSidebarCollapsed: (b: boolean) => void;
   setEnvironmentSheetOpen: (b: boolean) => void;
   setClusterSheetOpen: (b: boolean) => void;
+  setRunsSheetOpen: (b: boolean) => void;
+  /** Collapse/expand a sweep group's aggregate card (B3). */
+  toggleSweepCollapse: (groupId: string) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
   dismissToast: (id: string) => void;
 }
@@ -165,6 +173,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   sidebarCollapsed: false,
   environmentSheetOpen: false,
   clusterSheetOpen: false,
+  runsSheetOpen: false,
+  collapsedSweepGroups: [],
 
   setWorkflow: (w) => {
     const switching = !!w && !!get().workflow && w.id !== get().workflow!.id;
@@ -389,6 +399,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSidebarCollapsed: (b) => set({ sidebarCollapsed: b }),
   setEnvironmentSheetOpen: (b) => set({ environmentSheetOpen: b }),
   setClusterSheetOpen: (b) => set({ clusterSheetOpen: b }),
+  setRunsSheetOpen: (b) => set({ runsSheetOpen: b }),
+  toggleSweepCollapse: (groupId) =>
+    set((s) => ({
+      collapsedSweepGroups: s.collapsedSweepGroups.includes(groupId)
+        ? s.collapsedSweepGroups.filter((g) => g !== groupId)
+        : [...s.collapsedSweepGroups, groupId],
+    })),
 
   toast: (t) => {
     const id = Math.random().toString(36).slice(2, 9);

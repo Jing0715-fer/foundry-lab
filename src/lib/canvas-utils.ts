@@ -1,7 +1,13 @@
 // Pure canvas math: edge bezier geometry, port anchor positions, topological layout.
 
 import type { EdgeDTO, NodeDTO, PortKind } from "./types";
-import { CARD_W, CARD_H, portY } from "./workflow-catalog";
+import {
+  CARD_W,
+  CARD_H,
+  WORLD_MIN,
+  WORLD_MAX,
+  portY,
+} from "./workflow-catalog";
 
 export interface Point { x: number; y: number; }
 
@@ -202,4 +208,74 @@ export function autoLayout(jobs: NodeDTO[], edges: EdgeDTO[]): Map<string, { x: 
 /** Clamp a world coordinate to the valid range. */
 export function clamp(v: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, v));
+}
+
+// ── Drop anti-overlap (B1: layout never stacks cards) ────────────────────────
+
+const FREE_SPOT_PAD = 40;
+
+/**
+ * Find a free spot on the canvas for a NEW node near (centerX, centerY),
+ * avoiding card-AABB overlap with the existing nodes. Tries the exact spot
+ * first, then a spiral of expanding candidates (one card width per step,
+ * one card height per row) up to 6 rings. Falls back to a small offset when
+ * everything is crowded — the user can still drag it apart.
+ *
+ * Shared by the palette click-to-add and the canvas drop/quick-start lanes.
+ */
+export function findFreeSpot(
+  existing: { x: number; y: number }[],
+  centerX: number,
+  centerY: number,
+): { x: number; y: number } {
+  if (existing.length === 0) return { x: centerX, y: centerY };
+  const candidates: { x: number; y: number }[] = [{ x: centerX, y: centerY }];
+  for (let ring = 1; ring <= 6; ring++) {
+    const step = CARD_W + FREE_SPOT_PAD;
+    for (let dx = -ring; dx <= ring; dx++) {
+      for (let dy = -ring; dy <= ring; dy++) {
+        if (Math.abs(dx) !== ring && Math.abs(dy) !== ring) continue;
+        candidates.push({
+          x: centerX + dx * step,
+          y: centerY + dy * (CARD_H + FREE_SPOT_PAD),
+        });
+      }
+    }
+  }
+  const overlaps = (c: { x: number; y: number }) =>
+    existing.some(
+      (e) =>
+        Math.abs(e.x - c.x) < CARD_W + FREE_SPOT_PAD * 0.5 &&
+        Math.abs(e.y - c.y) < CARD_H + FREE_SPOT_PAD * 0.5,
+    ) ||
+    // Out-of-bounds candidates are treated as "occupied" so the spiral keeps
+    // searching for an IN-BOUNDS free spot (a post-hoc clamp would otherwise
+    // drag the found spot back onto a card near the world edge).
+    c.x < WORLD_MIN ||
+    c.y < WORLD_MIN ||
+    c.x > WORLD_MAX - CARD_W ||
+    c.y > WORLD_MAX - CARD_H;
+  for (const c of candidates) {
+    if (!overlaps(c)) return { x: Math.round(c.x), y: Math.round(c.y) };
+  }
+  return { x: Math.round(centerX + 40), y: Math.round(centerY + 40) };
+}
+
+/**
+ * Drop position for a new node: world-bounds clamp (clampDrop semantics) +
+ * overlap avoidance against the current workflow's nodes (B1).
+ * `existing` = the live node positions of the target workflow.
+ */
+export function dropAvoiding(
+  existing: { x: number; y: number }[],
+  x: number,
+  y: number,
+): { x: number; y: number } {
+  const clampedX = clamp(Math.round(x - CARD_W / 2), WORLD_MIN, WORLD_MAX - CARD_W);
+  const clampedY = clamp(Math.round(y - CARD_H / 2), WORLD_MIN, WORLD_MAX - CARD_H);
+  const spot = findFreeSpot(existing, clampedX, clampedY);
+  return {
+    x: clamp(spot.x, WORLD_MIN, WORLD_MAX - CARD_W),
+    y: clamp(spot.y, WORLD_MIN, WORLD_MAX - CARD_H),
+  };
 }
