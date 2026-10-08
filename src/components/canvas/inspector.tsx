@@ -21,6 +21,7 @@ import {
   ChevronRight,
   Copy,
   Download,
+  GitBranch,
   Grid3X3,
   Table2,
 } from "lucide-react";
@@ -917,6 +918,32 @@ function NodeInspectorImpl() {
     [node],
   );
 
+  // C2 provenance: promote nodes carry a structured source block in params
+  // (screening id/name + candidate list). Parsed defensively — old nodes
+  // predate the field and malformed JSON must never break the Inspector.
+  const promoteSource = React.useMemo(() => {
+    const raw = node?.params?.["source"];
+    if (!raw || typeof raw !== "object") return null;
+    const s = raw as {
+      kind?: unknown;
+      screeningId?: unknown;
+      screeningName?: unknown;
+      candidates?: unknown;
+    };
+    if (s.kind !== "screening-promote") return null;
+    if (typeof s.screeningId !== "string" || !s.screeningId) return null;
+    const names = Array.isArray(s.candidates)
+      ? s.candidates
+          .map((c) => (c && typeof c === "object" ? (c as { name?: unknown }).name : null))
+          .filter((n): n is string => typeof n === "string")
+      : [];
+    return {
+      screeningId: s.screeningId,
+      screeningName: typeof s.screeningName === "string" ? s.screeningName : "screening",
+      candidateCount: names.length,
+    };
+  }, [node]);
+
   // Params this node can sweep (drives the Sweep button + dialog mount).
   // Mirrors the dialog's UNSWEEPABLE_KEYS + advanced filtering so the button
   // only appears when there is actually something to vary.
@@ -1410,6 +1437,28 @@ function NodeInspectorImpl() {
 
         {/* Footer actions */}
         <footer className="flex flex-col gap-2 p-3">
+          {/* C2 provenance badge: promoted nodes carry their screening
+              lineage — click to jump back to that screening's board. */}
+          {node && promoteSource && (
+            <button
+              type="button"
+              onClick={() => useAppStore.getState().openScreening(promoteSource.screeningId)}
+              className="flex w-full items-center gap-2 rounded-lg border border-teal-500/30 bg-teal-500/10 px-3 py-2 text-left text-xs text-teal-700 transition-colors hover:bg-teal-500/20 dark:text-teal-300"
+              data-provenance-badge
+            >
+              <GitBranch className="size-3.5 shrink-0" />
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-medium">
+                  From screening: {promoteSource.screeningName}
+                </span>
+                <span className="block text-[10px] opacity-80">
+                  {promoteSource.candidateCount} candidate
+                  {promoteSource.candidateCount === 1 ? "" : "s"} promoted to the canvas
+                </span>
+              </span>
+              <ChevronRight className="size-3.5 shrink-0 opacity-60" />
+            </button>
+          )}
           <div className="flex gap-2">
             <Tooltip>
               <TooltipTrigger asChild>

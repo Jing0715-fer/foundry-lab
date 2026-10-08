@@ -114,6 +114,15 @@ function applyCandidatePatch(
 
 export function ScreeningPanel() {
   const toast = useAppStore((s) => s.toast);
+  // C2 provenance navigation: openScreening(id) (e.g. a promote node's source
+  // badge in the Inspector) switches here with pendingScreeningId set —
+  // consume it by selecting that screening, then clear the request.
+  const pendingScreeningId = useAppStore((s) => s.pendingScreeningId);
+  const clearPendingScreening = React.useCallback(() => {
+    if (useAppStore.getState().pendingScreeningId !== null) {
+      useAppStore.setState({ pendingScreeningId: null });
+    }
+  }, []);
 
   // --- Data ---------------------------------------------------------------
   const [screenings, setScreenings] = React.useState<ScreeningDTO[]>([]);
@@ -125,6 +134,17 @@ export function ScreeningPanel() {
   const [detailToken, setDetailToken] = React.useState(0); // force-reload (rollback)
 
   const reloadDetail = React.useCallback(() => setDetailToken((t) => t + 1), []);
+
+  // Provenance deep-link (C2): a pending id selects that screening once the
+  // list is available (guard: only ids that actually exist in the list).
+  React.useEffect(() => {
+    if (!pendingScreeningId || listLoading) return;
+    const exists = screenings.some((s) => s.id === pendingScreeningId);
+    if (exists && pendingScreeningId !== currentId) {
+      setCurrentId(pendingScreeningId);
+    }
+    clearPendingScreening();
+  }, [pendingScreeningId, listLoading, screenings, currentId, clearPendingScreening]);
 
   const refreshList = React.useCallback(async () => {
     try {

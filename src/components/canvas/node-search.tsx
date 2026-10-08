@@ -5,32 +5,47 @@ import { useAppStore } from "@/lib/store";
 import type { NodeDTO } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { CARD_W, CARD_H } from "@/lib/workflow-catalog";
+import { deriveSweepGroups } from "@/components/canvas/sweep-group-card";
 
 export function NodeSearch({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = React.useState("");
   const [results, setResults] = React.useState<NodeDTO[]>([]);
   const [highlighted, setHighlighted] = React.useState(0);
   const workflow = useAppStore((s) => s.workflow);
+  const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
   const select = useAppStore((s) => s.select);
   const inspect = useAppStore((s) => s.inspect);
   const setViewport = useAppStore((s) => s.setViewport);
 
-  // Search nodes by name, type, or status
+  // Search nodes by name, type, or status. Members of a COLLAPSED sweep
+  // group are hidden behind their aggregate card — searching (and jumping)
+  // to an invisible card is confusing, so they're filtered out (E3).
   React.useEffect(() => {
     if (!query) {
       setResults([]);
       return;
     }
+    const nodes = workflow?.nodes ?? [];
+    let hidden: Set<string> | null = null;
+    if (collapsedSweepGroups.length > 0) {
+      hidden = new Set();
+      for (const g of deriveSweepGroups(nodes).values()) {
+        if (collapsedSweepGroups.includes(g.groupId)) {
+          for (const m of g.members) hidden.add(m.id);
+        }
+      }
+    }
     const q = query.toLowerCase();
-    const matched = (workflow?.nodes ?? []).filter(
+    const matched = nodes.filter(
       (n) =>
-        n.name.toLowerCase().includes(q) ||
-        n.type.toLowerCase().includes(q) ||
-        n.status.toLowerCase().includes(q),
+        !(hidden?.has(n.id) ?? false) &&
+        (n.name.toLowerCase().includes(q) ||
+          n.type.toLowerCase().includes(q) ||
+          n.status.toLowerCase().includes(q)),
     );
     setResults(matched);
     setHighlighted(0);
-  }, [query, workflow]);
+  }, [query, workflow, collapsedSweepGroups]);
 
   // Navigate to a node: center it in the viewport + select it. The CURRENT
   // zoom is preserved (it used to hard-reset to 1, yanking the user from a

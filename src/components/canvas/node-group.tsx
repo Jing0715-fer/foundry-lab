@@ -5,6 +5,7 @@ import { create } from "zustand";
 import { useAppStore } from "@/lib/store";
 import { CARD_W, CARD_H } from "@/lib/workflow-catalog";
 import { cn } from "@/lib/utils";
+import { deriveSweepGroups } from "@/components/canvas/sweep-group-card";
 
 interface Group {
   id: string;
@@ -68,14 +69,34 @@ interface GroupBox extends Omit<Group, "color"> {
  */
 export function NodeGroupLayer() {
   const workflow = useAppStore((s) => s.workflow);
+  const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
   const { groups, activeGroupId, removeGroup, setActiveGroup } = useGroupStore();
   const nodes = workflow?.nodes ?? [];
 
-  // Compute each group's bounding box from its member nodes.
+  // Compute each group's bounding box from its member nodes. Members hidden
+  // inside a COLLAPSED sweep group don't contribute (E3): their cards are
+  // replaced by the aggregate card at the group anchor, so a colored frame
+  // around invisible members would float in the wrong place. A group whose
+  // every member is collapsed is skipped entirely.
+  const collapsedMemberIds = React.useMemo(() => {
+    if (collapsedSweepGroups.length === 0) return null;
+    const hidden = new Set<string>();
+    for (const g of deriveSweepGroups(nodes).values()) {
+      if (collapsedSweepGroups.includes(g.groupId)) {
+        for (const m of g.members) hidden.add(m.id);
+      }
+    }
+    return hidden;
+  }, [collapsedSweepGroups, nodes]);
+
   const groupBoxes = React.useMemo<GroupBox[]>(() => {
     const out: GroupBox[] = [];
     for (const g of groups) {
-      const members = nodes.filter((n) => g.nodeIds.includes(n.id));
+      const members = nodes.filter(
+        (n) =>
+          g.nodeIds.includes(n.id) &&
+          !(collapsedMemberIds?.has(n.id) ?? false),
+      );
       if (members.length === 0) continue;
       const minX = Math.min(...members.map((n) => n.x));
       const minY = Math.min(...members.map((n) => n.y));
@@ -94,7 +115,7 @@ export function NodeGroupLayer() {
       });
     }
     return out;
-  }, [groups, nodes]);
+  }, [groups, nodes, collapsedMemberIds]);
 
   if (groupBoxes.length === 0) return null;
 

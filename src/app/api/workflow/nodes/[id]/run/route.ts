@@ -21,6 +21,14 @@ import {
   gatherInputs,
   executeNode,
 } from "@/lib/workflow-engine";
+import {
+  executeWithWatchdog,
+  markWatchdogTimeout,
+  persistExecOutcome,
+  isClusterRoutedNode,
+  nodeTimeoutMs,
+  clusterNodeTimeoutMs,
+} from "@/lib/node-lifecycle";
 
 export async function POST(
   _request: Request,
@@ -119,31 +127,26 @@ export async function POST(
         return "failed";
       }
       const inputs = gatherInputs(nodeId, nodes, edges);
-      const { result, logs, status } = await executeNode(
-        current,
-        inputs,
-        workflowId,
+      // E1 watchdog + conditional persist (same semantics as the runner's
+      // runNode — see node-lifecycle.ts). A user STOP mid-execution flips
+      // the row terminal; the late result is then discarded here.
+      const timeoutMs = isClusterRoutedNode(current)
+        ? clusterNodeTimeoutMs()
+        : nodeTimeoutMs();
+      const raced = await executeWithWatchdog(timeoutMs, () =>
+        executeNode(current, inputs, workflowId),
       );
-      if (status === "running") {
-        // Poll-ceiling outcome: remote cluster job still running — persist
-        // the honest in-progress state, NO completedAt / progress-100.
-        await db.node.update({
-          where: { id: nodeId },
-          data: { status, result, logs, progress: 90 },
-        });
-        return status;
+      if ("timedOut" in raced) {
+        await markWatchdogTimeout(nodeId, raced.afterMs);
+        return "failed";
       }
-      await db.node.update({
-        where: { id: nodeId },
-        data: {
-          status,
-          result,
-          logs,
-          progress: 100,
-          completedAt: new Date(),
-        },
-      });
-      return status;
+      const persisted = await persistExecOutcome(nodeId, raced);
+      if (!persisted) {
+        // Aborted (or otherwise flipped) mid-run — treat as failed so the
+        // BFS cascade below doesn't fire its downstream.
+        return "failed";
+      }
+      return raced.status;
     }
 
     // 1) Run the target node (already claimed by the entry guard above).

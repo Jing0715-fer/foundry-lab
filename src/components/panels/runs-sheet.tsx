@@ -1,13 +1,19 @@
 "use client";
 
-// Global Runs sheet (B4: run-queue visualization).
+// Global Runs sheet (B4: run-queue visualization + E4 stop affordances).
 //
 // Cross-workflow execution view, opened from the header's Runs button:
 //   - Running & Queued: live progress bars per node (+ its workflow), polled
-//     every 3s while the sheet is open.
+//     every 3s while the sheet is open. Every active row carries a Stop
+//     button (node-level abort: POST /api/runs/abort { nodeId }) and the
+//     section header offers Stop all when anything is active (workflow rows
+//     are aborted per-workflow).
 //   - Failed (last 48h): each row has Retry → POST /api/workflow/nodes/:id/run
 //     (single-node lane: claims the terminal node conditionally and cascades
-//     downstream whose upstreams are completed).
+//     downstream whose upstreams are completed). Retry is FIRE-AND-FORGET
+//     (E2): the POST resolves only when the node finishes, so awaiting it
+//     left the button spinning for the whole execution — instead the toast
+//     fires immediately and the 3s poll takes over presenting the run state.
 //   - Recent (last 48h): terminal runs with duration.
 //
 // Row click → loads that workflow (switcher contract: fetch by id →
@@ -23,6 +29,7 @@ import {
   ListVideo,
   Loader2,
   RotateCw,
+  Square,
   TriangleAlert,
 } from "lucide-react";
 
@@ -105,6 +112,11 @@ function Row({
       aria-label={`${run.name} — ${run.status}. Activate to open on the canvas.`}
       onClick={onClick}
       onKeyDown={(e) => {
+        // Only activate from the ROW itself — a keypress focused on a child
+        // button (Stop/Retry) must not be hijacked into row navigation
+        // (preventDefault here would also swallow the button's own click
+        // activation). P1 finding, qa-review-c-e-lane.md.
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onClick?.();
@@ -168,6 +180,8 @@ export function RunsSheet() {
   const [loading, setLoading] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [retryingId, setRetryingId] = React.useState<string | null>(null);
+  const [stoppingIds, setStoppingIds] = React.useState<Set<string>>(new Set());
+  const [stoppingAll, setStoppingAll] = React.useState(false);
 
   // Poll while the sheet is open (3s), stop on close.
   React.useEffect(() => {
@@ -228,33 +242,77 @@ export function RunsSheet() {
 
   // Retry a failed node via the single-node run lane (claims terminal
   // nodes conditionally + BFS-cascades completed-upstream descendants).
+  // E2: fire-and-forget — the POST resolves only when the node finishes
+  // (potentially minutes), so we toast immediately, let the 3s poll surface
+  // the running state, and swallow the (late) HTTP result into a toast.
   const retry = React.useCallback(
-    async (run: RunRow) => {
+    (run: RunRow) => {
       setRetryingId(run.nodeId);
-      try {
+      // Claim-phase feedback only: clear on the next poll tick so the row
+      // flips to running naturally (or stays failed if the claim was lost).
+      void (async () => {
         const res = await fetch(`/api/workflow/nodes/${run.nodeId}/run`, {
           method: "POST",
-        });
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `HTTP ${res.status}`);
-        }
-        toast({
-          title: "Retry started",
-          description: `${run.name} is running again`,
-        });
-        // Immediate refresh so the row flips to running right away.
-        const fresh = await fetch("/api/runs");
-        if (fresh.ok) setData(await fresh.json());
-      } catch (e) {
-        toast({
-          title: "Retry failed",
-          description: e instanceof Error ? e.message : "Unknown error",
-          variant: "destructive",
-        });
-      } finally {
+        }).catch(() => null);
         setRetryingId(null);
-      }
+        if (res && !res.ok) {
+          const err = await res.json().catch(() => ({}));
+          toast({
+            title: "Retry failed",
+            description: err.error || `HTTP ${res.status}`,
+            variant: "destructive",
+          });
+        } else {
+          toast({
+            title: "Retry finished",
+            description: res
+              ? `${run.name} settled — see Recent for the outcome.`
+              : `${run.name} is retrying in the background.`,
+          });
+        }
+      })();
+      toast({
+        title: "Retry started",
+        description: `${run.name} is running again`,
+      });
+    },
+    [toast],
+  );
+
+  // E4: stop one active node (running or queued).
+  const stop = React.useCallback(
+    (run: RunRow) => {
+      setStoppingIds((prev) => new Set(prev).add(run.nodeId));
+      void (async () => {
+        try {
+          const res = await fetch("/api/runs/abort", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ nodeId: run.nodeId }),
+          });
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(payload.error || `HTTP ${res.status}`);
+          toast({
+            title: "Stopped",
+            description: `${run.name} was aborted.`,
+          });
+          // Immediate refresh so the row leaves the active lane right away.
+          const fresh = await fetch("/api/runs");
+          if (fresh.ok) setData(await fresh.json());
+        } catch (e) {
+          toast({
+            title: "Couldn't stop the run",
+            description: e instanceof Error ? e.message : "Unknown error",
+            variant: "destructive",
+          });
+        } finally {
+          setStoppingIds((prev) => {
+            const next = new Set(prev);
+            next.delete(run.nodeId);
+            return next;
+          });
+        }
+      })();
     },
     [toast],
   );
@@ -262,6 +320,49 @@ export function RunsSheet() {
   const summary = data?.summary;
   const running = data?.active.filter((r) => r.status === "running") ?? [];
   const queued = data?.active.filter((r) => r.status === "pending") ?? [];
+  const active = data?.active ?? [];
+
+  // E4: stop everything active, per workflow (each distinct workflow id
+  // among active rows gets one workflow-level abort).
+  const stopAll = React.useCallback(() => {
+    if (active.length === 0) return;
+    const wfIds = [
+      ...new Set(active.map((r) => r.workflow?.id).filter((x): x is string => !!x)),
+    ];
+    setStoppingAll(true);
+    void (async () => {
+      try {
+        let abortedTotal = 0;
+        for (const wfId of wfIds) {
+          const res = await fetch("/api/runs/abort", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ workflowId: wfId }),
+          });
+          if (res.ok) {
+            const payload = await res.json().catch(() => ({}));
+            abortedTotal += Number(payload.aborted ?? 0);
+          }
+        }
+        toast({
+          title: "All active runs stopped",
+          description: `${abortedTotal} node${abortedTotal === 1 ? "" : "s"} aborted across ${
+            wfIds.length
+          } workflow${wfIds.length === 1 ? "" : "s"}.`,
+        });
+        const fresh = await fetch("/api/runs");
+        if (fresh.ok) setData(await fresh.json());
+      } catch (e) {
+        toast({
+          title: "Couldn't stop all runs",
+          description: e instanceof Error ? e.message : "Unknown error",
+          variant: "destructive",
+        });
+      } finally {
+        setStoppingAll(false);
+      }
+    })();
+  }, [active, toast]);
 
   return (
     <Sheet open={open} onOpenChange={setRunsSheetOpen}>
@@ -292,8 +393,24 @@ export function RunsSheet() {
             <>
           {/* Active lane */}
           <section aria-label="Running and queued nodes">
-            <h3 className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Running &amp; Queued
+            <h3 className="flex items-center justify-between px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+              <span>Running &amp; Queued</span>
+              {active.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[11px] text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300"
+                  disabled={stoppingAll}
+                  onClick={stopAll}
+                >
+                  {stoppingAll ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Square className="size-3" />
+                  )}
+                  Stop all
+                </Button>
+              )}
             </h3>
             {running.length === 0 && queued.length === 0 ? (
               <p className="px-2 py-3 text-sm text-muted-foreground">
@@ -302,7 +419,31 @@ export function RunsSheet() {
             ) : (
               <div className="max-h-72 space-y-0.5 overflow-y-auto">
                 {[...running, ...queued].map((r) => (
-                  <Row key={r.nodeId} run={r} onClick={() => void jumpTo(r)} trailing={<ChevronRight className="size-4 shrink-0 text-muted-foreground" />} />
+                  <Row
+                    key={r.nodeId}
+                    run={r}
+                    onClick={() => void jumpTo(r)}
+                    trailing={
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="h-7 shrink-0 gap-1 px-2.5 text-xs"
+                        disabled={stoppingIds.has(r.nodeId)}
+                        title="Abort this node (running or queued)"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          stop(r);
+                        }}
+                      >
+                        {stoppingIds.has(r.nodeId) ? (
+                          <Loader2 className="size-3.5 animate-spin" />
+                        ) : (
+                          <Square className="size-3.5" />
+                        )}
+                        Stop
+                      </Button>
+                    }
+                  />
                 ))}
               </div>
             )}

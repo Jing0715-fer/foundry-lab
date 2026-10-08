@@ -38,6 +38,14 @@ import {
   executeNode,
 } from "@/lib/workflow-engine";
 import { topologicalOrder } from "@/lib/canvas-utils";
+import {
+  executeWithWatchdog,
+  markWatchdogTimeout,
+  persistExecOutcome,
+  isClusterRoutedNode,
+  nodeTimeoutMs,
+  clusterNodeTimeoutMs,
+} from "@/lib/node-lifecycle";
 
 export interface WorkflowRunResult {
   ok: boolean;
@@ -178,34 +186,32 @@ export async function runWorkflowById(
     if (!currentNode) return;
     const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
 
-    const { result, logs, status } = await executeNode(
-      currentNode,
-      inputs,
-      workflowId,
+    // E1 watchdog: race the engine against a timeout so a hung lane (LLM
+    // call that never resolves, a stuck spawn) can never wedge the pool.
+    // Cluster-routed nodes are exempt (their poll loop owns the timing —
+    // 30/120 min deadlines) and get a generous wedge-insurance ceiling.
+    const timeoutMs = isClusterRoutedNode(currentNode)
+      ? clusterNodeTimeoutMs()
+      : nodeTimeoutMs();
+    const raced = await executeWithWatchdog(timeoutMs, () =>
+      executeNode(currentNode, inputs, workflowId),
     );
 
-    if (status === "running") {
-      // Poll-ceiling outcome (cluster job still running remotely): persist
-      // the honest in-progress result/logs but NO completedAt and NO
-      // progress-100 — the node legitimately stays running.
-      await db.node.update({
-        where: { id: nodeId },
-        data: { status, result, logs, progress: 90 },
-      });
+    if ("timedOut" in raced) {
+      // Node never settled → fail it, unlock downstream (finally), pool
+      // moves on. The engine promise may still resolve later — nobody
+      // consumes it, so a late result can never resurrect the node.
+      await markWatchdogTimeout(nodeId, raced.afterMs);
       return;
     }
 
-    await db.node.update({
-      where: { id: nodeId },
-      data: {
-        status,
-        result,
-        logs,
-        progress: 100,
-        completedAt: new Date(),
-      },
-    });
-    if (status === "completed") completedCount++;
+    // Conditional persist: a user STOP (E4) may have flipped the node to
+    // failed while the engine ran — write only while it is still running so
+    // the late result is discarded instead of overwriting the abort.
+    const persisted = await persistExecOutcome(nodeId, raced);
+    if (persisted && raced.status === "completed") {
+      completedCount++;
+    }
   }
 
   // ── Bounded worker pool (event-driven pump) ────────────────────────────

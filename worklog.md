@@ -3412,3 +3412,96 @@ Work Log:
 
 Stage Summary:
 - B 线（画布与执行引擎）全部交付并三重验证（API 冒烟/QA 审查/浏览器 e2e 含真实执行）；下一阶段方向以本轮 9 项实测结论为据：C 线（数据与可信度）与 E 线（执行健壮性）并行推进。
+
+---
+Task ID: 22
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（ROADMAP C 线 + E 线：执行健壮性与数据可信度）
+
+Work Log:
+- E1 executeNode 看门狗：新建 src/lib/node-lifecycle.ts —— executeWithWatchdog（Promise.race 判别联合 ExecOutcome | WatchdogTimeout）、markWatchdogTimeout（条件标 failed）、persistExecOutcome（**条件写回**：只写 status=running 的行 → 用户中止/看门狗后晚到的引擎结果被丢弃而非复活节点）。本地 lane 默认 15min（NODE_TIMEOUT_MS 环境变量可覆盖供 e2e）；cluster 路由节点豁免（poll 循环自有 30/120min deadline），仅设 150min 楔死保险。
+- workflow-runner.ts runNode + 单节点 run route runOne 双 lane 接入看门狗+条件写回；runner completedCount 只统计成功写回的 completed。
+- E4 全局运行中止：POST /api/runs/abort（nodeId 或 workflowId 二选一；running/pending → failed "Aborted by user"；pending 节点 claim 条件 pending/idle 失败即跳过；cluster ToolJob 远端取消不在本 route 范围）。RunsSheet active 行加 Stop 按钮 + Running&Queued 标题行 Stop all（按 workflow 分组批量）。
+- E2 Retry fire-and-forget：RunsSheet retry 不再 await 贯穿执行的 POST —— 立即 toast + 3s 轮询接管，late HTTP 结果仅转 toast。
+- E3 组卡可拖拽：sweep-group-card pointer 拖拽契约同 node-card（capture + transform + zoom 换算 world delta）；pointerup 时一次历史快照 → N upsert → N PATCH（失败回滚）；点击(未移动)仍展开。折叠一致性：node-search 与 node-group 过滤 collapsedSweepGroups 成员（node-group 全折叠组跳过、部分折叠重算包围盒）。
+- C2 实验溯源：promoteCandidates 节点 params 增加 source 结构块（screeningId/Name/sourceLabel/candidates[{id,name,status}]/promotedAt）；Inspector 防御式解析 params.source → 页脚 GitBranch 徽标（"From screening: X · N candidates promoted"，data-provenance-badge）；store 新增 openScreening(id)/pendingScreeningId，ScreeningPanel 消费 pending 切换到对应 screening —— 双向导航闭环（候选 status=promoted 早已回写）。
+- C3 undo 状态语义：nodes POST 接受可选 snapshot 块（status/progress/result/logs，枚举校验 + 1MiB 上限 + running→idle 强制），history-apply 恢复删除节点时携带快照状态；更新过时注释。
+- C5 sweep 语义明示：Sweep 对话框预览区新增"变体继承源入边，无上游时为独立根并行执行"提示（测试结论 #2）。
+- C4 运维文档：新建 docs/CONTRIBUTING.md（db:push 后必须重启 dev server 的症状/根因/修复 + 代码约定 + 环境限制）。
+- C1 演示数据治理（文档侧）：README 移除硬编码"6 节点 · 5 条边"（与活 DB 矛盾），改为演示数据说明 + /api/seed 幂等重置指引。
+- 冒烟：abort API 无效输入 400×2/404×2/409×1 全符合；C3 快照字段写回正确、非法 status 安全降级 idle；lint 零告警、tsc src/ 零错误；冒烟节点清理后演示 DB 基线不变（Antibody 5 节点 3 边 + My First 14 节点 12 边）。
+
+Stage Summary:
+- E1-E4 执行健壮性 + C1-C5 数据可信度全部落地；核心并发语义（看门狗不楔死 pool、abort 不被晚到结果覆盖、undo 恢复保留快照状态）以条件写回统一实现于 node-lifecycle.ts；待 QA 审查 + 浏览器 e2e。
+
+---
+Task ID: 23-a
+Agent: qa-code-reviewer (Z.ai Code)
+Task: C+E 线改动深度代码审查
+
+Work Log:
+- 前置：读 worklog Task 20/21/22 段 + git diff/status 全量过一遍（16 改 + 3 新文件，600+/93-）。
+- 逐文件精读：node-lifecycle.ts、runs/abort/route.ts、workflow-runner.ts、nodes/[id]/run/route.ts、runs-sheet.tsx、sweep-group-card.tsx、node-search/node-group、nodes/route.ts（snapshot）、history-apply.ts、screening.ts（source 块）、inspector.tsx（promoteSource 徽标）、store.ts、screening-panel.tsx、sweep-dialog.tsx、docs/CONTRIBUTING.md。
+- 并发推演（A 线）：条件写回 vs abort vs 看门狗全组合矩阵；worker pool drain 证明（executeWithWatchdog 必 settle → finally 归还 lane）；Promise.race 对晚到 rejection 的消化（无 unhandledRejection）；单节点 route reclaimer×abort 的 claim 竞态；abort pending→claim count=0 路径无幽灵解锁（claim-lost 解锁为既有明示语义）。
+- 交叉验证既有 lane：SSE stream route 的 reconcileClusterOutcome（发现 P0：无条件写回可复活已 abort 节点）、instrumentation boot reconcile、extractClusterTarget 与 isClusterRoutedNode 的 `_cluster:""` 语义分歧（发现 P1）、mergeNodes/page.tsx 3s 轮询与组拖拽 upsert→PATCH 窗口的回弹竞态、history-store/push 不可变契约。
+- UI 契约核对：组卡拖拽 zoom 换算 vs node-card、历史快照 push 时机 vs undo 栈订阅（计数变化才捕获→无双推）、RunsSheet Row 键盘事件冒泡（发现 P1：Stop/Retry 键盘激活被行吞掉）、ScreeningPanel pending 消费 effect 依赖/清理。
+- 工具链复验：bunx tsc --noEmit（过滤 examples/skills 后零输出，原始 4 条全在预存 examples/skills）；bun run lint 零告警。
+- 报告落盘 docs→ /home/z/my-project/qa-review-c-e-lane.md（P0×1 / P1×2 / P2×11 + 已验证无问题清单 11 项 + 修复顺序建议）。未修改任何代码。
+
+Stage Summary:
+- P0×1：SSE poll-ceiling reconcile 的 db.node.update 不带 status 条件 —— 用户 Stop 落在其 findUnique→update 窗口内时，已 abort 的 cluster 节点被晚到的远端结果复活为 completed（正是 node-lifecycle 条件写回要防的竞态类别，但该 lane 未接入契约；一行 updateMany 修复）。
+- P1×2：① isClusterRoutedNode 把 `_cluster:""`（inspector 清除态）误判为 cluster 路由 → 本地执行节点拿到 150min 而非 15min 看门狗（与引擎 extractClusterTarget 语义分歧）；② RunsSheet Row 的 onKeyDown 无来源守卫 → Stop/Retry 键盘激活被吞并触发误导航（E4 安全操作键盘不可达）。
+- P2×11（摘要）：nodes POST params 无上限（"防 blob store" 注释不成立）、快照可复活无主 pending 排队态、组拖拽 rAF 注释漂移、upsert→PATCH 窗口与 mergeNodes 轮询回弹竞态、stopAll 过期快照+静默失败、retry 网络失败文案误导、深链静默丢失、history-apply running→idle 注释漂移、params 类型失真+ExecOutcome 重复定义、abort 不加速看门狗（注释过度承诺）、杂项 6 条。
+- 总体：node-lifecycle 条件写回核心契约本身推演无漏洞；两 lane 接入正确；P0 在既有 SSE lane 与新 abort 的交互面。报告见 qa-review-c-e-lane.md。
+
+---
+Task ID: 23-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P0×1 + P1×2 + P2×2
+
+Work Log:
+- P0（SSE reconcile 复活竞态）：stream/route.ts 的 reconcileClusterOutcome 原为 findUnique→无条件 update —— 用户 Stop 落在读与写之间时会把已 abort 的节点覆盖回 completed。改条件 updateMany（where status=running）+ count=0 丢弃本轮 reconcile，接入 node-lifecycle 条件写回契约（第三条 lane 收编）。
+- P1（看门狗豁免误判）：isClusterRoutedNode 原只查 _cluster !== undefined/null —— inspector 清除态 _cluster:"" 被判 cluster → 150min 看门狗，本地节点失去 15min 保护。改复用引擎同款 extractClusterTarget（空串/无 connectionId 均判本地）。
+- P1（键盘 Stop 被行吞）：RunsSheet Row 的 onKeyDown 无事件来源守卫 —— 聚焦 Stop/Retry 按 Enter 会冒泡到行触发 jumpTo 误导航且吞掉按钮激活。加 e.target !== e.currentTarget 守卫。
+- P2（params blob 上限）：nodes POST 的 paramsJson 加 1MiB 上限（413）——兑现头部"不能当 blob store"承诺（result/logs 已有上限）。
+- P2（快照复活 pending 排队态）：snapshot 恢复时 running 与 pending 一并 coerce idle —— 复活的 pending 行没有 runner 管它，会永远卡在运行队列。
+- 复验：tsc src/ 零错误、lint 零告警。
+
+Stage Summary:
+- QA 审查的全部 P0/P1 闭环；P2 修 2 条（其余 9 条为体验/一致性建议，记入 ROADMAP E/F 线）。核心教训：条件写回契约必须覆盖**所有**写节点状态的 lane —— runner/单节点 run 之外还有 SSE reconcile 这条旁路。
+
+---
+Task ID: 24
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：E 线（看门狗/中止/Retry/组卡拖拽）+ C 线（溯源徽标/undo 状态）全链路（API 实测 + agent-browser 真实指针事件 + VLM）
+
+Work Log:
+- **环境**：NODE_TIMEOUT_MS=8000 缩短看门狗（.env 临时注入 + stdio 完全分离启动 dev server 跨命令存活）；测试后已还原默认并重启。
+- **E1 看门狗（API 实测）**：3 节点 DAG（Heavy rfdiffusion 300aa×8designs ≈20s 引擎 + Quick Input + Sink 下游）。POST run → **8.2s 返回**（超时节点被标 failed "watchdog"、pool 正常 drain 不楔死）；Quick Input completed（并行 lane 未被楔死）；Downstream Sink 与超时同刻 completed（**下游解锁**）。45s 后复验：Heavy 仍 failed、completedAt 保持在触发时刻（**晚到引擎结果被条件写回丢弃，不复活**）；引擎输出目录 wf-* 已产生（引擎确实晚到完成过）。
+- **E4 abort（API 实测）**：单节点 run（后台线程）→ 2s 时 running → POST /api/runs/abort → 立即 failed "Aborted"；后台 run lane 返回 failed；40s 后仍 failed、completedAt 保留 abort 时刻（晚到不复活）。409/404/400 冒烟全符合。
+- **E4 UI（浏览器真实指针）**：后台重跑 Heavy → 打开 RunsSheet（"1 running"、Stop/Stop all 按钮齐）→ 物理 mouse down/up 点击 Stop → toast "Stopped Heavy RFdiffusion was aborted." + summary 变 "0 running · 2 failed" + 节点迁入 FAILED·RETRY 分区。
+- **E2 Retry fire-and-forget（浏览器）**：failed 行 Retry 物理点击 → "Retry started" toast 即时 + 按钮 spinner 仅覆盖 claim 阶段（5s 后清除）+ 3s 轮询接管显示 "1 running"。
+- **E3 组卡拖拽（CDP mouse 真实拖拽）**：sweep 2 变体 → 物理点击 sweep 徽标折叠（组卡出现）→ mouse down(754,256) + move 分步 +200/+120 + up → **DB 两成员 (30,60)→(230,180) 整组平移持久化** → Ctrl+Z → **两成员回到 (30,60)**（单次撤销恢复整组，快照一次 push）。教训：CDP mouse move 需 --duration ≥150ms 才可靠触发 hover/click 派发（短 duration 曾致点击落空）。
+- **C2 溯源徽标（浏览器）**：promote fv_design_1 → 节点 params.source 结构完整（API 验证）→ 选中节点 Inspector 显示 GitBranch 徽标 "From screening: Antibody Fv Campaign · 1 candidate promoted to the canvas" → 物理点击徽标 → **跳转 Screening 面板 + Antibody Fv Campaign 选中 + 候选列表可见**（openScreening/pendingScreeningId 链路）。
+- **C3 undo 状态（浏览器）**：promote 节点（completed+source）→ 删除（DB 确认消失）→ Ctrl+Z → **恢复后 status=completed + progress=100 + result + source 全部保留**（旧实现会 idle 化）。
+- **回归**：375px 移动端零横向溢出 + footer 贴底（footerBottom 780/812）；页面错误/unhandled rejection 0；dev.log 无运行时错误；VLM 复验三张截图（组卡完整/Runs 面板分区+Stop/移动端布局）全部通过。
+- **清理**：E-Lane QA Watchdog Test 工作流删除；fv_design_1 候选 status 重置 new（fv_design_5 的历史 promoted 保留）；基线验证：Antibody 5 节点 3 边 + My First 14 节点 12 边 + 3 个 screening（6/20/60 候选）。
+- 局限说明：P0 修复（SSE reconcile 条件写）未构造真实 SSH cluster 场景实测——与 abort 同一条件写语义已在两条 lane 实证，cluster 场景靠 QA 推演背书（记入 ROADMAP 测试结论）。
+
+Stage Summary:
+- E1/E2/E3/E4 + C2/C3 六项功能全部浏览器级或 API 级实测通过（含真实引擎、真实指针事件、DB 文件级证据）；演示 DB 零污染；发现 CDP 拖拽 duration 陷阱（已记入验收经验）。
+
+---
+Task ID: 25
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：基于测试结果重写 ROADMAP（F 线规划）+ README 更新 + git 提交
+
+Work Log:
+- docs/ROADMAP.md 重写：本阶段成果（E 线四项 + C 线五项 + QA 修复含 P0 SSE reconcile 收编）+ 测试结论表（12 项：看门狗/abort 语义闭环、**条件写回契约必须覆盖所有 lane 的 P0 教训**、CDP duration ≥150ms e2e 工程标准、abort 不 kill 远端 ToolJob、AbortSignal 未贯通执行层等）+ 下一阶段 = **F 线 P1（执行可控性与溯源闭环）**：F1 远端 cluster 作业联动中止、F2 AbortSignal 贯通（即时打断 spawn/LLM 请求）、F3 运行历史归档、F4 SSE reconcile 真实 cluster e2e、F5 溯源链反向展示；D 线科研深度与 QA 遗留分别列 P2/P3。
+- README.md：组卡可拖拽、看门狗+运行中止、Promote 溯源徽标（含跳回 campaign + undo 保留状态）三处能力更新；API 表新增 POST /api/runs/abort。
+- docs/CONTRIBUTING.md（本轮新增）链接入 ROADMAP 验收参考。
+- 最终检查：lint 零告警、tsc src/ 零错误、dev server 存活、dev.log 无运行时错误、演示 DB 基线完整（Antibody 5 节点 3 边 + My First 14 节点 12 边 + 3 screening 6/20/60）。
+- git 提交推送。
+
+Stage Summary:
+- C 线 + E 线全部交付并三重验证（API 冒烟/QA 审查闭环 P0+P1×2+P2×2/浏览器 e2e 含真实引擎与真实指针事件）；下一阶段方向以本轮 12 项实测结论为据——F 线（执行可控性与溯源闭环）成为 P1。

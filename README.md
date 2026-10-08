@@ -10,7 +10,11 @@
 
 ![Foundry Lab 工作流画布](docs/images/02-canvas-hero.png)
 
-上图是一条真实跑通的完整工作流：`设计简报 → RFdiffusion 骨架生成 → ProteinMPNN 序列设计 → AlphaFold 结构预测 → 最终报告`，全部节点均为真实算法引擎执行完成（6 节点 · 5 条边）。
+上图是一条真实跑通的完整工作流：`设计简报 → RFdiffusion 骨架生成 → ProteinMPNN 序列设计 → AlphaFold 结构预测 → 最终报告`，全部节点均为真实算法引擎执行完成（图中为演示截图；随你在画布上的增删，节点数会持续演化）。
+
+> 演示数据库内置两个工作流（Antibody Design Campaign 与 My First
+> Workflow）以及若干 screening campaign。`POST /api/seed` 可随时幂等
+> 重置内置 agent 与默认工作流，不影响你的其余数据。
 
 📖 **[完整使用攻略教程（图文并茂）→ docs/tutorial.md](docs/tutorial.md)**
 
@@ -95,12 +99,17 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   标签（`变体名/design_0`），参数轴自动绑定指标权重预设（如 `total_length`
   变体 → 几何指标加权）。变体节点卡片常驻 `sweep` 徽标，撤销/重做后组链接
   依然保持（组 id 随节点重建传递）。
-- **变体聚合组卡**：点击变体卡上的 `sweep` 徽标 → 整组折叠为一张**组卡**
-  （实时进度 = 完成数/总数、状态徽标、Compare 入口），点击组卡随时展开。
+- **变体聚合组卡（可拖拽）**：点击变体卡上的 `sweep` 徽标 → 整组折叠为一张**组卡**
+  （实时进度 = 完成数/总数、状态徽标、Compare 入口），点击组卡随时展开；
+  拖拽组卡平移整组成员（单次 Ctrl+Z 恢复整组位置）。
   大 sweep 不再淹没画布；折叠态连线自动聚合到组卡锚点（含小地图）。
 - **并行执行通道**：工作流按 DAG 依赖并行执行——无依赖的 sweep 变体同时
   运行（内置引擎并发上限 3），完成提示展示实际并行车道数；失败节点不阻断
   下游（与串行语义一致）。
+- **执行看门狗 + 运行中止**：每个节点 15 分钟看门狗（集群任务豁免）——
+  引擎挂起时自动标 failed 并解锁下游，执行池永不楔死；Runs 面板每行
+  **Stop** 可即时中止运行中/排队中的节点（workflow 级 Stop all），
+  晚到的引擎结果不会复活已中止节点。Retry 为即时反馈（后台执行、轮询接管）。
 - **自动布局防重叠**：新建 / sweep 变体网格 / 拖放落点全部做占用检测，
   冲突自动偏移到最近空位——两次 sweep 同源、连续快速新建都不会叠卡。
 - **全局运行队列（Runs）**：顶栏 Runs 按钮（运行中数量徽标）打开跨工作流
@@ -127,8 +136,10 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   批量操作、双候选并排对比（并列最优高亮）。
 - **详情 + 3D**：每个候选可打开详情抽屉 —— 指标网格、着色序列、标签/笔记、
   真实 3D 结构。
-- **Promote 回画布**：把选中的候选提升为画布输入节点，下游工具节点
-  **自动接线** pdb/fasta 文件（已用真实 ProteinMPNN 运行验证闭环）。
+- **Promote 回画布（含溯源徽标）**：把选中的候选提升为画布输入节点，下游工具节点
+  **自动接线** pdb/fasta 文件（已用真实 ProteinMPNN 运行验证闭环）；提升的节点
+  带结构化血缘信息（来源筛选 + 候选清单），Inspector 显示 GitBranch 溯源徽标，
+  点击一键跳回对应筛选 campaign；删除后 Ctrl+Z 恢复仍保留 completed 状态与全部产出。
 - **导出 CSV**。
 
 ![筛选结果表](docs/images/06-screening-table.png)
@@ -288,6 +299,7 @@ bun run dev            # http://localhost:3000
 | GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
 | POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
 | GET | `/api/runs` | 全局运行队列（跨工作流 active/failed/recent + 汇总） |
+| POST | `/api/runs/abort` | 运行中止（nodeId 节点级 / workflowId 整工作流） |
 | POST | `/api/workflows/:id/versions/:v/restore` | 恢复版本快照 |
 | POST | `/api/workflows/:id/schedule` | 预约定时运行 |
 | GET/POST | `/api/agents` | 智能体 CRUD |

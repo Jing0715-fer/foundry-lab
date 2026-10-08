@@ -1,0 +1,63 @@
+# Foundry Lab — 贡献与运维指南
+
+> 面向在本仓库上继续开发的工程师。覆盖日常开发循环、数据库变更、
+> 以及三个容易踩的运维坑（均有实测教训，见 docs/ROADMAP.md 测试结论表）。
+
+## 日常开发循环
+
+```bash
+bun run dev     # 开发服务器（端口 3000，唯一对外端口；始终后台运行）
+bun run lint    # ESLint —— 收尾前必须零告警
+bunx tsc --noEmit  # 类型检查 —— src/ 必须零错误（examples/ 的预存报错不算）
+bun run db:push # Prisma schema → SQLite（见下节）
+```
+
+- 生产路径只有 `/`（单页工作台）。所有后端能力都在 `src/app/api/**` 的
+  route handlers 里，不要新增页面路由。
+- 实时执行状态靠 3s 轮询 + SSE（节点 stream route），不引入额外中间件。
+
+## 数据库变更（重要）
+
+`prisma/schema.prisma` 是唯一事实源，数据库文件在 `db/custom.db`：
+
+```bash
+# 1. 编辑 prisma/schema.prisma
+# 2. 推送 schema
+bun run db:push
+# 3. 重启 dev server —— 见下
+```
+
+### ⚠️ db:push 之后必须重启 dev server
+
+**症状**：`bun run db:push` 成功后，运行中的 dev server 仍持有旧版
+Prisma Client —— 新字段/新模型在 API 层表现为 `Unknown argument` 之类的
+PrismaClientValidationError，且报错信息会误导你去怀疑 schema 没推上去。
+
+**根因**：Prisma Client 是在 dev server 启动时生成的，`db:push` 只更新
+数据库和 `node_modules/.prisma` 文件；运行中的进程不会热加载新的
+client 代码。
+
+**修复**：重启 `bun run dev`（杀掉旧实例再起，避免双实例争抢 3000 端口）。
+此坑来自实测（ROADMAP 测试结论 #7/#9），验收清单已包含该检查。
+
+## 演示数据库
+
+`db/custom.db` 内含演示工作流与 screening 数据（README 与教程截图引用
+它们）。**e2e 测试后必须恢复基线**：测试工作流删除、节点/边计数与
+测试前一致、screening 权重回到默认。验收标准见 docs/ROADMAP.md。
+
+## 代码约定
+
+- TypeScript 严格模式；`'use client'` / `'use server'` 明确标注。
+- UI 用 shadcn/ui（New York 风格）+ Tailwind CSS 4；不引 indigo/blue 主色。
+- 服务端 SDK（z-ai-web-dev-sdk）只在后端用，绝不进客户端包。
+- 每个新 API route：无效输入一律 400（带可读错误信息），写操作考虑
+  幂等/原子 claim（参考 `db.node.updateMany` 条件更新模式）。
+- 节点执行相关改动必须读 `src/lib/node-lifecycle.ts` 的注释 —— 看门狗、
+  条件写回与用户中止的语义在那里统一定义。
+
+## 已知环境限制
+
+- 只暴露 3000 端口（Caddy 网关）；跨端口请求用 `?XTransformPort=` 查询参数。
+- `bun run build` 不在沙箱环境使用（内存受限）；以 dev server + lint +
+  tsc + 浏览器 e2e 作为验收。

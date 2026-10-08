@@ -160,9 +160,14 @@ export async function GET(
           (job.stderr ? `[stderr]\n${job.stderr.slice(-2000)}\n` : "") +
           (files.length ? `##OUTPUTS## ${JSON.stringify(files)}\n` : "");
 
-        await db.node
-          .update({
-            where: { id: nodeRow.id },
+        // Conditional write (node-lifecycle contract): only settle a node
+        // that is STILL running — a user Stop (POST /api/runs/abort) or the
+        // watchdog may have flipped it terminal between our reads and this
+        // write. An unconditional update here would resurrect the node
+        // (P0 finding, qa-review-c-e-lane.md); count=0 → drop this reconcile.
+        const settled = await db.node
+          .updateMany({
+            where: { id: nodeRow.id, status: "running" },
             data: {
               status: nodeStatus,
               result,
@@ -171,7 +176,8 @@ export async function GET(
               completedAt: new Date(),
             },
           })
-          .catch(() => {});
+          .catch(() => null);
+        if (settled === null || settled.count === 0) return null;
         return { status: nodeStatus, progress: 100, logs, result };
       };
 

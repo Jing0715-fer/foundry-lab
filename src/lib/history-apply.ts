@@ -140,6 +140,15 @@ export async function applyHistorySnapshot(snap: HistorySnapshot): Promise<void>
               // Sweep linkage — restored variants must rejoin their group so
               // compare / one-click campaign still resolve after a redo.
               sweepGroup: n.sweepGroup ?? undefined,
+              // C3 snapshot restore — resurrect the node with the state it
+              // had when it was captured (a completed node comes back
+              // completed, with result/logs) instead of a factory-fresh idle
+              // one. "running" nodes come back as idle server-side (no live
+              // executor behind them).
+              status: n.status,
+              progress: n.progress,
+              result: n.result ?? undefined,
+              logs: n.logs ?? undefined,
             }),
           })
             .then((r) =>
@@ -187,10 +196,8 @@ export async function applyHistorySnapshot(snap: HistorySnapshot): Promise<void>
 
       // 4. Remap the snapshot onto server reality: every restored node keeps
       // its snapshot fields but takes the NEW server id where one was minted.
-      // The POST was made with the snapshot's type/name/xy/params, so the row
-      // mirrors the snapshot except for ids/timestamps (and status — a fresh
-      // row is always idle; the store keeps the snapshot's view until the
-      // next poll/reload reconciles it).
+      // The POST carries the snapshot's type/name/xy/params/STATUS (C3), so
+      // the row mirrors the snapshot except for ids/timestamps.
       const finalNodes: NodeDTO[] = snap.nodes.map((n) => {
         const newId = idMap.get(n.id);
         return newId ? { ...n, id: newId, workflowId: wf.id } : { ...n, workflowId: wf.id };

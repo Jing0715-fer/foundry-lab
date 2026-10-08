@@ -477,6 +477,17 @@ export function SweepDialog({
               )}
             </ul>
           )}
+          {/* C5: dependency semantics, made explicit (test finding #2):
+              variants inherit the SOURCE's incoming edges — when the source
+              has no upstream of its own, every variant is an independent
+              root, so a "Run all" executes them in PARALLEL (they don't wait
+              for the source to finish). */}
+          <p className="mt-2 border-t pt-2 text-[11px] leading-relaxed text-muted-foreground">
+            Variants inherit this node&apos;s incoming connections. When the
+            node has no upstream, variants are independent roots —{" "}
+            <span className="font-medium">they run in parallel</span> and do
+            not wait for the source node&apos;s output.
+          </p>
         </div>
 
         <div className="flex items-center gap-2">

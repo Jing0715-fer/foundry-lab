@@ -1723,6 +1723,24 @@ export async function promoteCandidates(
     `##OUTPUTS## ${JSON.stringify(files)}\n`;
 
   const now = new Date();
+  // C2 provenance: a structured source block so the canvas node carries its
+  // full lineage (screening → candidates → this node). The Inspector renders
+  // a source badge from it (click → jump back to the screening); the flat
+  // markdown text stays for human reading. refId ALSO points at the
+  // screening, so `db.node.findMany({ where: { refId } })` resolves every
+  // promote node of a screening without any schema change.
+  const sourceBlock = {
+    kind: "screening-promote",
+    screeningId: screening.id,
+    screeningName: screening.name,
+    sourceLabel: screening.sourceLabel ?? null,
+    candidates: ordered.map((c) => ({
+      id: c.id,
+      name: c.name,
+      status: c.status,
+    })),
+    promotedAt: now.toISOString(),
+  };
   const nodeRow = await db.node.create({
     data: {
       workflowId: wf.id,
@@ -1733,7 +1751,7 @@ export async function promoteCandidates(
       y,
       status: "completed",
       progress: 100,
-      params: JSON.stringify({ text: markdown }),
+      params: JSON.stringify({ text: markdown, source: sourceBlock }),
       result: summary,
       logs,
       startedAt: now,

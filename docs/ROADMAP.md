@@ -1,99 +1,113 @@
 # Foundry Lab — Roadmap
 
-> 下一阶段开发方向。基于 2026-10-05（Sweep 系统）、2026-10-06（A 线闭环）与
-> 2026-10-07（B 线画布与执行引擎）三轮测试结论滚动更新，随每个阶段交付后重写。
+> 下一阶段开发方向。基于 2026-10-08（C 线数据可信度 + E 线执行健壮性）及此前
+> Sweep/A 线/B 线三轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
-- **参数扫描（Parameter Sweep / Campaign Mode）**：Inspector 的 Sweep 按钮一键把工具节点
-  参数网格（笛卡尔积，≤24 组合）展开为变体节点——继承上游连线、命名带 `k=v` 标签、
-  单次 Ctrl+Z 整组撤销。全链路 e2e 验证：`num_designs` / `total_length` 真实反映到
-  输出文件数与残基数，输出进入 Screening 评估。
-- **A 线 · Campaign 体验深化**：Sweep 结果对比视图（Best 榜冠/列内最优高亮）、
-  Sweep → Screening 一键衔接（参数轴权重预设/变体名溯源）、6 个参数轴阶梯模板、
-  sweepGroup 数据链路（undo/redo 保组）。
-- **B 线 · 画布与执行引擎（本轮交付）**：
-  - **B1 自动布局防重叠**：sweep 变体网格锚点做块级 AABB 占用检测，冲突整块下移
-    （两次 sweep 同源实测 y=310/640 完全错开）；`findFreeSpot` 螺旋搜索统一到
-    `canvas-utils.ts` 共享（palette/command-palette/canvas 三个 drop 入口 + 出界候选
-    过滤），9 节点程序化 AABB 验证零重叠。
-  - **B2 并行执行通道**：`workflow-runner.ts` 重写为 Kahn 入度调度 + 事件驱动
-    worker pool（MAX_CONCURRENCY=3），保留原子 claim / poll-ceiling 诚实语义 /
-    失败不剪枝（与串行版语义对齐）。`POST /api/workflow/run` 响应新增
-    `peakConcurrency`（header toast 展示 "N parallel lanes"）。实测：3 节点同毫秒
-    启动、peakConcurrency=3、墙钟 17.3s（串行需 ~35s）、num_designs 1–8 全部真实
-    反映到 PDB 文件数。
-  - **B3 Sweep 聚合组卡**：变体卡 sweep 徽标点击 → 整组折叠为一张组卡（进度条 =
-    完成数/总数、状态 pill、Compare 入口、Expand），点击组卡展开；折叠时
-    EdgesLayer/LiveWire/minimap 成员位置映射到组卡锚点（边视觉聚合、无悬空线）。
-    纯 UI 状态（不进 DB），undo/redo 零影响。
-  - **B4 运行队列可视化**：`GET /api/runs` 跨工作流队列（active/failed/recent/
-    summary，查询级 select 防 3s 轮询读放大）+ header Runs 按钮（running 徽标）+
-    RunsSheet（打开时 3s 轮询、失败行 Retry 复用单节点 run lane 的 claim+级联、
-    行点击跳转工作流并选中节点）。
-- **QA 修复（本轮实测发现）**：
-  - **卡片交互元素被拖拽 pointer-capture 吞掉（严重，e2e 实测）**：node-card 的
-    `onCardPointerDown` 无差别 `setPointerCapture`，导致卡内任何 button（sweep 折叠
-    徽标等）的 click 被重定向到卡片永不触发。修复：pointerdown 时排除交互元素
-    （button/a/input/select/[role=button]）。
-  - sweep 网格上界从"事后 Math.min 截断"改为搜索循环条件（防把找到的空位拉回
-    重叠区）；runs 查询 trim 到 select 级；RunsSheet 行改 div[role=button]（消
-    button 嵌套）；框选只命中可见节点（防折叠组暗选+浮空删除条）。
-  - 跨工作流撤销污染（上轮修复）回归验证通过；minimap 折叠一致性 + 悬空边修复。
+- **E 线 · 执行健壮性与交互打磨（本轮交付）**：
+  - **E1 executeNode 看门狗**：`node-lifecycle.ts` 统一执行生命周期——
+    Promise.race 判别联合超时（本地 lane 15min，`NODE_TIMEOUT_MS` 可覆盖；
+    cluster 路由节点豁免 150min 楔死保险）；超时节点标 failed + 解锁下游，
+    pool 永不楔死。e2e 实证：8.2s 返回、并行 lane 存活、下游解锁、
+    **晚到引擎结果被条件写回丢弃（45s 后仍 failed）**。
+  - **E4 全局运行中止**：`POST /api/runs/abort`（nodeId/workflowId 二选一）→
+    running/pending 标 failed "Aborted"；RunsSheet active 行 Stop 按钮 +
+    Running&Queued 区 Stop all（按 workflow 批量）。e2e 实证：运行中 Stop
+    立即生效 + toast + 节点迁入 failed lane + 40s 后不被晚到结果复活。
+  - **E2 Retry 即时反馈**：RunsSheet Retry 改 fire-and-forget——toast 即时、
+    spinner 仅覆盖 claim 阶段、3s 轮询接管呈现 running 态。
+  - **E3 组卡可拖拽**：折叠组卡 pointer 拖拽（node-card 同契约：capture +
+    transform + zoom 换算）→ 一次历史快照 + N upsert + N PATCH；CDP 真实
+    拖拽实测整组 (30,60)→(230,180) 持久化、Ctrl+Z 单次恢复整组。
+    折叠一致性收尾：NodeSearch / NodeGroupLayer 过滤折叠成员。
+- **C 线 · 数据与可信度（本轮交付）**：
+  - **C2 实验溯源**：promote 节点 params.source 结构化血缘块（screening
+    id/name/sourceLabel/candidates/promotedAt）+ Inspector GitBranch 溯源
+    徽标（`openScreening` 跨面板深链：徽标点击 → Screening 面板 + 对应
+    campaign 打开，实测闭环）。
+  - **C3 undo 状态语义**：nodes POST 接受可选 snapshot 块（status/progress/
+    result/logs，枚举校验 + 1MiB 上限 + running/pending coerce idle）；
+    history-apply 恢复删除节点携带快照——实测 promote 节点删除后 Ctrl+Z
+    恢复仍 completed + result + source 全保留。
+  - **C5 sweep 依赖语义**：Sweep 对话框明示"变体继承源入边，无上游时为
+    独立根并行执行"。
+  - **C4 运维文档**：docs/CONTRIBUTING.md（db:push 后重启 dev server 的
+    症状/根因/修复 + 代码约定 + 环境限制）。
+  - **C1 演示数据治理（文档侧）**：README 移除硬编码节点数（与活 DB 矛盾），
+    补 /api/seed 幂等重置指引。
+- **QA 修复（本轮实测/审查发现）**：
+  - **P0：SSE poll-ceiling reconcile 无条件写回复活已中止节点**（QA 审查
+    发现，qa-review-c-e-lane.md）：用户 Stop 落在 reconcile 读与写之间时，
+    已 abort 的 cluster 节点被覆盖回 completed。修复：条件 updateMany
+    （where status=running）——条件写回契约收编**第三条 lane**。
+  - P1：`isClusterRoutedNode` 用引擎同款 `extractClusterTarget`（`_cluster:""`
+    不再误判 cluster 而失去 15min 看门狗）；RunsSheet Row onKeyDown 事件
+    来源守卫（聚焦 Stop/Retry 按 Enter 不再被行吞掉触发误导航）。
+  - P2：nodes POST params 1MiB 上限；快照恢复 pending coerce idle（防复活
+    排队态无人认领）。
 
 ## 测试结论（驱动后续优先级）
 
 | # | 发现 | 影响 | 对应方向 |
 |---|------|------|----------|
-| 1 | B2 并行实测 peakConcurrency=3、无依赖变体与源同毫秒启动 | 大 sweep 等待时间减半成立 | 已交付 B2 |
-| 2 | sweep 变体只继承源节点入边：无上游源的变体是无依赖节点（并行执行） | 语义正确但用户可能误以为变体会等源输出 | C5（文档化） |
-| 3 | 卡片内交互元素（button）被 pointer-capture 吞 click | 任何卡内按钮都点不动（本轮 sweep 徽标触发） | 已修复，验收新增"卡内 button 必须实测点击" |
-| 4 | executeNode 无超时看门狗：单个引擎挂起会楔死整个 worker pool | 长会话可靠性 | E1 |
-| 5 | RunsSheet Retry 的 await 贯穿整个节点执行（长任务按钮长时间 spinner） | 可接受但体验欠佳 | E2 |
-| 6 | 组卡不可拖拽；NodeSearch/NodeGroupLayer 未过滤折叠成员 | 轻微不一致 | E3 |
-| 7 | 演示 DB（14 节点）与 README 文档（6 节点）不一致 | 文档可信度 | C1（延续） |
-| 8 | undo 恢复的删除节点在服务器端为 idle 状态 | 轻微状态偏差 | C3（延续） |
-| 9 | 首次 db:push 后 dev server 需重启（stale Prisma client） | 部署/运维体验 | C4（延续） |
+| 1 | 看门狗 e2e：8s 超时 → pool 8.2s drain、下游解锁、晚到结果不复活 | E1 语义闭环 | 已交付 |
+| 2 | abort e2e：Stop 即时 failed、40s 后不被晚到引擎/后台 lane 复活 | E4 语义闭环 | 已交付 |
+| 3 | **条件写回契约必须覆盖所有写节点状态的 lane**：runner/单节点 run 之外，SSE reconcile 是第三条（P0 教训） | 任何新增执行/同步 lane 都要走 node-lifecycle | 验收标准 |
+| 4 | abort 不 kill 远端 cluster ToolJob（本地 failed ≠ 远端停止） | 远端作业仍在跑、消耗配额 | F1 |
+| 5 | Retry 的 route 仍同步等待（语义被其他调用方依赖）；fire-and-forget 只在 UI 层 | route 层异步化需独立设计 | F2（P3） |
+| 6 | CDP 拖拽需 --duration ≥150ms 才可靠触发 click 派发（短 duration 点击落空） | e2e 工程经验 | 验收标准 |
+| 7 | 组卡拖拽中边不实时跟随（松手重算）；NodeGroupLayer 彩色组框在组拖拽后按成员新位置重算 | 轻微视觉延迟 | 可接受 |
+| 8 | promote 恢复节点（undo）后 refId=screening id 保留，但新节点 id ≠ 原节点（历史 apply 契约） | 下游边按 id 重连已处理 | 已闭环 |
+| 9 | agent LLM 节点超时（15min 看门狗）只能标 failed，无法主动取消进行中的 SDK 请求 | 长会议/研究节点取消需要 AbortSignal 深入执行层 | F3 |
+| 10 | SSE reconcile 的 cluster 场景未真实 SSH 实测（条件写语义与 abort 同路径已被两条 lane 实证） | 验证覆盖缺口 | F4（P2） |
+| 11 | screening detail 未反向展示"promoted 到哪些节点"（refId 可查但未暴露） | 溯源链 UI 只单向（节点→筛选） | F5（P3） |
+| 12 | 演示 DB（14 节点）与文档不再硬编码计数（C1 修复）；sweep 语义已明示（C5） | 文档可信度 | 已闭环 |
 
-## C 线 — 数据与可信度（P1，下一阶段建议）
+## F 线 — 执行可控性与溯源闭环（P1，下一阶段建议）
 
-1. **演示数据治理**：IL-7Rα 战役整理为正式演示工作流（更新 README 界面一览与教程
-   截图），或提供 "Reset demo data" 种子脚本。
-2. **实验溯源（Provenance）深化**：变体 → 输出文件 → 筛选候选 → promote 节点的完整
-   血缘链（补 promote 回写与参数来源徽标）。
-3. **undo 状态语义补齐**：create API 接受可选 status 字段，使 undo 恢复的节点保留
-   快照状态而非恒为 idle。
-4. **运维文档**：schema 变更后需重启 dev server（stale Prisma client）写入贡献指南。
-5. **sweep 依赖语义文档化**：变体继承源的入边——无上游源时变体作为独立根并行执行；
-   在 Sweep 对话框与教程中明示（测试结论 #2）。
-
-## E 线 — 执行健壮性与交互打磨（P1.5，本轮新增）
-
-1. **executeNode 看门狗**：每节点执行超时（如 15min）标记 failed 并解锁下游，
-   防 worker pool 被挂起引擎楔死（测试结论 #4）。
-2. **RunsSheet Retry 即时反馈**：Retry 改 fire-and-forget（toast 已即时，spinner
-   只覆盖 claim 阶段），依赖 3s 轮询呈现执行态（测试结论 #5）。
-3. **组卡可拖拽 + 折叠一致性收尾**：组卡拖拽平移整组成员；NodeSearch 与
-   NodeGroupLayer 过滤折叠成员（测试结论 #6）。
-4. **全局运行中止**：Runs 视图 active 行加 Stop（节点级 + workflow 级），补齐
-   "看得见也管得住"。
+1. **远端 cluster 作业联动中止**：RunsSheet Stop 对 cluster-routed 节点
+   一并 cancel ToolJob（复用 cluster 面板 job 取消 lane），本地 failed 与
+   远端 cancelled 一致（测试结论 #4）。
+2. **AbortSignal 贯通执行层**：node-lifecycle 注册 per-node AbortController，
+   传入 executeCompTool/runAgentTurn——abort 即时打断 spawn（kill）与 LLM
+   SDK 请求，而非等看门狗（测试结论 #9）。
+3. **运行历史归档**：ToolJob/节点终态滚动清理 + Run history 视图（超过 48h
+   窗口的运行可追溯）。
+4. **SSE reconcile 真实 cluster e2e**：接一次 SSH 目标（或 mock cluster
+   connection）验证 poll-ceiling → abort → reconcile 丢弃（测试结论 #10）。
+5. **溯源链反向展示**：screening detail 列出 promote 节点（refId 查询），
+   形成"筛选→画布"双向导航（测试结论 #11）。
 
 ## D 线 — 科研深度（P2，探索性）
 
-1. **3D 叠合比较**：筛选详情支持两候选叠合（RMSD + 差异着色），复用 molecular/
-   superpose；对比视图行选两列 → 直接叠合。
-2. **抗体亲和力成熟链路**：RFantibody → MPNN 串联的 shotgunning + 阶梯式 CDR
-   突变扫描。
+1. **3D 叠合比较**：筛选详情支持两候选叠合（RMSD + 差异着色），复用
+   molecular/superpose；对比视图行选两列 → 直接叠合。
+2. **抗体亲和力成熟链路**：RFantibody → MPNN 串联的 shotgunning + 阶梯式
+   CDR 突变扫描。
 3. **认证与团队协作**（NextAuth）：工作流 / campaign 共享，操作审计。
 4. **Sweep 结果导出**：对比表 CSV / 报告（复用 screening CSV 底座）。
 
+## QA 遗留（P2/P3，体验优化）
+
+- 组卡拖拽实时边跟随（LiveWire 消费组卡 live-drag 状态）。
+- Retry route 层异步化（fire-and-forget API 或 SSE 完成事件，测试结论 #5）。
+- ScreeningPanel 深链失败静默（pendingScreeningId 不在列表时仅清空）——
+  加 toast 提示。
+- node-search/node-group 的 deriveSweepGroups 在大图重复计算（memo 已缓存，
+  超大图可提升为 store 派生）。
+
 ## 验收标准（延续本阶段做法）
 
-- 每项新功能必须：API 冒烟（无效输入全 400）+ 浏览器 e2e（真实引擎、真实输出、
-  可用文件级证据验证）+ undo/redo DB 一致性检查。
-- **卡内交互元素（button/链接）必须用真实指针事件实测点击**（本轮教训 #3：
-  setPointerCapture 会吞掉派生 click，JS click() 测试不出这个问题）。
+- 每项新功能必须：API 冒烟（无效输入全 400）+ 浏览器 e2e（真实引擎、真实
+  输出、可用文件级证据验证）+ undo/redo DB 一致性检查。
+- **卡内交互元素（button/链接）必须用真实指针事件实测点击**（B 线教训：
+  setPointerCapture 会吞掉派生 click，JS click() 测不出这个问题）。
+- **CDP 鼠标操作 duration ≥150ms**（C 线教训：短 duration 的 move+click
+  组合会丢失点击派发，e2e 工程标准）。
+- **任何写节点状态的新 lane 必须走 node-lifecycle 条件写回**（P0 教训：
+  绕过契约的旁路 lane 会复活已中止节点，测试结论 #3）。
 - 跨工作流操作（切换 / 导入 / 恢复快照）后必须显式验证撤销栈不串图。
-- 移动端 375px 必查：无横向溢出、Sheet 全宽、触控目标 ≥44px。
-- 收尾必查：`bun run lint` 零告警、`tsc --noEmit`（src/）零错误、dev.log 无运行时
-  错误、演示 DB 与文档一致。
+- 移动端 375px 必查：无横向溢出、Sheet 全宽、触控目标 ≥44px、footer 贴底。
+- 收尾必查：`bun run lint` 零告警、`tsc --noEmit`（src/）零错误、dev.log 无
+  运行时错误、演示 DB 与文档一致（节点/边计数 + screening 基线）。
