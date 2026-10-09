@@ -88,5 +88,15 @@ python3 .zscripts/daemon-run.py /home/z/my-project <日志文件> \
     bash -c "cd /home/z/my-project && node_modules/.bin/next dev -p 3000 2>&1 | tee dev.log"
   ```
   （double-fork + reparent to init 的进程可跨会话存活；实测验证。）
+  轻量替代（Task 28 实测同样跨命令存活，原理相同——subshell 立即退出使
+  进程孤儿化到 init）：
+  ```bash
+  ( setsid bash -c 'cd /home/z/my-project && exec bun run dev' \
+      > /dev/null 2>&1 < /dev/null & )
+  ```
+  注意 `bun run dev` 的 dev script 自带 `| tee dev.log`，故外层重定向
+  /dev/null 即可；死亡症状：起来后 20–50 秒内 curl 变 000、无日志无 OOM。
 - 看门狗类时长行为测试：`FOUNDRY_NODE_TIMEOUT_MS` 短超时环境变量 + 上述
   守护器重启验证触发路径，恢复正常配置后复验无误报。
+- **e2e 截图前必须断言目标 UI 在 DOM**（VLM 复核的截图拍错了状态层——
+  Escape 关闭上层后截图拍到的是底层对话框；Task 28 教训）。

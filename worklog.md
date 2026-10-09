@@ -3645,3 +3645,28 @@ Work Log:
 
 Stage Summary:
 - 27-a 的 P1 全部闭环 + P2 修 9 条（P2-8 归入提交纪律）；D+F 线代码达到 e2e 就绪状态。核心不变量（执行通道零新增写点）在审查与修复全程保持。
+
+---
+Task ID: 28
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：D+F 线全功能验证（27-a 报告 9 项建议逐项：superpose happy/error ×3、sweep h3 阶梯、CSV+报告导出、模板级联、failure pills 三通道、键盘回归、嵌套 Dialog、移动端 375px）+ 过程中发现并修复 2 个 P1 + 演示 DB 零污染收尾
+
+Work Log:
+- **环境**：dev server 需 `( setsid bash -c 'cd /home/z/my-project && exec bun run dev' > /dev/null 2>&1 < /dev/null & )`（subshell 立即孤儿化到 PID 1）才能跨 Bash 命令存活——sandbox 在命令结束时清理进程树（setsid/nohup/disown 均不够，agent-browser 守护进程 PPID=1 是存活证据）；误用直接启动会 20-50 秒内静默死亡（无日志无 OOM）。
+- **事故与恢复**：模板加载是"替换当前工作流"语义（page 内 workflow-templates.tsx:222 注释为证）——首轮误把第 5 张卡（Deep Research Report）当亲和力模板点进 My First Workflow（14→5 节点）；`bun scripts/reset-demo.ts reset --force` + 孤儿化重启精确恢复基线（14/12+5/3+3 screening 60/20/6）；正确流程 = 先 Switch workflow 建一次性工作流再 Load template（模板按钮↔卡片的 a11y 序：按钮在卡底部，e618 是上一张卡的按钮）。
+- **P1 修复 ①（New Screening 多工作流契约缺口）**：new-screening-dialog 拉取 `/api/workflow`（= 最早创建的工作流）列"可入库节点"——在非首工作流中刚完成的 RFantibody 节点对 picker 不可见、反而列出首工作流节点。修复：按 store 的 activeWorkflowId 走 `/api/workflows/{id}`（fallback 旧路由）；实测 E2E 工作流的 RFantibody_Library 立即出现在 picker。
+- **P1 修复 ②（MAIN 缺 min-w-0 移动端裁剪）**：page.tsx `<main class="flex min-h-0 flex-1 flex-col">` 作为行 flex 子项 min-width:auto → screening 统计卡条（5×w-36 overflow-x-auto，内禀 768px）把面板撑到 834px，375px 视口下 h-dvh overflow-hidden 直接裁掉 x>375 的内容（Compare/工具栏不可达）。Bisect 定位（隐藏单个 div 逐层测 main 宽度）；修复 = main 加 min-w-0；实测 main 834→319、统计条内滚、移动端 superpose 全链路（选 2→Compare→Superpose 3D 真实指针）+ VLM 复验零缺陷；桌面全面板回归无溢出。
+- **E2E-7 模板级联 ✓**：一次性工作流加载"Antibody Affinity Maturation"（5 节点 4 边，x=0/320/640/960/1280 链）→ Run → ~20s 全 completed；引擎级证据：RFantibody 日志 "Fixed CDR-H3 length: 12 residues (affinity-maturation ladder mode)"、ProteinMPNN 日志 "[chain] auto-wired pdb_path from upstream output: .../fv_design_0.pdb"、AlphaFold 日志 "[chain] auto-wired fasta_path ... + Wrote predicted.pdb (4 chain(s))"。
+- **E2E-3 Superpose happy ✓**：从节点产出建 screening（4 候选带真实 PDB）→ 选 2 → Compare → 真实指针 Superpose 3D → RMSD 31.68 Å / 92 aligned pairs / chain H↔H / 画布 197 dots / 直方图齐全；Zoom in ×2（scale 1.2 transform 实证）+ Zoom out；Spin 真实点击（1.5s 后投影点坐标实际变化=动画运行）+ Pause；Esc 只关 superpose、Compare 保持；重开重新 fetch 重渲染。
+- **E2E-4 错误路径 ✓ ×3**：(a) 临时移走 fv_design_1.pdb → 内联 "File not found on disk."（文件路由原话）+ 无画布；(b) pdbPath=null 两候选 → 按钮禁用 + title "Both candidates need a linked PDB file"；(c) 3 选 → 禁用 + "needs 2 (has 3)"。
+- **E2E-6 导出 ✓**：下载 stub（URL.createObjectURL + anchor.click 拦截 blob 文本）捕获导出物；选择 2 行 → 报告只含 2 行 + "Ranking weights: h3_len=1 · energy_kt=1 · interface_sasa=1" + Starred/Shortlisted digest + Notes（实测手写笔记逐字入报告）；无选择 → 4 行全量；CSV 表头 13 列 + notes 列含 shortlist 状态与笔记。
+- **E2E-5 sweep 阶梯 ✓**：Sweep 对话框 "CDR-H3 length ladder" 模板自动填 6/9/12/15 → 勾选立即运行 → 4 变体并行全 completed，每变体日志独立 "Fixed CDR-H3 length: 6/9/12/15 residues"（参数轴→引擎贯通实证）；折叠组卡 → Compare → 表格 4 行（h3_len 列=轴值）→ "Superpose top 2"（top-2 排序正确：h3=6 参考帧/h3=9 移动帧，RMSD 31.06）→ Export CSV 4 行 axis 列 6/9/12/15、无 NaN、file_count 诚实命名。
+- **E2E-8 嵌套 Dialog ✓**：superpose 叠在 sweep-compare 上 → 点遮罩区只关 superpose（sweep-compare 保留）→ Esc 关 sweep-compare → 画布；全程 console/page errors 零。
+- **E2E-1 failure pills ✓（全通道）**：(c) engine——pdb_path=/nonexistent 探针节点失败 "Tool failed (exit 1)" → 节点卡+Runs 行双 [data-node-failure-pill=engine]；(a) stopped——40 designs 重节点运行中 RunsSheet 真实指针点 Stop → toast + 双位置 stopped pill + 45s 后晚到引擎结果仍 failed（条件写回再证）；(b) watchdog——.env 注入 FOUNDRY_NODE_TIMEOUT_MS=4000 重启 → 4s 看门狗触发（result "(watchdog)" + [watchdog] 日志横幅）→ 双位置 watchdog pill；(d) 孤儿——运行 1.5s 时杀服务器（DB 行保持 running）→ 重启 boot reconcile 标 failed "server restarted mid-run" → Engine pill；(e) /api/runs completed 行无 failureReason 字段（failed 行带 engine/engine）。
+- **E2E-2 键盘回归 ✓**：聚焦失败行 Retry 按 Enter → "Retry started" toast 触发重试（无误导航）；重跑中聚焦 Stop 按 Enter → 停止成功——27-b 复活的 P1-1 守卫双向验证。
+- **E2E-9 移动端 ✓**：375px 无横向溢出、footer 780/812 贴底；Screening 表头 icon-only 按钮（Report w=38）；superpose 对话框 90vh 内滚动（scrollH 971 > clientH 729）；min-w-0 修复后 Compare 工具栏可达（x=166 onScreen）；VLM 复验移动端 superpose 截图零缺陷（首张截图时机在 Escape 后拍到 Compare——时机陷阱记入经验）。
+- **清理**：测试工作流/2 测试 screening/VLM screening 全删；基线字段级核对（My First 14/12 + Antibody 5/3 + 3 screening 60/20/6 + ToolJobs 16）；lint 零告警、tsc src/ 零错误（4 条预存 examples/skills）、dev.log 零运行时错误、浏览器 console/page errors 零。
+- **e2e 工具经验（新增）**：Radix 对话框 footer 按钮的 CDP 坐标点击可能静默落空（坐标正确仍不触发 onClick）——必须验证副作用、必要时 DOM click() 兜底；自定义 checkbox 是 role=checkbox 非 input[type=checkbox]（eval 选择器陷阱）；3s 轮询只在节点 busy 时活动——API 建的节点需 Switch workflow 往返或 reload 才进 store。
+
+Stage Summary:
+- D+F 线三重验证闭环（QA 审查 27-a → 修复 27-b → 浏览器级 e2e 28）：9 项建议全过，2 个 P1 现场发现现场修复（多工作流 picker + 移动端 min-w-0 裁剪，后者经 VLM 复验）；条件写回、H3 轴贯通、失败三车道分类等核心承诺全部拿到引擎/文件/DB 级证据；演示 DB 零污染。e2e 工程经验新增 4 条（进程孤儿化、模板替换语义、CDP 点击落空、role=checkbox）。

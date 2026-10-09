@@ -87,6 +87,12 @@ export function NewScreeningDialog({
   const [nodes, setNodes] = React.useState<NodeDTO[]>([]);
   const [jobs, setJobs] = React.useState<ToolJobDTO[]>([]);
   const [sourcesLoading, setSourcesLoading] = React.useState(false);
+  // The ACTIVE workflow — the node picker must offer nodes from the graph
+  // the user is looking at, NOT the first-created workflow (GET
+  // /api/workflow always returns the oldest workflow — a multi-workflow
+  // contract gap found in e2e: a fresh RFantibody run in workflow B was
+  // invisible to the picker while workflow A's nodes showed up).
+  const activeWorkflowId = useAppStore((s) => s.workflow?.id ?? null);
 
   // Load pickable sources whenever the dialog opens.
   React.useEffect(() => {
@@ -95,8 +101,13 @@ export function NewScreeningDialog({
     setSourcesLoading(true);
     (async () => {
       try {
+        // Fetch the ACTIVE workflow by id (falls back to the legacy
+        // first-workflow route only when the store hasn't loaded one yet).
+        const wfUrl = activeWorkflowId
+          ? `/api/workflows/${activeWorkflowId}`
+          : "/api/workflow";
         const [wRes, jRes] = await Promise.all([
-          fetch("/api/workflow").then((r) => (r.ok ? r.json() : null)).catch(() => null),
+          fetch(wfUrl).then((r) => (r.ok ? r.json() : null)).catch(() => null),
           fetch("/api/tools/jobs").then((r) => (r.ok ? r.json() : null)).catch(() => null),
         ]);
         if (cancelled) return;
@@ -117,7 +128,7 @@ export function NewScreeningDialog({
     return () => {
       cancelled = true;
     };
-  }, [open]);
+  }, [open, activeWorkflowId]);
 
   async function create(source: {
     kind: "node" | "job" | "demo";

@@ -339,7 +339,13 @@ export default function Home() {
           clusterOpen={clusterOpen}
           onToggleCluster={() => setClusterSheetOpen(!clusterOpen)}
         />
-        <main className="flex min-h-0 flex-1 flex-col">
+        {/* min-w-0: as a row-flex item, MAIN must be allowed to shrink below
+            its content's min-content — the screening panel's stat-card strip
+            (w-36 cards in an overflow-x-auto row) has a ~768px intrinsic
+            width that, without min-w-0, blew the whole panel to 834px on
+            375px viewports where the overflow-hidden app shell CLIPPED it
+            (content beyond x=375 unreachable — found in mobile e2e). */}
+        <main className="flex min-h-0 min-w-0 flex-1 flex-col">
           {activePanel === "canvas" && (
             <div className="relative flex min-h-0 flex-1">
               <NodePalette />
