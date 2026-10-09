@@ -493,7 +493,9 @@ export function SweepDialog({
         {/* C5 dependency semantics (documented per test finding #2): variants
             inherit the source's INCOMING edges, so a source with no upstream
             produces independent root nodes that all run in parallel — they do
-            NOT wait for the source's own output. */}
+            NOT wait for the source's own output. (Parallel session 53c085c
+            added an equivalent hint inside the preview box — merged into this
+            single canonical note.) */}
         <p className="text-[11px] leading-relaxed text-muted-foreground">
           <Info className="mr-1 inline size-3 align-[-1px]" aria-hidden />
           Variants inherit this node&apos;s incoming connections. If the source has
