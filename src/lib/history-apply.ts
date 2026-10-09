@@ -119,6 +119,10 @@ export async function applyHistorySnapshot(snap: HistorySnapshot): Promise<void>
       // 2. Undo-of-delete: re-create nodes that only exist in the snapshot.
       //    The server mints NEW ids for them — we keep an old→new map so the
       //    restored store references rows that actually exist server-side.
+      //    C3: the snapshot's terminal state rides along (status/result/
+      //    logs/progress/completedAt) so undoing a delete restores a
+      //    completed node as completed, not as a blank idle row. "running"
+      //    maps to idle — an in-flight execution can't re-attach to a new id.
       const missing = snap.nodes.filter((n) => !curIds.has(n.id));
       const idMap = new Map<string, string>();
       const created = await Promise.allSettled(
@@ -140,6 +144,19 @@ export async function applyHistorySnapshot(snap: HistorySnapshot): Promise<void>
               // Sweep linkage — restored variants must rejoin their group so
               // compare / one-click campaign still resolve after a redo.
               sweepGroup: n.sweepGroup ?? undefined,
+              // C3 snapshot state (server validates + caps these fields).
+              status:
+                n.status === "idle" ||
+                n.status === "pending" ||
+                n.status === "completed" ||
+                n.status === "failed"
+                  ? n.status
+                  : "idle",
+              progress: n.progress,
+              result: n.result ?? undefined,
+              logs: n.logs ?? undefined,
+              startedAt: n.startedAt ?? undefined,
+              completedAt: n.completedAt ?? undefined,
             }),
           })
             .then((r) =>
@@ -187,10 +204,10 @@ export async function applyHistorySnapshot(snap: HistorySnapshot): Promise<void>
 
       // 4. Remap the snapshot onto server reality: every restored node keeps
       // its snapshot fields but takes the NEW server id where one was minted.
-      // The POST was made with the snapshot's type/name/xy/params, so the row
-      // mirrors the snapshot except for ids/timestamps (and status — a fresh
-      // row is always idle; the store keeps the snapshot's view until the
-      // next poll/reload reconciles it).
+      // The POST was made with the snapshot's type/name/xy/params AND its
+      // terminal state (C3: completed/failed restore as completed/failed;
+      // "running" maps to idle), so the row mirrors the snapshot except for
+      // ids and server-minted timestamps.
       const finalNodes: NodeDTO[] = snap.nodes.map((n) => {
         const newId = idMap.get(n.id);
         return newId ? { ...n, id: newId, workflowId: wf.id } : { ...n, workflowId: wf.id };

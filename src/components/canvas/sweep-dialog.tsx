@@ -490,6 +490,18 @@ export function SweepDialog({
           </Label>
         </div>
 
+        {/* C5 dependency semantics (documented per test finding #2): variants
+            inherit the source's INCOMING edges, so a source with no upstream
+            produces independent root nodes that all run in parallel — they do
+            NOT wait for the source's own output. */}
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          <Info className="mr-1 inline size-3 align-[-1px]" aria-hidden />
+          Variants inherit this node&apos;s incoming connections. If the source has
+          no upstream, every variant is an independent root and they all start
+          in parallel (up to 3 lanes) — they do not wait for the source&apos;s own
+          run.
+        </p>
+
         <DialogFooter>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel

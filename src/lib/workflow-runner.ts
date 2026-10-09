@@ -35,7 +35,7 @@ import {
   toNodeDTO,
   toEdgeDTO,
   gatherInputs,
-  executeNode,
+  executeNodeGuarded,
 } from "@/lib/workflow-engine";
 import { topologicalOrder } from "@/lib/canvas-utils";
 
@@ -178,25 +178,31 @@ export async function runWorkflowById(
     if (!currentNode) return;
     const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
 
-    const { result, logs, status } = await executeNode(
+    // E1 watchdog: a wedged engine fails the node after NODE_TIMEOUT_MS and
+    // frees this lane instead of wedging the whole pool.
+    const { result, logs, status } = await executeNodeGuarded(
       currentNode,
       inputs,
       workflowId,
     );
 
+    // E4 conditional persist: only a node STILL "running" takes the final
+    // state. A user Stop (or the watchdog path racing a late engine result)
+    // settles the row first — the in-flight execution's eventual outcome must
+    // not resurrect it.
     if (status === "running") {
       // Poll-ceiling outcome (cluster job still running remotely): persist
       // the honest in-progress result/logs but NO completedAt and NO
       // progress-100 — the node legitimately stays running.
-      await db.node.update({
-        where: { id: nodeId },
+      await db.node.updateMany({
+        where: { id: nodeId, status: "running" },
         data: { status, result, logs, progress: 90 },
       });
       return;
     }
 
-    await db.node.update({
-      where: { id: nodeId },
+    const persisted = await db.node.updateMany({
+      where: { id: nodeId, status: "running" },
       data: {
         status,
         result,
@@ -205,7 +211,7 @@ export async function runWorkflowById(
         completedAt: new Date(),
       },
     });
-    if (status === "completed") completedCount++;
+    if (persisted.count > 0 && status === "completed") completedCount++;
   }
 
   // ── Bounded worker pool (event-driven pump) ────────────────────────────

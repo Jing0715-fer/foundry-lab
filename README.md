@@ -80,8 +80,13 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
 选中任一工具节点 → Inspector 的 **Sweep** 按钮 → 勾选参数轴、填入取值网格，
 一键把笛卡尔积（≤24 组合）展开为**变体节点组**：每个变体自动继承上游连线、
 命名携带 `k=v` 标签、网格布局在源节点下方。支持创建后立即运行全部变体、
-单次 Ctrl+Z 整组撤销（服务器同步删除）。变体输出直接进入筛选评估——
-`num_designs` / `total_length` 等参数真实反映到输出文件数与结构长度。
+单次 Ctrl+Z 整组撤销（服务器同步删除，已完成的变体重建后保留其结果与
+状态而非回到 idle）。变体输出直接进入筛选评估——`num_designs` /
+`total_length` 等参数真实反映到输出文件数与结构长度。
+
+> **依赖语义**：变体只继承源节点的**入边**。源节点没有上游时，每个变体都是
+> 独立根节点——它们会并行启动（最多 3 车道）而不是等待源节点自己的输出。
+> Sweep 对话框内对此有内联提示。
 
 **Campaign 全链路闭环**（变体组 → 结论 → 筛选一步到位）：
 
@@ -96,8 +101,10 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   变体 → 几何指标加权）。变体节点卡片常驻 `sweep` 徽标，撤销/重做后组链接
   依然保持（组 id 随节点重建传递）。
 - **变体聚合组卡**：点击变体卡上的 `sweep` 徽标 → 整组折叠为一张**组卡**
-  （实时进度 = 完成数/总数、状态徽标、Compare 入口），点击组卡随时展开。
-  大 sweep 不再淹没画布；折叠态连线自动聚合到组卡锚点（含小地图）。
+  （实时进度 = 完成数/总数、状态徽标、Compare 入口），点击组卡随时展开；
+  组卡可直接**拖拽平移整组**（世界边界钳制，成员位置批量持久化）。
+  大 sweep 不再淹没画布；折叠态连线自动聚合到组卡锚点（含小地图），
+  搜索与分组框也只命中可见节点。
 - **并行执行通道**：工作流按 DAG 依赖并行执行——无依赖的 sweep 变体同时
   运行（内置引擎并发上限 3），完成提示展示实际并行车道数；失败节点不阻断
   下游（与串行语义一致）。
@@ -105,8 +112,12 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   冲突自动偏移到最近空位——两次 sweep 同源、连续快速新建都不会叠卡。
 - **全局运行队列（Runs）**：顶栏 Runs 按钮（运行中数量徽标）打开跨工作流
   的实时队列：运行中/排队（3 秒轮询 + 进度条）、近 48h 失败节点一键
-  **重试**（单节点重跑并级联下游）、最近完成（时长统计）；行点击直接
-  跳到对应工作流并选中该节点。
+  **重试**（即时反馈 + 单节点重跑并级联下游）、最近完成（时长统计）；
+  行点击直接跳到对应工作流并选中该节点。运行中的节点可以**中止**
+  （Stop / Stop all：节点立即标记为 failed；在途执行的结果被丢弃，
+  下游随之按失败语义解锁——已派发到集群的作业会一并取消）；
+  本地执行的每个节点受 15 分钟**看门狗**保护（集群长任务豁免——
+  集群通道自带 30/120 分钟诚实轮询天花板），引擎挂死不再楔死并行池。
 
 ### 🖼️ 3D 结构查看器
 
@@ -200,8 +211,18 @@ bun run dev            # http://localhost:3000
 内置算法引擎的运行要求：`python3` + `numpy`（Tools/Environment 页面会实时探测，
 缺什么就一键安装什么）。
 
-> 首次进入会弹出新手引导；侧栏底部的 **Seed Data** 可一键生成 9 个智能体 + 示例工作流；
-> Screening 面板内置两个演示 campaign（60 候选骨架筛选 / 20 候选 AF2 模型排名）。
+> 首次进入会弹出新手引导；侧栏底部的 **Seed Data** 可一键生成 9 个智能体 + 示例工作流。
+
+**演示数据基线**：内置两个示例工作流（`My First Workflow` 14 节点 / `Antibody
+Design Campaign` 5 节点）与三个筛选 campaign（60 候选骨架筛选 / 20 候选
+AF2 模型排名 / 6 候选抗体 Fv）。被实验弄脏后可用官方种子恢复：
+>
+> ```bash
+> bun run demo:reset      # 恢复为演示基线（覆盖掉 db/custom.db）
+> bun run demo:snapshot   # 把当前状态冻结为新的基线
+> ```
+>
+> 重置后需重启 dev server（运行中的服务持有旧 SQLite 连接）。
 
 ## 界面一览
 
@@ -284,6 +305,7 @@ bun run dev            # http://localhost:3000
 | GET/POST | `/api/workflow` | 工作流读取 / 全量运行 |
 | POST | `/api/workflow/nodes` · `/edges` | 增删节点 / 连线 |
 | POST | `/api/workflow/nodes/:id/run` | 单节点运行 |
+| POST | `/api/workflow/nodes/:id/stop` | 中止运行/排队中的节点（标记 failed + 解锁下游） |
 | POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
 | GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
 | POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
@@ -327,6 +349,12 @@ Python，POSIX 安装脚本在 Windows 上经 WSL bash 执行。
 使用层是画布节点，AlphaFold2 两者兼备（画布节点 + 工作台）。两层已做
 交叉链接：环境面板的 AlphaFold2 卡片带"Open workbench"按钮，工作台
 头部带"Environment / Cluster"入口。
+
+**Q：改了 prisma schema / 重置了 demo 数据，接口报奇怪的错误？**
+重启 dev server。`bun run db:push` 会重新生成 Prisma Client，但运行中的
+服务仍持有旧客户端与打开的 SQLite 连接（首次推送后偶见的 stale client
+现象）；`bun run demo:reset` 直接覆盖数据库文件，同理。这是当前已知的
+运维边界，已记入 ROADMAP C4。
 
 ---
 

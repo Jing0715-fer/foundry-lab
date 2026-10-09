@@ -23,6 +23,7 @@ import {
   ListVideo,
   Loader2,
   RotateCw,
+  Square,
   TriangleAlert,
 } from "lucide-react";
 
@@ -168,6 +169,8 @@ export function RunsSheet() {
   const [loading, setLoading] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [retryingId, setRetryingId] = React.useState<string | null>(null);
+  const [stoppingIds, setStoppingIds] = React.useState<string[]>([]);
+  const [stoppingAll, setStoppingAll] = React.useState(false);
 
   // Poll while the sheet is open (3s), stop on close.
   React.useEffect(() => {
@@ -202,6 +205,19 @@ export function RunsSheet() {
     };
   }, [open]);
 
+  // E2: the retry spinner covers only the CLAIM phase. The retry POST awaits
+  // the node's FULL execution (plus the downstream cascade), so holding the
+  // spinner for the whole run would spin for minutes; once a 3s poll observes
+  // the node left the failed lane, the cadence owns presentation and the
+  // button un-locks. (The background fetch still toasts on a failed claim.)
+  React.useEffect(() => {
+    if (!retryingId || !data) return;
+    const row = [...data.active, ...data.failed, ...data.recent].find(
+      (r) => r.nodeId === retryingId,
+    );
+    if (row && row.status !== "failed") setRetryingId(null);
+  }, [data, retryingId]);
+
   // Jump to a run's workflow + node on the canvas.
   const jumpTo = React.useCallback(
     async (run: RunRow) => {
@@ -228,11 +244,49 @@ export function RunsSheet() {
 
   // Retry a failed node via the single-node run lane (claims terminal
   // nodes conditionally + BFS-cascades completed-upstream descendants).
+  // E2 fire-and-forget: the toast is immediate, the POST runs in the
+  // background, and the 3s poll flips the row to running/queued.
   const retry = React.useCallback(
-    async (run: RunRow) => {
+    (run: RunRow) => {
       setRetryingId(run.nodeId);
+      toast({
+        title: "Retry started",
+        description: `${run.name} is running again`,
+      });
+      void (async () => {
+        try {
+          const res = await fetch(`/api/workflow/nodes/${run.nodeId}/run`, {
+            method: "POST",
+          });
+          if (!res.ok) {
+            const err = await res.json().catch(() => ({}));
+            throw new Error(err.error || `HTTP ${res.status}`);
+          }
+          // The run lane finished — reconcile the row into Recent.
+          const fresh = await fetch("/api/runs");
+          if (fresh.ok) setData(await fresh.json());
+        } catch (e) {
+          toast({
+            title: "Retry failed",
+            description: e instanceof Error ? e.message : "Unknown error",
+            variant: "destructive",
+          });
+        } finally {
+          setRetryingId(null);
+        }
+      })();
+    },
+    [toast],
+  );
+
+  // E4: stop one active node (running or queued) — POST /stop marks it
+  // failed with a user-stop trace; late engine results are discarded by the
+  // conditional persist in every execution lane.
+  const stop = React.useCallback(
+    async (run: RunRow) => {
+      setStoppingIds((ids) => (ids.includes(run.nodeId) ? ids : [...ids, run.nodeId]));
       try {
-        const res = await fetch(`/api/workflow/nodes/${run.nodeId}/run`, {
+        const res = await fetch(`/api/workflow/nodes/${run.nodeId}/stop`, {
           method: "POST",
         });
         if (!res.ok) {
@@ -240,20 +294,65 @@ export function RunsSheet() {
           throw new Error(err.error || `HTTP ${res.status}`);
         }
         toast({
-          title: "Retry started",
-          description: `${run.name} is running again`,
+          title: "Stopped",
+          description: `${run.name} marked failed (stopped by user)`,
+          variant: "success",
         });
-        // Immediate refresh so the row flips to running right away.
         const fresh = await fetch("/api/runs");
         if (fresh.ok) setData(await fresh.json());
       } catch (e) {
         toast({
-          title: "Retry failed",
+          title: "Stop failed",
           description: e instanceof Error ? e.message : "Unknown error",
           variant: "destructive",
         });
       } finally {
-        setRetryingId(null);
+        setStoppingIds((ids) => ids.filter((x) => x !== run.nodeId));
+      }
+    },
+    [toast],
+  );
+
+  // E4 workflow-level stop: every currently active row (running + queued)
+  // across all workflows. Fires the same /stop lane per row; the runner's
+  // claim skips the now-failed queued rows and the pool drains.
+  const stopAll = React.useCallback(
+    async (rows: RunRow[]) => {
+      if (rows.length === 0) return;
+      setStoppingAll(true);
+      try {
+        const results = await Promise.allSettled(
+          rows.map((r) =>
+            fetch(`/api/workflow/nodes/${r.nodeId}/stop`, {
+              method: "POST",
+            }).then((res) =>
+              res.ok
+                ? null
+                : res
+                    .json()
+                    .catch(() => ({}))
+                    .then((err: { error?: string }) =>
+                      `${r.name}: ${err.error || `HTTP ${res.status}`}`,
+                    ),
+            ),
+          ),
+        );
+        const failures = results
+          .map((x) => (x.status === "fulfilled" ? x.value : null))
+          .filter((x): x is string => x !== null);
+        toast({
+          title:
+            failures.length === 0
+              ? `Stopped ${rows.length} run${rows.length === 1 ? "" : "s"}`
+              : `Stopped ${rows.length - failures.length}/${rows.length} runs`,
+          description:
+            failures.length > 0 ? failures[0] : "Active nodes were marked failed (stopped by user).",
+          variant: failures.length === 0 ? "success" : "destructive",
+        });
+        const fresh = await fetch("/api/runs");
+        if (fresh.ok) setData(await fresh.json());
+      } finally {
+        setStoppingAll(false);
       }
     },
     [toast],
@@ -292,8 +391,30 @@ export function RunsSheet() {
             <>
           {/* Active lane */}
           <section aria-label="Running and queued nodes">
-            <h3 className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Running &amp; Queued
+            <h3 className="flex items-center justify-between px-2 pb-1 pt-1">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Running &amp; Queued
+              </span>
+              {running.length + queued.length > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-6 gap-1 px-2 text-[11px] text-rose-600 hover:text-rose-700 dark:text-rose-400"
+                  disabled={stoppingAll}
+                  title="Stop every running and queued node — they are marked failed (stopped) and downstream nodes unlock with failure semantics."
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void stopAll([...running, ...queued]);
+                  }}
+                >
+                  {stoppingAll ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Square className="size-3 fill-current" />
+                  )}
+                  Stop all
+                </Button>
+              )}
             </h3>
             {running.length === 0 && queued.length === 0 ? (
               <p className="px-2 py-3 text-sm text-muted-foreground">
@@ -302,7 +423,38 @@ export function RunsSheet() {
             ) : (
               <div className="max-h-72 space-y-0.5 overflow-y-auto">
                 {[...running, ...queued].map((r) => (
-                  <Row key={r.nodeId} run={r} onClick={() => void jumpTo(r)} trailing={<ChevronRight className="size-4 shrink-0 text-muted-foreground" />} />
+                  <Row
+                    key={r.nodeId}
+                    run={r}
+                    onClick={() => void jumpTo(r)}
+                    trailing={
+                      <span className="flex shrink-0 items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1 px-2 text-xs text-rose-600 hover:text-rose-700 dark:text-rose-400"
+                          disabled={stoppingIds.includes(r.nodeId)}
+                          title={
+                            r.status === "running"
+                              ? "Stop this node — marked failed; its late engine result is discarded."
+                              : "Cancel this queued node — marked failed so the runner skips it."
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void stop(r);
+                          }}
+                        >
+                          {stoppingIds.includes(r.nodeId) ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Square className="size-3.5 fill-current" />
+                          )}
+                          Stop
+                        </Button>
+                        <ChevronRight className="size-4 text-muted-foreground" />
+                      </span>
+                    }
+                  />
                 ))}
               </div>
             )}
@@ -376,7 +528,9 @@ export function RunsSheet() {
           <span className="inline-flex items-center gap-1.5">
             <Activity className="size-3" />
             Workflow runs execute up to 3 independent nodes in parallel; retries
-            cascade to downstream nodes.
+            cascade downstream. Stopped nodes are marked failed — downstream
+            nodes unlock with failure semantics, and a node stuck longer than
+            15m is failed by the watchdog.
           </span>
         </footer>
       </SheetContent>

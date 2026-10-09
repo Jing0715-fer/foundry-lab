@@ -160,9 +160,13 @@ export async function GET(
           (job.stderr ? `[stderr]\n${job.stderr.slice(-2000)}\n` : "") +
           (files.length ? `##OUTPUTS## ${JSON.stringify(files)}\n` : "");
 
-        await db.node
-          .update({
-            where: { id: nodeRow.id },
+        // E4 conditional persist (QA 23-a P1 fix): only a row STILL "running"
+        // takes the cluster outcome — a user Stop (or the local watchdog)
+        // may have settled this node between the poll's read and this write,
+        // and a late cluster completion must never resurrect that verdict.
+        const settled = await db.node
+          .updateMany({
+            where: { id: nodeRow.id, status: "running" },
             data: {
               status: nodeStatus,
               result,
@@ -171,7 +175,8 @@ export async function GET(
               completedAt: new Date(),
             },
           })
-          .catch(() => {});
+          .catch(() => ({ count: 0 }));
+        if (settled.count === 0) return null;
         return { status: nodeStatus, progress: 100, logs, result };
       };
 

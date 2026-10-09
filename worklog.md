@@ -3412,3 +3412,76 @@ Work Log:
 
 Stage Summary:
 - B 线（画布与执行引擎）全部交付并三重验证（API 冒烟/QA 审查/浏览器 e2e 含真实执行）；下一阶段方向以本轮 9 项实测结论为据：C 线（数据与可信度）与 E 线（执行健壮性）并行推进。
+---
+Task ID: 22
+Agent: main-orchestrator (Z.ai Code)
+Task: C+E 线开发（ROADMAP 下一阶段）：E1 看门狗 / E2 Retry 即时反馈 / E3 组卡拖拽+折叠过滤 / E4 运行中止 / C3 undo 状态 / C2 溯源深链 / C5 sweep 语义文档化 / C4 运维文档 / C1 演示治理
+
+Work Log:
+- E1 看门狗：workflow-engine.ts 新增 `executeNodeGuarded`（Promise.race 对 NODE_TIMEOUT_MS=15min，FOUNDRY_NODE_TIMEOUT_MS 可覆写）；超时返回 failed + 看门狗横幅日志；输家 promise 后台继续但无人消费。runner 与单节点 run lane 全部切换到 guarded 执行。
+- E4 条件化持久化：runner runOne 与单节点 runOne 的终态/poll-ceiling 持久化改为 `updateMany where status="running"`——用户 Stop 或看门狗先行落定的行不会被迟到引擎结果复活（completedCount 只在真正落定时累加）。
+- E4 stop 路由：POST /api/workflow/nodes/[id]/stop —— running/pending 原子翻转为 failed（logs 追加 [stop] 痕迹，result "Stopped by user"）；404/409 双守卫；pending 被标 failed 后 runner claim 失败→跳过→下游按失败语义解锁。
+- E4 UI：RunsSheet Active 区每行 Stop 按钮（running=停止+迟到结果弃置 / queued=取消不跑）+ 区头 Stop all（全 active 行并发 stop + 部分失败汇总 toast）；脚注补 stop/watchdog 语义说明。
+- E2 Retry 即时反馈：retry 改 fire-and-forget——点击即 toast、POST 后台执行；retryingId spinner 只覆盖 claim 阶段（新 effect：3s 轮询一旦观察到节点离开 failed 车道即解锁按钮）；POST 完成后 reconcile 一次 /api/runs；claim 失败仍报错 toast。
+- E3 组卡拖拽：sweep-group-card.tsx 重写拖拽（NodeCard 同款契约：左键、排除 button 等交互后代、≥4px 判定、pointerup 未移动=点击展开）；拖拽中卡片视觉平移（世界坐标 = 屏幕px/zoom），释放时整组钳制在世界边界内批量提交（mergeNodes 本地 + 每成员 PATCH allSettled，失败 toast + 下轮轮询自愈回滚）；顺手修复 P2：root 从 role=button（含可聚焦后代，非法嵌套）改为 role=group + aria-label，键盘路径走真实 Expand 按钮；新增 onPointerCancel 处理。
+- E3 折叠一致性：node-search 过滤 collapsedSweepGroups 成员（防"搜索到不可见节点跳转落空"）；node-group.tsx 组框 bbox 只算可见成员（全折叠组隐藏）。
+- C3 undo 状态：nodes POST 接受可选快照态（status∈{idle,pending,completed,failed}——running 拒绝→idle、progress 0-100 钳制、result/logs 256KB 截断、completedAt/startedAt ISO 解析）；completed 强制 progress=100；history-apply 重建节点时随 POST 携带全部快照态字段。
+- C2 溯源深链：store 新增 pendingScreeningId + setPendingScreeningId；screening-panel 消费 effect（列表加载后选中+清空，404 时明确 toast；处理两种挂载顺序）；inspector 对 type=input 且带 refId 的 promote 节点显示紫色溯源 chip（best-effort 拉取 campaign 名，"from “X”"+Open 按钮 → setActivePanel("screening")+深链）。
+- C5 sweep 语义：sweep-dialog 新增内联提示（变体继承入边/无上游=独立根并行/不等源输出）；README 参数扫描章节加"依赖语义"引注；tutorial 新增 6.10 节（Sweep 全流程+必读依赖语义+Compare/一键campaign/组卡/Runs Stop）。
+- C4 运维文档：README 常见问题新增"schema 变更/demo 重置后重启 dev server"条目（stale Prisma client）。
+- C1 演示治理：scripts/reset-demo.ts（snapshot/reset 两模式 + readline 确认 + --force + fileURLToPath 路径）；package.json 新增 demo:snapshot/demo:reset；确认演示基线（2 工作流 19 节点/3 campaign 60+20+6/2 版本）后冻结 db/demo-baseline.db 并验证 reset 往返；README 快速开始更新演示基线描述 + 恢复命令。
+- API 冒烟：stop 404（不存在）/409（completed 节点）；C3 create completed→status/progress/result/logs/completedAt/startedAt 全保留→DELETE 清理；tsc src/ 零错误、lint 零告警、dev.log 无运行时错误。
+
+Stage Summary:
+- E 线四项（看门狗/条件持久化/Stop 双层/Retry 即时反馈/组卡拖拽+折叠过滤）与 C 线五项（undo 状态/溯源深链/语义文档化/运维文档/演示 reset 脚本）全部落地；执行通道三处（runner/单节点/stop）语义闭环：stop 落定不可复活、看门狗防楔死、claim 原子性保持。
+---
+Task ID: 23-a
+Agent: qa-reviewer (Z.ai Code)
+Task: QA 深度代码审查 C+E 线（Task 22 diff ~700 行，纯审查不改码）：E1 看门狗竞态 / E4 条件持久化覆盖面 / Stop×并行 runner / E2 retry effect / E3 组卡拖拽 / C3 API 安全 / C2 深链 / stop 路由 / demo reset / 交叉回归 十项推演
+
+Work Log:
+- 通读 worklog（Task 20-22）+ ROADMAP E/C 线定义；逐文件审查 diff：workflow-engine（E1）、workflow-runner + run/stop 路由（E1+E4）、runs-sheet（E2+E4）、sweep-group-card/node-search/node-group（E3）、nodes POST + history-apply（C3）、store + screening-panel + inspector（C2）、sweep-dialog/README/tutorial（C5/C4）、reset-demo + package.json（C1）。
+- Node.status 写点全量 grep（runner 96/159/197/204、run 43/55/101/115/132/140、stop 48、stream 163、instrumentation 64、PATCH 84、seed 71）逐个判定条件化程度；追集群车道（run-utils executeCompToolOnCluster → cluster-run sweep → ToolJob）验证输家 promise 的迟到写入只落 ToolJob。
+- 发现并定级（详见 qa-review-ce-lane.md）：P0×1——看门狗 15min 默认与集群轮询 30/120min ceiling 冲突，真实集群长任务（AF2 必然）在 15min 被误标 failed 且输出永不可达（条件持久化+stream reconcile 双双只认 running，demo 环境测不出）；P1×2——stream 路由 cluster reconcile 的 db.node.update 无条件（TOCTOU 可复活已 stop 节点，改 updateMany where status="running" 一行收口）、stop 未接 stopClusterJob（远端作业+3s SSH sweep+worker lane 继续烧到 30/120min ceiling）；P2×10（spinner 无超时兜底/组卡 PATCH 失败静止态不自愈+无本地回滚/拖拽契约三处偏差/runner catch 无条件写/深链把加载失败误报 not found/C3 非终态残留 progress/Node-ToolJob 割裂提示/双 DB 跟踪卫生+README 错字/run 路由 P2025 预存项/Stop"解锁下游"措辞超前）。
+- 十项推演全部闭环结论（"已验证无问题"清单）：E1 迟到写入不可达 Node 行、E4 执行通道全覆盖（scheduler 同 lane、mock-cluster 不触 Node）、Stop 后 pump/settle/排空正确且 completedCount 只在真落定时累、E2 effect 无循环无 stale closure（row 缺失由 POST finally 兜底）、E3 closest 不匹配自身+按钮 click 存活+mergeNodes 原子无撕裂+提交后 g.x 重算无跳变、C3 白名单/钳制/256KB 截断全过且恢复 pending 与 idle 行为一致（语义可接受）、C2 双时序闭环且消费即清空、stop null logs/TOCTOU 原子封死、readline-promises bun 实测通过+reset 往返 byte-identical、框选/组框/minimap/历史重建交叉回归无恙。
+- 复跑：bunx tsc --noEmit（src/ 零错误，skills 预存忽略）、bun run lint（零告警）、bun scripts/reset-demo.ts 交互路径实测。未修改任何源代码。
+
+Stage Summary:
+- Task 22 交付整体质量高（执行三通道语义闭环、原子 claim 保持、文档诚实），但 E1 的超时默认值与集群轮询设计正面冲突（P0，mock 环境不可见），E4 条件化漏了 stream reconcile 一处（P1 一行修复）且 stop 未接集群取消（P1）。产出 qa-review-ce-lane.md（P0×1/P1×2/P2×10 + 十项推演验证清单 + 修复建议与下一步），供 Task 23 修复轮直接消费。
+---
+Task ID: 23-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P0×1 + P1×2 + P2×6（基于 23-a 审查报告 qa-review-ce-lane.md）
+
+Work Log:
+- P0（看门狗 vs 集群天花板冲突）：executeNodeGuarded 对 CLUSTER_ROUTED_TYPES（alphafold+10 工具型）且带 _cluster 参数的节点豁免看门狗竞速——集群通道内联轮询 30/120min 自带上界 + poll-ceiling 诚实语义 + stream reconcile + jobs/stop 通道自有生命周期；看门狗专注本地执行（子进程挂死/LLM 断连）。
+- P1-1（stream reconcile 无条件覆盖）：SSE 轮询的 cluster reconcile 写入改 updateMany where status="running"（count=0 → 返回 null 继续按当前状态播报）——E4 覆盖面收口，Stop/看门狗落定行不可被迟到集群完成态复活。
+- P1-2（Stop 未接作业取消）：stop 路由新增 stopLinkedJob——节点 logs 含 [cluster run · job <id>] 标记时先取消远端作业（getRun→stopClusterJob，scancel/进程组杀）或本地 ToolJob（SIGTERM pid + cancelled 行），结果追加进 [stop] 日志；best-effort 不影响节点原子翻转。
+- P2-③：组卡拖拽 rAF 节流（node-card 同款）+ 提交时从 store 读最新成员行（防 stale 全字段 DTO 回写覆盖运行中状态变化）+ 排除列表补 [role=button]/contenteditable。
+- P2-⑤：screening-panel listFailedRef——列表加载失败时不消费 pendingScreeningId（防误报 "Screening not found"），成功刷新后自然消费。
+- P2-⑥：C3 恢复 progress 归一（idle/pending→0，completed→100，failed→快照值默认 100）。
+- P2-⑧：README "覆盖白"→"覆盖掉"。
+- P2-⑩：README/tutorial Stop 语义措辞修正（立即标 failed + 在途结果丢弃 + 集群作业一并取消；看门狗注明集群豁免）。
+- 复验：tsc src/ 零错误、lint 零告警、stop 路由 409 冒烟通过、dev.log 无运行时错误。
+
+Stage Summary:
+- QA 审查全部 P0/P1 闭环；P2 修 6 项（其余 4 项为体验/固有语义项已记入审查报告，随 ROADMAP 更新归档）。执行通道四写点（runner/单节点/stream reconcile/stop）全部条件化——Stop 判定全链路不可复活。
+---
+Task ID: 24
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：C+E 线全功能验证（API 竞态级 + 浏览器物理交互级）+ 回归 + 演示 DB 零污染
+
+Work Log:
+- **E4 Stop 竞态（API 真实执行）**：agent 节点后台触发运行（LLM）→ T+1.5s 确认 running（progress 10）→ Stop → failed + result "Stopped by user before completion." + logs [stop] 痕迹 → 等待 >80s 迟到 LLM 完成 → **DB 保持 failed（迟到结果被条件持久化丢弃，未复活）**。
+- **E1 看门狗真实触发（FOUNDRY_NODE_TIMEOUT_MS=4000 服务器）**：agent 单节点运行 4.65s 返回 failed + result/logs 看门狗横幅（"[watchdog] No terminal state within 4s"）；3 节点链（input→rfdiffusion→output）3.5s 全 completed——快引擎**无误报**；agent→output 链 agent 被看门狗杀（4.0s 工作流完成）→ **output 仍 completed（失败不剪枝/下游解锁）**。
+- **运维发现（已闭环）**：直接 setsid/nohup 重启 dev server 会被沙箱进程收割（~60-90s 静默死亡）；改用平台自带 .zscripts/daemon-run.py double-fork 守护器启动后跨调用稳定——后续重启一律走此通道。
+- **C2 溯源深链（浏览器）**：物理点击 promote 节点卡 → inspector 头部 chip "from “Antibody Fv Campaign”" + Open → 点击 Open → 自动切 Screening 面板且正确选中该 campaign（pendingScreeningId 深链消费成功，非默认第一项）。
+- **C3 undo 状态（浏览器）**：NodeSearch（Ctrl+F）定位 completed 变体 → Delete 确认删除（DB row DELETED）→ Ctrl+Z → 恢复且 **DB status=completed、progress=100、completedAt 保留、sweepGroup 保持、result 非空**（修复前恒为 idle 无结果）。
+- **E3 组卡（浏览器物理交互）**：物理点击 sweep 徽标折叠（pointer-capture 修复保持，组卡 2 variants/1/2 completed/50%）→ NodeSearch 搜 "num_designs" 返回 "No matching nodes."（折叠过滤生效）、搜 "Sweep Source" 正常返回源节点（不误伤）→ 组卡物理拖拽 +200/-100 → 两成员 DB 坐标精确平移 (100,1010)→(300,910)/(400,1010)→(600,910) → 点击组卡主体展开恢复 10 卡。
+- **E4 Stop UI（浏览器）**：运行 agent → Runs sheet 3s 轮询捕获 running 行（header "1 running"）+ Stop 按钮出现 → 物理点击 Stop → 行迁移 Failed · retry 车道（header "0 running · 2 failed"）。
+- **E2 Retry（浏览器）**：Failed 车道 Retry 物理点击 → **toast 立即 "Retry started"**（fire-and-forget 不阻塞）→ 3s 轮询把行翻回 Running & Queued（spinner 只覆盖 claim 阶段）。
+- **回归**：My First Workflow 14 节点卡 ✓、Antibody Design Campaign 5 节点卡 ✓、移动端 375 零横向溢出（doc.scrollWidth==clientWidth）+ 最外层 footer 精确贴底 bottom=812 + VLM 复核卡片渲染正常（VLM 首判"溢出"为切换菜单打开时的误判 + 画布世界内容出视口的正常语义，程序化证据推翻）；console/page errors 零。
+- **清理**：demo:reset --force 恢复冻结基线（顺带真实场景验证 C1 脚本）+ daemon-run.py 重启 dev server；基线完整性验证：14+5 节点、3 campaign（60/20/6，Antibody Fv promoted 恢复为 1）、schedules 4/tooljobs 16/versions 2 全部与冻结时一致；测试工作流（2 个同名 CE-Lane QA Test）随重置消失。
+
+Stage Summary:
+- C+E 线 9 项能力全部通过三重验证（API 竞态级 / 浏览器物理交互级 / 文件与 DB 证据级）；执行通道核心语义闭环实证：Stop 落定不可复活、看门狗触发且无误报且失败解锁下游、undo 恢复保留终态；演示 DB 零污染（冻结→重置→逐字段验证）。发现并闭环 1 项运维边界（自定义进程被收割，须走 daemon-run.py）。

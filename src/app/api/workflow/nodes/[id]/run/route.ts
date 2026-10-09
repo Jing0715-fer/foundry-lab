@@ -19,7 +19,7 @@ import {
   toNodeDTO,
   toEdgeDTO,
   gatherInputs,
-  executeNode,
+  executeNodeGuarded,
 } from "@/lib/workflow-engine";
 
 export async function POST(
@@ -119,7 +119,8 @@ export async function POST(
         return "failed";
       }
       const inputs = gatherInputs(nodeId, nodes, edges);
-      const { result, logs, status } = await executeNode(
+      // E1 watchdog — same lane protection as the workflow runner.
+      const { result, logs, status } = await executeNodeGuarded(
         current,
         inputs,
         workflowId,
@@ -127,14 +128,17 @@ export async function POST(
       if (status === "running") {
         // Poll-ceiling outcome: remote cluster job still running — persist
         // the honest in-progress state, NO completedAt / progress-100.
-        await db.node.update({
-          where: { id: nodeId },
+        // E4 conditional: never resurrect a row the user stopped.
+        await db.node.updateMany({
+          where: { id: nodeId, status: "running" },
           data: { status, result, logs, progress: 90 },
         });
         return status;
       }
-      await db.node.update({
-        where: { id: nodeId },
+      // E4 conditional persist — only a still-running row takes the outcome
+      // (a user Stop or watchdog settle wins over a late engine result).
+      await db.node.updateMany({
+        where: { id: nodeId, status: "running" },
         data: {
           status,
           result,

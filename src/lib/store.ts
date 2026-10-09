@@ -93,6 +93,11 @@ interface AppState {
   /** Sweep-group ids currently collapsed into an aggregate group card (B3).
    * UI-only state — never persisted; members stay in the workflow/DB. */
   collapsedSweepGroups: string[];
+  /** C2 provenance deep-link: a screening id another panel asked the
+   * Screening panel to open + select (e.g. the inspector's "promoted from
+   * screening" chip on a promote node). Consumed by the panel on mount /
+   * list load, then cleared. */
+  pendingScreeningId: string | null;
 
   // actions: workflow
   setWorkflow: (w: WorkflowDTO | null) => void;
@@ -144,6 +149,8 @@ interface AppState {
   setRunsSheetOpen: (b: boolean) => void;
   /** Collapse/expand a sweep group's aggregate card (B3). */
   toggleSweepCollapse: (groupId: string) => void;
+  /** Request the Screening panel to open + select this screening (C2). */
+  setPendingScreeningId: (id: string | null) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
   dismissToast: (id: string) => void;
 }
@@ -175,6 +182,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   clusterSheetOpen: false,
   runsSheetOpen: false,
   collapsedSweepGroups: [],
+  pendingScreeningId: null,
 
   setWorkflow: (w) => {
     const switching = !!w && !!get().workflow && w.id !== get().workflow!.id;
@@ -406,6 +414,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         ? s.collapsedSweepGroups.filter((g) => g !== groupId)
         : [...s.collapsedSweepGroups, groupId],
     })),
+  setPendingScreeningId: (id) => set({ pendingScreeningId: id }),
 
   toast: (t) => {
     const id = Math.random().toString(36).slice(2, 9);

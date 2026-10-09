@@ -11,6 +11,7 @@ export function NodeSearch({ onClose }: { onClose: () => void }) {
   const [results, setResults] = React.useState<NodeDTO[]>([]);
   const [highlighted, setHighlighted] = React.useState(0);
   const workflow = useAppStore((s) => s.workflow);
+  const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
   const select = useAppStore((s) => s.select);
   const inspect = useAppStore((s) => s.inspect);
   const setViewport = useAppStore((s) => s.setViewport);
@@ -22,15 +23,21 @@ export function NodeSearch({ onClose }: { onClose: () => void }) {
       return;
     }
     const q = query.toLowerCase();
+    // E3 collapse consistency: members collapsed into an aggregate group card
+    // are invisible on the canvas — searching for them would "navigate" to a
+    // card that isn't rendered (viewport recentering onto nothing). They stay
+    // reachable by expanding the group (the aggregate shows the source name).
+    const collapsed = new Set(collapsedSweepGroups);
     const matched = (workflow?.nodes ?? []).filter(
       (n) =>
-        n.name.toLowerCase().includes(q) ||
-        n.type.toLowerCase().includes(q) ||
-        n.status.toLowerCase().includes(q),
+        !(n.sweepGroup && collapsed.has(n.sweepGroup)) &&
+        (n.name.toLowerCase().includes(q) ||
+          n.type.toLowerCase().includes(q) ||
+          n.status.toLowerCase().includes(q)),
     );
     setResults(matched);
     setHighlighted(0);
-  }, [query, workflow]);
+  }, [query, workflow, collapsedSweepGroups]);
 
   // Navigate to a node: center it in the viewport + select it. The CURRENT
   // zoom is preserved (it used to hard-reset to 1, yanking the user from a

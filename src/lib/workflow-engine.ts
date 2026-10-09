@@ -612,3 +612,112 @@ export async function executeNode(
     };
   }
 }
+
+// ── E1: per-node execution watchdog ──────────────────────────────────────────
+
+/**
+ * Per-node execution ceiling (E1). One wedged engine (child process that never
+ * exits, an LLM call that hangs on a dead socket, …) must never occupy a
+ * worker lane forever — the bounded pool (MAX_CONCURRENCY) would drain and the
+ * whole workflow run would hang with nodes stuck in "running".
+ *
+ * 15 minutes comfortably exceeds every legitimate execution path (built-in
+ * numpy engines: seconds; LLM agent turns: ≤2 min; poll-ceiling cluster
+ * submissions return "running" on their own, they don't hold the lane).
+ * Override for exotic environments: FOUNDRY_NODE_TIMEOUT_MS.
+ */
+export const NODE_TIMEOUT_MS = (() => {
+  const raw = Number(process.env.FOUNDRY_NODE_TIMEOUT_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 15 * 60_000;
+})();
+
+function fmtTimeoutLabel(ms: number): string {
+  const min = Math.round(ms / 60_000);
+  return min >= 1 ? `${min}m` : `${Math.round(ms / 1000)}s`;
+}
+
+/**
+ * Node types whose comptool execution can be routed to an SSH/Slurm cluster
+ * via the inspector-managed `_cluster` param (see executeNode's alphafold +
+ * comp-tool branches). Used by the watchdog exemption below.
+ */
+const CLUSTER_ROUTED_TYPES = new Set([
+  "alphafold",
+  "rfdiffusion",
+  "rfantibody",
+  "proteinmpnn",
+  "ligandmpnn",
+  "solublempnn",
+  "rosetta",
+  "pyrosetta",
+  "rf3",
+  "esmfold",
+  "colabfold",
+]);
+
+/**
+ * executeNode with a watchdog (E1): races the execution against
+ * NODE_TIMEOUT_MS. On timeout the node resolves as FAILED with an explicit
+ * watchdog banner, which (a) frees the worker lane, (b) unlocks downstream
+ * nodes with the normal failure semantics, and (c) leaves an honest trace in
+ * logs/result instead of an eternal spinner.
+ *
+ * CLUSTER-RUNNING NODES ARE EXEMPT (QA 23-a P0 fix): the cluster lane polls
+ * inline for up to 30/120 minutes BY DESIGN (real AF2 predictions take
+ * hours) and its loop is self-bounded by that deadline — it then reports the
+ * honest "running" poll-ceiling outcome and the SSE stream's reconcile owns
+ * the rest of the lifecycle. A 15-minute watchdog would deterministically
+ * fail every legitimate long cluster run. Their wedge risk is covered by the
+ * poll ceiling itself + the job-stop lane (POST /api/tools/jobs/:id/stop)
+ * + the stream's 2h hard cap.
+ *
+ * For LOCAL lanes the watchdog bounds exactly the wedge risk it was built
+ * for: a child process that never exits, an LLM call on a dead socket. The
+ * losing execution promise keeps running in the background (JavaScript
+ * cannot cancel it); its eventual resolution is consumed by nobody. Callers
+ * persist outcomes CONDITIONALLY on the node still being "running" (see the
+ * runner / single-node run lane), so a late resolution can never resurrect a
+ * node the watchdog (or a user Stop) already settled.
+ */
+export async function executeNodeGuarded(
+  node: NodeDTO,
+  inputs: string,
+  workflowId: string,
+): Promise<NodeExecResult> {
+  // Cluster-routed tool node → no watchdog race (see docblock).
+  if (
+    CLUSTER_ROUTED_TYPES.has(node.type) &&
+    extractClusterTarget((node.params as Record<string, unknown>)._cluster)
+  ) {
+    return executeNode(node, inputs, workflowId);
+  }
+
+  const execution = executeNode(node, inputs, workflowId);
+  // executeNode maps internal errors to { status: "failed" } results, but a
+  // defensive catch keeps a throwing helper from surfacing as an unhandled
+  // rejection after the race is decided.
+  void execution.catch(() => undefined);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      execution,
+      new Promise<NodeExecResult>((resolve) => {
+        timer = setTimeout(() => {
+          resolve({
+            result:
+              `Error: execution timed out after ${fmtTimeoutLabel(NODE_TIMEOUT_MS)} (watchdog) — ` +
+              "the node was marked failed and downstream nodes were unlocked.",
+            logs:
+              `[watchdog] No terminal state within ${fmtTimeoutLabel(NODE_TIMEOUT_MS)} — ` +
+              "node marked failed by the execution watchdog (E1). The underlying " +
+              "engine may still be finishing in the background; its late result " +
+              "is discarded.",
+            status: "failed",
+          });
+        }, NODE_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}

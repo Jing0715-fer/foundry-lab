@@ -12,6 +12,7 @@ import {
   ArrowRightToLine,
   Flag,
   Box,
+  FlaskConical,
   X,
   Server,
   Loader2,
@@ -897,6 +898,8 @@ function NodeInspectorImpl() {
   const inspect = useAppStore((s) => s.inspect);
   const setNodeStatus = useAppStore((s) => s.setNodeStatus);
   const toast = useAppStore((s) => s.toast);
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const setPendingScreeningId = useAppStore((s) => s.setPendingScreeningId);
 
   const patch = useDebouncedPatch();
   const [running, setRunning] = React.useState(false);
@@ -916,6 +919,33 @@ function NodeInspectorImpl() {
     () => (node ? nodeSpec(node.type) : undefined),
     [node],
   );
+
+  // ── C2 provenance: promoted-input source chip ────────────────────────────
+  // Input nodes minted by screening promotion carry the screening id in
+  // refId. Resolve its name (best-effort) for the header chip; the chip's
+  // Open button deep-links the Screening panel to that campaign.
+  const promoteSourceId = node?.type === "input" ? node.refId : null;
+  const [promoteSourceName, setPromoteSourceName] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (!promoteSourceId) {
+      setPromoteSourceName(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/screening/${promoteSourceId}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
+        if (!cancelled) setPromoteSourceName(data?.screening?.name ?? null);
+      } catch {
+        if (!cancelled) setPromoteSourceName(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [promoteSourceId]);
 
   // Params this node can sweep (drives the Sweep button + dialog mount).
   // Mirrors the dialog's UNSWEEPABLE_KEYS + advanced filtering so the button
@@ -1351,6 +1381,25 @@ function NodeInspectorImpl() {
               {node.status}
             </Badge>
             <span className="text-xs text-muted-foreground">{spec.label}</span>
+            {promoteSourceId && (
+              <span className="inline-flex min-w-0 items-center gap-1 rounded-full border border-violet-500/30 bg-violet-500/10 py-0.5 pl-1.5 pr-1 text-[10px] font-medium text-violet-600 dark:text-violet-400">
+                <FlaskConical className="size-3 shrink-0" aria-hidden />
+                <span className="truncate">
+                  from {promoteSourceName ? `“${promoteSourceName}”` : "screening"}
+                </span>
+                <button
+                  type="button"
+                  className="ml-0.5 shrink-0 rounded-full px-1 underline underline-offset-2 transition-opacity hover:opacity-80"
+                  title="Open this screening campaign"
+                  onClick={() => {
+                    setPendingScreeningId(promoteSourceId);
+                    setActivePanel("screening");
+                  }}
+                >
+                  Open
+                </button>
+              </span>
+            )}
             {spec.usesLLM && (
               <Badge variant="secondary" className="ml-auto text-[10px]">LLM</Badge>
             )}

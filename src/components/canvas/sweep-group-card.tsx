@@ -1,20 +1,28 @@
 "use client";
 
-// Sweep aggregate group card (B3, node-group extension).
+// Sweep aggregate group card (B3, node-group extension + E3 draggable).
 //
 // A collapsed sweep group renders ONE card instead of N variant cards:
 //   - header: sweep badge + source name + "N variants" count
 //   - body: live progress (completed/total) with a mini progress bar and a
 //     status pill (running / failed / done / idle)
 //   - actions: Compare (opens the sweep-compare dialog for the group) and
-//     Expand (chevron) — clicking the card body also expands.
+//     Expand (chevron)
 //
-// The card occupies the top-left of the member bounding box; while the group
-// is collapsed, the canvas maps every member's position to THIS card's
-// position for edge rendering, so wires visually attach to the aggregate.
+// E3 group drag: pointer-down on the card body (outside its buttons) starts a
+// drag that visually translates the aggregate; on release every MEMBER node
+// is committed to its shifted position (store merge + per-node PATCH). A
+// click without movement still expands the group. Edges re-route on release
+// (they anchor at the aggregate position via layoutNodes); live edge patching
+// is per-node-id keyed and can't express a multi-member shift.
+//
+// A11y: the root is a labeled GROUP region (not a fake button with focusable
+// descendants — nested interactive elements are illegal HTML in a button);
+// keyboard users reach Expand/Compare through the real buttons.
 //
 // Pure UI state: collapsing never touches the DB — members stay in the
-// workflow and the undo/redo chain is unaffected.
+// workflow and the undo/redo chain is unaffected. Position moves, like
+// single-card drags, are not captured as history entries.
 
 import * as React from "react";
 import {
@@ -24,7 +32,8 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { CARD_W } from "@/lib/workflow-catalog";
+import { clamp } from "@/lib/canvas-utils";
+import { CARD_W, CARD_H, WORLD_MIN, WORLD_MAX } from "@/lib/workflow-catalog";
 import { useAppStore } from "@/lib/store";
 import type { NodeDTO } from "@/lib/types";
 import { SweepCompareDialog } from "@/components/canvas/sweep-compare-dialog";
@@ -61,8 +70,21 @@ export function deriveSweepGroups(
 
 export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
   const toggleSweepCollapse = useAppStore((s) => s.toggleSweepCollapse);
+  const setDragActive = useAppStore((s) => s.setDragActive);
+  const mergeNodes = useAppStore((s) => s.mergeNodes);
   const toast = useAppStore((s) => s.toast);
   const [compareOpen, setCompareOpen] = React.useState(false);
+
+  const cardRef = React.useRef<HTMLDivElement | null>(null);
+  const dragState = React.useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    moved: boolean;
+    raf: number | null;
+    latestDx: number;
+    latestDy: number;
+  } | null>(null);
 
   const { members, x, y } = group;
   const total = members.length;
@@ -88,26 +110,159 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
         ? { label: "done", cls: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" }
         : { label: "idle", cls: "bg-slate-500/15 text-slate-600 dark:text-slate-400" };
 
+  // ── E3 drag handlers ─────────────────────────────────────────────────────
+  // Same contract as NodeCard: left-button only, interactive descendants
+  // (Compare/Expand buttons) are excluded so their clicks survive
+  // setPointerCapture, ≥4px movement distinguishes drag from click.
+  const onGroupPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    // Same exclusion list as node-card (buttons, links, inputs, contenteditable,
+    // [role=button] descendants): setPointerCapture would otherwise hijack
+    // their clicks. The card root itself is role="group" — it must NOT match
+    // this selector, or the whole drag would be dead (checked: closest() from
+    // a body target never climbs into role="group").
+    if (
+      (e.target as HTMLElement).closest(
+        "button, a, input, textarea, select, [contenteditable='true'], [role='button']",
+      )
+    ) {
+      return;
+    }
+    (e.currentTarget as HTMLDivElement).setPointerCapture(e.pointerId);
+    dragState.current = {
+      pointerId: e.pointerId,
+      startX: e.clientX,
+      startY: e.clientY,
+      moved: false,
+      raf: null,
+      latestDx: 0,
+      latestDy: 0,
+    };
+  };
+
+  const onGroupPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragState.current;
+    if (!st || e.pointerId !== st.pointerId) return;
+    const dx = e.clientX - st.startX;
+    const dy = e.clientY - st.startY;
+    if (!st.moved) {
+      if (Math.hypot(dx, dy) < 4) return;
+      st.moved = true;
+      setDragActive(true);
+    }
+    st.latestDx = dx;
+    st.latestDy = dy;
+    // rAF throttle (node-card pattern): pointermove can fire faster than a
+    // frame; only one style write per frame.
+    if (st.raf !== null) return;
+    st.raf = requestAnimationFrame(() => {
+      st.raf = null;
+      // Visual-only translation in WORLD units (the card lives inside the
+      // scaled workspace, so screen px / zoom = world units).
+      const zoom = useAppStore.getState().viewport.zoom || 1;
+      if (cardRef.current) {
+        cardRef.current.style.transform = `translate(${(st.latestDx / zoom).toFixed(2)}px, ${(st.latestDy / zoom).toFixed(2)}px)`;
+      }
+    });
+  };
+
+  const onGroupPointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragState.current;
+    if (!st || e.pointerId !== st.pointerId) return;
+    try {
+      (e.currentTarget as HTMLDivElement).releasePointerCapture(e.pointerId);
+    } catch {
+      // ignore
+    }
+    if (st.raf !== null) cancelAnimationFrame(st.raf);
+    if (cardRef.current) cardRef.current.style.transform = "";
+    if (!st.moved) {
+      // Click on the card body → expand (same affordance as before E3).
+      toggleSweepCollapse(group.groupId);
+    } else {
+      const zoom = useAppStore.getState().viewport.zoom || 1;
+      const wdx = st.latestDx / zoom;
+      const wdy = st.latestDy / zoom;
+      setDragActive(false);
+      // Commit against the FRESHEST member rows (QA 23-a P2-③ fix): the
+      // render-time `members` snapshot can be minutes stale — a run may have
+      // flipped statuses meanwhile, and merging a stale full-DTO would clobber
+      // those server writes back into the local store.
+      const liveNodes = useAppStore.getState().workflow?.nodes ?? [];
+      const liveMembers = members
+        .map((m) => liveNodes.find((n) => n.id === m.id) ?? m)
+        .map((m) => ({ ...m, x: Math.round(m.x), y: Math.round(m.y) }));
+      // Clamp the WHOLE member bounding box into world bounds so no member
+      // lands outside the canvas (the aggregate can't be split apart).
+      const minX = Math.min(...liveMembers.map((m) => m.x));
+      const maxX = Math.max(...liveMembers.map((m) => m.x)) + CARD_W;
+      const minY = Math.min(...liveMembers.map((m) => m.y));
+      const maxY = Math.max(...liveMembers.map((m) => m.y)) + CARD_H;
+      const cdx = Math.round(clamp(wdx, WORLD_MIN - minX, WORLD_MAX - maxX));
+      const cdy = Math.round(clamp(wdy, WORLD_MIN - minY, WORLD_MAX - maxY));
+      if (cdx !== 0 || cdy !== 0) {
+        const moved = liveMembers.map((m) => ({
+          ...m,
+          x: m.x + cdx,
+          y: m.y + cdy,
+        }));
+        // mergeNodes (not upsertNode): no selection side effects, no history
+        // capture (position moves are not undoable, matching single drags).
+        mergeNodes(moved);
+        // Persist each member; failures self-heal on the next 3s status poll
+        // (the server truth reverts the local position).
+        void (async () => {
+          const results = await Promise.allSettled(
+            moved.map((m) =>
+              fetch(`/api/workflow/nodes/${m.id}`, {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ x: m.x, y: m.y }),
+              }).then((r) =>
+                r.ok ? null : Promise.reject(new Error(`HTTP ${r.status}`)),
+              ),
+            ),
+          );
+          const failures = results.filter((r) => r.status === "rejected").length;
+          if (failures > 0) {
+            toast({
+              title: `Failed to save position for ${failures} node${failures === 1 ? "" : "s"}`,
+              description: "The canvas will revert to the saved positions on the next refresh.",
+              variant: "destructive",
+            });
+          }
+        })();
+      }
+    }
+    dragState.current = null;
+  };
+
+  const onGroupPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    const st = dragState.current;
+    if (!st || e.pointerId !== st.pointerId) return;
+    if (st.raf !== null) cancelAnimationFrame(st.raf);
+    if (cardRef.current) cardRef.current.style.transform = "";
+    if (st.moved) setDragActive(false);
+    dragState.current = null;
+  };
+
   return (
     <>
       <div
-        role="button"
-        tabIndex={0}
-        aria-label={`Sweep group "${sourceName}" — ${total} variants, ${completed} completed. Activate to expand.`}
+        role="group"
+        aria-label={`Sweep group "${sourceName}" — ${total} variants, ${completed} completed. Drag to move the whole group; use Expand to see the variants.`}
         data-node-card
+        ref={cardRef}
         className={cn(
-          "group-card absolute w-[248px] cursor-pointer rounded-xl border bg-card text-card-foreground shadow-md transition-shadow",
-          "hover:shadow-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+          "group-card absolute w-[248px] cursor-grab touch-none rounded-xl border bg-card text-card-foreground shadow-md transition-shadow active:cursor-grabbing",
+          "hover:shadow-lg",
           running && "node-pulse-running",
         )}
         style={{ left: x, top: y, width: CARD_W }}
-        onClick={() => toggleSweepCollapse(group.groupId)}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            toggleSweepCollapse(group.groupId);
-          }
-        }}
+        onPointerDown={onGroupPointerDown}
+        onPointerMove={onGroupPointerMove}
+        onPointerUp={onGroupPointerUp}
+        onPointerCancel={onGroupPointerCancel}
       >
         {/* Header */}
         <div className="flex items-center gap-2 border-b px-3 py-2">

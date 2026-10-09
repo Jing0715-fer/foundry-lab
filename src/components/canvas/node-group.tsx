@@ -68,14 +68,24 @@ interface GroupBox extends Omit<Group, "color"> {
  */
 export function NodeGroupLayer() {
   const workflow = useAppStore((s) => s.workflow);
+  const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
   const { groups, activeGroupId, removeGroup, setActiveGroup } = useGroupStore();
   const nodes = workflow?.nodes ?? [];
 
   // Compute each group's bounding box from its member nodes.
+  // E3 collapse consistency: members folded into a sweep aggregate card are
+  // rendered at the AGGREGATE's position, not their own — a dashed rectangle
+  // around their raw coordinates would float over nothing. Collapsed members
+  // are excluded; a group whose every member is collapsed disappears until
+  // the sweep is expanded again.
   const groupBoxes = React.useMemo<GroupBox[]>(() => {
+    const collapsed = new Set(collapsedSweepGroups);
+    const visible = nodes.filter(
+      (n) => !(n.sweepGroup && collapsed.has(n.sweepGroup)),
+    );
     const out: GroupBox[] = [];
     for (const g of groups) {
-      const members = nodes.filter((n) => g.nodeIds.includes(n.id));
+      const members = visible.filter((n) => g.nodeIds.includes(n.id));
       if (members.length === 0) continue;
       const minX = Math.min(...members.map((n) => n.x));
       const minY = Math.min(...members.map((n) => n.y));
@@ -84,6 +94,7 @@ export function NodeGroupLayer() {
       const color = GROUP_COLORS.find((c) => c.name === g.color) ?? GROUP_COLORS[0];
       out.push({
         ...g,
+        nodeIds: members.map((m) => m.id),
         box: {
           x: minX - 24,
           y: minY - 40,
@@ -94,7 +105,7 @@ export function NodeGroupLayer() {
       });
     }
     return out;
-  }, [groups, nodes]);
+  }, [groups, nodes, collapsedSweepGroups]);
 
   if (groupBoxes.length === 0) return null;
 

@@ -118,6 +118,11 @@ export function ScreeningPanel() {
   // --- Data ---------------------------------------------------------------
   const [screenings, setScreenings] = React.useState<ScreeningDTO[]>([]);
   const [listLoading, setListLoading] = React.useState(true);
+  /** QA 23-a P2-⑤: distinguish "list loaded but empty" from "list request
+   * failed" — the pending-id consumer must not report "screening not
+   * found" when it simply couldn't load the list (it stays pending and
+   * consumes on a later successful refresh instead). */
+  const listFailedRef = React.useRef(false);
   const [currentId, setCurrentId] = React.useState<string | null>(null);
   const [screening, setScreening] = React.useState<ScreeningDTO | null>(null);
   const [candidates, setCandidates] = React.useState<ScreeningCandidateDTO[]>([]);
@@ -133,6 +138,7 @@ export function ScreeningPanel() {
       const data = await res.json();
       if (Array.isArray(data?.screenings)) {
         setScreenings(data.screenings as ScreeningDTO[]);
+        listFailedRef.current = false;
       }
     } catch {
       /* best-effort refresh */
@@ -152,9 +158,11 @@ export function ScreeningPanel() {
           : [];
         if (cancelled) return;
         setScreenings(list);
+        listFailedRef.current = false;
         if (list.length > 0) setCurrentId(list[0].id);
       } catch (e) {
         if (!cancelled) {
+          listFailedRef.current = true;
           toast({
             title: "Failed to load screenings",
             description: e instanceof Error ? e.message : String(e),
@@ -169,6 +177,32 @@ export function ScreeningPanel() {
       cancelled = true;
     };
   }, [toast]);
+
+  // C2 provenance deep-link: another surface (the inspector's "promoted from
+  // screening" chip) asked this panel to open a specific screening. Consume
+  // the request once the list is loaded, then clear it. Handles both mount
+  // orders (pending id set before / after the list arrives).
+  const pendingScreeningId = useAppStore((s) => s.pendingScreeningId);
+  const setPendingScreeningId = useAppStore((s) => s.setPendingScreeningId);
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  React.useEffect(() => {
+    if (!pendingScreeningId || listLoading) return;
+    // List failed to load → leave the request pending; a later successful
+    // refresh (refreshList / remount) will consume it.
+    if (listFailedRef.current) return;
+    const exists = screenings.some((s) => s.id === pendingScreeningId);
+    setPendingScreeningId(null);
+    if (!exists) {
+      toast({
+        title: "Screening not found",
+        description: "The linked screening no longer exists.",
+        variant: "destructive",
+      });
+      return;
+    }
+    setActivePanel("screening");
+    setCurrentId(pendingScreeningId);
+  }, [pendingScreeningId, listLoading, screenings, setPendingScreeningId, setActivePanel, toast]);
 
   // Detail load (on selection change / forced reload).
   React.useEffect(() => {
