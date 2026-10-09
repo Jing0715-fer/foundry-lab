@@ -1,0 +1,8 @@
+#!/bin/bash
+# Test-harness file shim (mock-cluster): the scheduler is an in-memory state
+# machine inside the SSH server process — PATH-level invocations (e.g. the
+# app's reconcile sweep embedding $(squeue …) in command substitutions, or
+# scheduler calls nested inside sbatch scripts) forward to its loopback
+# endpoint so they see the SAME job registry the exec layer serves.
+# See mini-services/mock-cluster/index.ts + shims/sched-client.ts.
+exec bun /home/z/my-project/mini-services/mock-cluster/shims/sched-client.ts squeue "$@"

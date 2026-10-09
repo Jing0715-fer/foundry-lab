@@ -3754,3 +3754,110 @@ Work Log:
 
 Stage Summary:
 - F 线 P1 完成"开发 → QA 审查（30-a）→ 修复（30-b）→ 浏览器级 e2e（31）→ 按测试结果重写 roadmap"全闭环；8 项新测试结论与 5 条新工程教训固化进 ROADMAP/CONTRIBUTING/README；下一阶段（G 线验证通道 + D 线科研深度）以 22 项测试结论为据。
+
+---
+
+Task ID: 33-a
+Agent: g23-frontend-dev (Z.ai Code)
+Task: G2+G3 前端四项：组重命名/改色编辑器（G2a）、全折叠组幽灵框（G2b）、删除死代码 getLiveDrag（G3-1）、NodeSearch 隐藏标签页双 rAF 修复 + 市场窄化选择器（G3-2/3）。
+
+Work Log:
+- 前置：读 worklog 尾部锁定不变量（条件写回纪律、真实指针 e2e 标准、组 persist 机制禁改）+ 四个目标文件全文。
+- 接手状态：工作树已携带一套未提交、无 worklog 记录的 33-a 实现（代码内注释自证为 33-a 会话产物）——逐行对照任务规格审计而非重写，补齐验证与收尾。
+- G2a 审计（node-group.tsx）：铅笔按钮 -top-3 right-11 / bg-slate-600 hover:bg-slate-700 / lucide Pencil size-3 / aria-label + data-testid=group-edit-button + stopPropagation → 新增 editingGroupId 状态；内联编辑面板（absolute top-2 left-3 z-10 w-52 rounded-lg border bg-card p-2 shadow-lg，pointer-events-auto，根节点 stopPropagation）含标签输入（maxLength=64 对齐服务端 PATCH 校验、autoFocus+select、Enter 提交 updateGroup({label: trimmed || current}) 并关闭、Escape stopPropagation 关闭不提交、blur 仅在值变化且 e.relatedTarget 不在面板内时提交——色点点击不误伤）+ 4 色点（teal/violet/amber/rose，size-5 rounded-full border + 实色 tailwind bg，当前色 ring-2 ring-offset-2，aria-label/data-testid，点击立即 updateGroup 且编辑器保持打开）；updateGroup 与 600ms 防抖 persist 机制零改动。
+- G2b 审计：groupBoxes memo 的幽灵分支——storedMembers（nodes.filter(nodeIds.includes)）vs 可见成员（非折叠）；visible=0 且 stored>0 且全员折叠 → 推幽灵框；部分 id 已删（stored !== nodeIds 长度）保持旧 skip；几何 = 成员 min(x,y) -24/-40 + CARD_W+48 × 150+64（贴合 deriveSweepGroups 聚合卡渲染位置）；逐色硬编码 ghostBg 0.04 / ghostBorder 0.15；1.5px dashed；标签 "{label} · N folded" + 底部 text-[10px] muted 提示 "expand the sweep to see members"；同一套 active 交互（编辑/删除/编辑器在幽灵几何内工作）；data-testid="group-ghost"；正常路径与 memo deps [groups, nodes, collapsedSweepGroups] 不变。
+- 核验工作树内 pointerdown stopPropagation 修复：对照 workflow-canvas.tsx 确认 isBackground 把组框判为背景 → setPointerCapture 把 pointerup/click 重定向到 section，组框 onClick 与 ×/铅笔按钮在真实浏览器中从未触发（注释所述与源码一致）——该修复是规格点击交互生效的必要条件；代价（框上无法起手平移）已在注释声明。
+- G3-1 审计：getLiveDrag 已删、LiveDrag 文档块改写为 write-only 语义、setLiveDrag/LiveDrag/computeEdgeGeom 可选 drag 参数未动；全仓 grep = 0 代码引用（仅 docs/worklog/qa-review markdown 提及）。
+- G3-2/3 审计：afterStableLayout 辅助函数（document.hidden → setTimeout(cb,0)，否则双 rAF）替换嵌套 rAF，测量逻辑逐行保真；template-marketplace 换 wfName/wfNodeCount/wfEdgeCount 窄化选择器、requestInstall 守卫 needsTemplateConfirm(wfNodeCount) + dep 数组、TemplateLoadConfirm 三 props、installTemplate 仍走 getState() 未动、组件级整 workflow 订阅零残留。
+- 复验：bunx tsc --noEmit → 项目 src/ 零错误（4 条预存 examples/skills 不变；任务字面过滤 rg "src/" 命中其中 1 条系 skills/.../src/ 路径含 "src/" 子串，非项目 src/）；bun run lint → exit 0 零告警；改动恰为列出的四个文件；无新依赖（Pencil 来自 lucide-react）；无 indigo/blue（slate 中性灰）；无测试代码。
+
+Stage Summary:
+- G2+G3 四项全部落地于四个指定文件：组重命名/改色编辑器对所有框（含幽灵框）可用、全折叠组渲染为可选择虚线幽灵框而非静默消失、死代码 getLiveDrag 删除且文档改写为 write-only、NodeSearch 隐藏标签页立即重居中、市场不再随 3s 轮询整模态重渲染。tsc（项目 src）+ lint 干净、getLiveDrag 引用=0、组 persist 机制未触碰；发现并保留必要的 pointerdown 修复（组框点击交互的前提）。
+
+---
+Task ID: 34-a
+Agent: qa-code-reviewer (Z.ai Code)
+Task: G 线 QA 深度审查（未提交 diff 全量：sweep co-driver / ceiling 覆写 / sacct 分隔符 / G2 组编辑器+幽灵框 / G3 清理 / mock loopback+shims / cluster e2e 脚本；纯审查不改码）
+
+Work Log:
+- 前置：读 worklog 尾部锁定不变量（执行通道写点条件化、Stop 不可复活、真实指针实测标准、组 persist 机制禁改）+ git status/diff 全量（12 改 + 7 新文件），逐文件全文精读。
+- 执行通道审查（P0 焦点）：stream co-driver 逐行推演（sweepInFlight 模块级守卫跨调用方共享、doSweep 内双层吞错 → "never throws" 注释属实、fire-and-forget 带 catch、无新增 timer、close/cancel 语义不变）；全 diff grep 证实零新增 Node.status 写点（reconcileClusterOutcome 仍是 23-b 的条件 updateMany）。
+- 发现 P1 级竞态：applySweepBlock 入口终态守卫读的是 doSweep 快照对象——updateRun 是"换对象"式写入，stopClusterJob 在 sweepInFlight 之外执行 → stop 的远端杀进程窗口（1-20s SSH）内陈旧 sweep 的 ALIVE 分支可把刚 cancelled 的 ToolJob 行无条件写回 running（徽标丢失+僵尸行永不自愈）；新 co-driver 每 3s 触发 sweep 恰好放大该窗口。修复建议：入口 getRun 重读 live phase + ALIVE/EXIT 行写改 updateMany 条件化（与节点 lane 纪律对齐）。
+- 审查其余交付：ceiling 覆写数学（空串→0 被拒、NaN/负数被拒、逐调用读取、注释准确）；sacct split(/[,|]/) 双分隔符回归推演（FAILED 分支 codeField 现在真正可达、mock 发 "|" 证实、SLURM 状态值不含分隔符——仅 "CANCELLED by <uid>" 预存缺口记 P2）。
+- node-group 逐项验证：pointerdown 声明 VERIFY（isBackground 无 frame 豁免 + setActiveGroup 唯一调用点即 frame onClick → 修复前组选择/删除在真实浏览器是死代码；stopPropagation 模式与 create-menu catcher 同款先例；31 号任务的框选起手于空画布不受影响）；blur/Enter/Escape 三 commit 路径 + relatedTarget 守卫 + closeRef 无双提交/丢提交窗口；persistPending 屏蔽与 updateGroup 兼容（schedule 时即置位）；幽灵框几何与 deriveSweepGroups 同源 min 数学吻合（E3 拖拽后同步、拖拽中静态记 P2）。
+- node-search afterStableLayout（SSR 无 document 触碰、旧浏览器 undefined→falsy 走双 rAF、隐藏页强制 reflow 测量正确但注释"immediately"不准）；marketplace 窄化选择器（TOCTOU 为预存等价语义、无回归）；getLiveDrag 全仓零引用证实（33-a 声明属实）。
+- mock-cluster loopback + 5 个 file shim：一状态机两门验证（planScheduler 顶层段仍 JS 应答、shim 只补命令替换缺口、command -v 重写无行为变化）；bashSingleQuote→tokenize 往返（--format=a,b|c 安全、含单引号 argv 不往返但无应用路径触发）；127.0.0.1 无鉴权判定为测试装置可接受；热重载双服务守卫实测有效（:3023 探针应答）；发现 P2：3023 端口被占时 Bun.serve 顶层抛错会连带杀死 3022 SSH 服务。
+- e2e 脚本逐段审查：P0-P6 断言逻辑、SSE 分块解析（\n\n 分帧+心跳跳过+abort 双向）、prisma deleteMany 范围、pidDead 僵尸/ENOENT 语义、崩溃遗留物（仅连接按名清理、工作流/ToolJob 不自愈记 P2）、outputs/rfdiffusion 整目录删除今日安全但脆弱（记 P2）、P3 超时错误不指认 env 误配置（记 P2）、P5b 跳过文案混淆。
+- 工具链复跑：bunx tsc --noEmit → src/+scripts/ 零错误（33-a 声明属实）但 mini-services 新增 3 条（Bun 全局 TS2867 + sched-client 顶层 await TS1375×2，仓级门槛 4→7，记 P1）；bun run lint 零告警；dev :3000 与 loopback :3023 只读探针通过。未运行 e2e 脚本（会改 DB 状态）；未修改任何源代码。
+
+Stage Summary:
+- P0×1（.env 为被跟踪文件、临时 8s ceiling 覆写若随提交即成仓库默认——真实集群全部 8s 触顶；改用被 ignore 的 .env.local 并同步 CONTRIBUTING）；P1×2（① applySweepBlock 陈旧快照终态守卫——in-flight sweep 可覆写刚 cancelled 的 ToolJob 行成僵尸 running+丢徽标，新 co-driver 放大窗口，一行 getRun 重读+条件化行写可收口；② mini-services 3 条新 tsc 错误使仓级验证门槛回退）；P2×9（编辑器内双击弹 create-menu、幽灵框跨 sweep/拖拽中静态/单成员 sweep 边缘、组无键盘路径、3023 端口冲突炸全服务、P3 超时不诊断、崩溃遗留不自愈、outputs 整目录删除、真实 sacct "CANCELLED by uid" 落 vanished、注释/权限/往返保真杂项）。
+- 已验证清洁 14 组（零新增 Node 写点、co-driver 无堆积无泄漏、ceiling 数学、sacct 双分隔符、pointerdown 声明核实、幽灵几何同源、编辑器 commit 语义、水合屏蔽、afterStableLayout、市场窄化、getLiveDrag 零消费、loopback 双门一致性、e2e 结构、tsc src/lint）。
+- Task 35 建议 8 条（co-driver 真阳性用例——P5a 现状删掉 co-driver 也能过、P3 诊断性报错、预检自愈、输出清理收窄、P5b 文案、stop-vs-sweep 压测、G2 浏览器真实指针回归、pidDead 防 pid 复用）。产出 qa-review-g-lane.md。
+
+---
+Task ID: 33-b
+Agent: main-orchestrator (Z.ai Code)
+Task: G1 集群 e2e 通道开发（roadmap #21）：可复现 harness + 生产加固 + mock 补全
+
+Work Log:
+- 摸底 cluster lane 全链路（cluster-run.ts 1052 行：dispatch/sweep/applySweepBlock/syncBack/stopClusterJob；ssh.ts 连接池；connections 注册表；instrumentation boot 对账；stream 路由 poll-ceiling reconcile；run 路由 poll 循环）。
+- 生产改动①：`FOUNDRY_CLUSTER_POLL_CEILING_MS` env（run-utils.ts，按次读取、仅正有限值）——poll-ceiling 交接可复现测试。
+- 生产改动②：stream 路由 sweep co-driver——节点带 `[cluster run · job]` 标记运行时每 ~3s fire-and-forget 驱动 reconcileClusterJobs（re-entrant 守卫），关闭"只有 cluster 面板/ jobs 轮询才推进 ToolJob 行"缺口。
+- 生产改动③：sacct 分隔符 bug 修复（e2e 首跑发现 slurmState=null → 根因：真 sacct -P 与 mock 均以 `|` 分隔、旧代码 split(",") 把整行当 state）——split(/[,|]/)。
+- mock 补全：mini-services/mock-cluster 新增 loopback 调度器端点（127.0.0.1:3023/sched，同一 emulateSegment 状态机）+ fs/opt/bin/{squeue,sacct,sinfo,scancel,sbatch} 文件 shim（shims/sched-client.ts）——sweep 的 `$(squeue …)` 命令替换走真 bash PATH，此前是 mock 拦截盲区（README 既承诺未兑现）。
+- scripts/e2e/cluster-lane.ts（~800 行）：P0 preflight（TCP 探针 + 基线快照）/P1 连接 CRUD（DTO 密钥剥离断言）/P2 直连 happy path（引擎/文件/DB 证据：ATOM 记录、.cf-exit=0、run.out）/P3 Stop（单点写 + via-node-stop 徽标 + /proc 远端真死 + 终态守卫不复活）/P4 Slurm（sbatch id + slurmState 断言 + banner）/P5 SSE 流 reconcile（completed/cancelled 双映射）/P6 清理 + 基线恢复。package.json 增 e2e:cluster；CONTRIBUTING 增集群 e2e 运行手册。
+- 首跑 70/70 PASS（修 3 处脚本 bug：200/201 断言、无 nodes/[id] GET 路由改走 workflows/:id、mock $HOME 绝对路径映射）。
+
+Stage Summary:
+- G1 通道成型：mock 补全（一态两门）+ sacct bug 修复 + 3 处测试性/生产改动；e2e 全模式绿（70/70 → QA 后 77/77）。
+
+---
+Task ID: 34-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P0×1 + P1×2 + P2 精修 8 条（基于 34-a 审查报告 qa-review-g-lane.md）
+
+Work Log:
+- P0-1：ceiling env 从入库的 .env 移到 gitignored .env.local（git check-ignore 验证 + Next 优先级）；CONTRIBUTING 运行手册改指向 .env.local 并注明原因。
+- P1-1（applySweepBlock 快照竞态）：入口 live 重读（getRun 覆盖 stale 快照）+ 新 updateJobRowIfSweepable（where status notIn terminal）条件化 ALIVE/EXIT-fail/vanished/syncBack 四处行写 + syncBackOutputs 出口 phase 复核（mid-sync Stop 保留 cancelled 判定与徽标）。
+- P1-2（tsc 门禁 4→7）：index.ts 加 ambient `declare const Bun`（module 内文件级生效）；sched-client.ts 加 `export {}`（模块标记杀 TS1375×2）。
+- P2：编辑器 onDoubleClick stopPropagation（防画布 create-menu 穿透）；ghost 折叠判定对齐 deriveSweepGroups ≥2 成员规则；mock Bun.serve EADDRINUSE 降级（try/catch 不崩 SSH 层）；e2e P3 超时诊断（点名 env 缺失）+ P0 自愈（冻结基线 DB 参照删崩溃残留的工作流/ToolJob 行/记录/目录）+ P6 per-jobId 清理 + P5b 跳过语义区分；sacct `CANCELLED by <uid>` 前缀匹配；pidDead starttime 比对；shim chmod 755。
+- e2e 增强（QA 建议）：P3 stop-vs-sweep 压力循环（Stop 前后 9 次 jobs 轮询）；P5c co-driver 真阳性（第三长任务，无任何 jobs-list 调用、仅流式 sweep 落定——唯一钉死 stream co-driver 的断言）。
+- 复验：tsc 全仓仅 4 条预存（src/scripts/mini-services 零新增）、lint 零告警、e2e 全模式 77/77 PASS。
+
+Stage Summary:
+- 34-a 全部 P0/P1 闭环 + P2 修 8 条；执行通道条件写不变量正式覆盖 ToolJob 行写（sweep 全出口）；co-driver 有了专属真阳性断言。
+
+---
+Task ID: 35
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：G 线浏览器级全链路（G2 组编辑/ghost + G3 回归 + cluster 徽标 + 移动端）+ 三种 e2e 模式复跑 + 演示 DB 零污染
+
+Work Log:
+- **G1 三模式**：完整（--ceiling，77/77：含 stop 压力 + co-driver 真阳性）→ --keep（现场保留 67/67）→ 基础（51/51，自愈 + P6 基线恢复；首跑发现连接自愈盲区——P0 快照先于 P1 连接清理 → 修复：连接清理并入 P0 自愈）。
+- **G2a 组编辑器（真实指针）**：API 备料（一次性工作流 + input×2 + 本地 rfdiffusion + 2 变体 sweep 全 completed）→ 合成 PointerEvent 框选（setPointerCapture 临时 no-op——CDP shift 修饰不传导）→ "2 selected" 浮条 → Ctrl+G（dispatchEvent）→ Create（Radix footer 坐标点击静默落空 → DOM click 兜底 + 副作用断言）→ 组框渲染 → **真实指针点击组框选中**（✎/× 出现——pointerdown stopPropagation 修复实证：修复前 onClick 是死代码）→ 真实指针点 ✎ → 编辑器（input + 4 色点）→ 重命名 Enter 提交 → 真实指针点 violet 色点（即时变色 + ring）→ **DB PATCH 落库**（groups JSON label/color/nodeIds）→ reload + 切回工作流 → **hydrate 恢复**（label + violet border）。
+- **G2b ghost**：框选 2 变体 → Ctrl+G "Sweep Group" → 真实指针点 sweep 徽标折叠（"2 selected" 浮条遮挡 → 先点 Cancel 清场）→ **ghost 渲染**（`[data-testid=group-ghost]`："Sweep Group · 2 folded" + 展开提示 + 聚合卡出现）→ 真实指针点 ghost 边带 → 激活（✎/× 在 ghost 上）→ ghost 上打开编辑器（label 正确）。
+- **G3 回归**：NodeSearch（发现调色板 placeholder 就叫 "Search nodes…" 的同名陷阱 → 改完整 placeholder 断言）Ctrl+F → fill → Enter → **精确居中 delta [0,0]**（880,462 = Inspector 开启后 800 宽画布正中心——双 rAF + 隐藏页兜底回归通过）；Marketplace 模态渲染（9 个 Install）+ Esc 关闭；console/page errors 零。
+- **Cluster 面板徽标**：--keep 现场 → 面板打开 → cancelled 行内容 "rfdiffusion · cancelled · via node stop · foundry@localhost · direct · pid 29181"（徽标与取消语义同容器实证）+ 截图 docs/images/25-cluster-via-node-stop-badge.png。
+- **移动端**：375×812 → main 宽 319、docScroll 相等、footer 780/812 贴底。
+- **清理**：浏览器遗留（工作流 API 删 + 冻结基线参照删本地 ToolJob 行 + outputs/）→ 基础 e2e 复跑收敛（2 工作流/19 节点/16 toolJobs/0 连接 = 冻结基线）。
+- **e2e 工程经验（新增 4 条固化入 ROADMAP #28-30）**：CDP shift 修饰不传导到 mouse 事件（band-select 用合成 PointerEvent + setPointerCapture 临时 no-op）；"N selected" 浮条遮挡锚点区域目标（先清场）；调色板与 NodeSearch placeholder 同名前缀（断言用完整 placeholder）；组框 stopPropagation 吃掉从组框起步的平移（拖拽必须从 elementFromPoint 验证过的真背景点起步）。
+
+Stage Summary:
+- G 线三重验证闭环（集群 e2e 三模式 + 浏览器真实指针 + DB/文件证据）；F3 徽标的真实 SSH 场景（此前 QA 推演背书）拿到浏览器级实证；演示 DB 零污染；4 条新 e2e 工程教训固化。
+
+---
+Task ID: 36
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：基于测试结果重写 ROADMAP（H 线规划）+ README 更新 + ceiling 环境还原 + git 提交推送
+
+Work Log:
+- docs/ROADMAP.md 重写：本阶段成果（G 线四项 + QA 闭环 + E2E 证据）+ 测试结论表 22→30 项（新增 #23 集群 e2e 通道全绿、#24 sacct 分隔符 bug、#25 mock 拦截盲区与一态两门、#26 stop/sweep 快照竞态与 ToolJob 条件写不变量扩展、#27 .env 入库陷阱、#28-30 e2e 工程经验）+ 下一阶段 **H 线（科研深度与可及性收口）**：叠合深化提级 P1（单卡发起/swap/RMSD 筛选指标）、键盘可达组层（P2-4）、ghost 视觉边界（P2-3a/b）、NextAuth 弹性、叠合 worker 对称性。
+- 验收标准扩充：集群通道改动必须跑 e2e:cluster 双模式；执行通道条件写扩展到 ToolJob 行写；e2e 选择器同名陷阱/浮条遮挡/组框拖拽起点三条新工程标准；测试 env 一律 .env.local。
+- README.md：手绘分组特性补"可编辑（✎ 重命名/换色）+ ghost 幽灵框"；仓库结构补 scripts/e2e、src/lib/cluster、mock-cluster 双子服务与 instrumentation 注释；新增"可复现集群 e2e"小节（mock-cluster 启动 + e2e:cluster + CONTRIBUTING 指引）。
+- 环境还原：删 .env.local（8s ceiling）→ 守护器重启 dev server → GET / 与 /api/workflow 200 + 浏览器冒烟（14 卡、console/page errors 零）。
+- 最终检查：lint 零告警、tsc 全仓仅 4 条预存（src/scripts/mini-services 零新增）、dev.log 无运行时错误（仅一次重启期 EADDRINUSE 过渡）、演示 DB 基线字段级核对（2/19/16/0）。
+- git 提交推送。
+
+Stage Summary:
+- G 线完成"开发（33-a/33-b）→ QA 审查（34-a）→ 修复（34-b）→ 三模式集群 e2e + 浏览器级 e2e（35）→ 按测试结果重写 roadmap"全闭环；8 项新测试结论与 4 条新工程教训固化；下一阶段（H 线科研深度 + D 线叠合提级）以 30 项测试结论为据。

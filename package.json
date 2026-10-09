@@ -13,7 +13,8 @@
     "db:reset": "prisma migrate reset",
     "demo:snapshot": "bun scripts/reset-demo.ts snapshot",
     "demo:reset": "bun scripts/reset-demo.ts reset",
-    "demo:fresh": "bun scripts/reset-demo.ts reset --force && echo 'Demo DB reset to the frozen baseline. Restart the dev server (daemon-run.py) so the Prisma client reloads.'"
+    "demo:fresh": "bun scripts/reset-demo.ts reset --force && echo 'Demo DB reset to the frozen baseline. Restart the dev server (daemon-run.py) so the Prisma client reloads.'",
+    "e2e:cluster": "bun scripts/e2e/cluster-lane.ts"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

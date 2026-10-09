@@ -58,6 +58,18 @@ import { fileURLToPath } from "node:url";
 import { generateKeyPairSync } from "node:crypto";
 import ssh2 from "ssh2";
 
+// Ambient Bun global (P1-2, QA 34-a): this service always RUNS under Bun, but
+// the repo-wide `tsc --noEmit` gate also reads this file; without the
+// declaration the Bun.serve call below trips TS2867 (repo errors 4→5).
+declare const Bun: {
+  serve: (options: {
+    port?: number;
+    hostname?: string;
+    idleTimeout?: number;
+    fetch: (req: Request) => Response | Promise<Response>;
+  }) => { stop: (force?: boolean) => void };
+};
+
 const { Server } = ssh2;
 
 // ---------------------------------------------------------------------------
@@ -1484,6 +1496,56 @@ server.listen(PORT, BIND_HOST, () => {
   log(`PATH: ${MOCK_PATH}`);
   log(`real engine dir: ${ENGINE_DIR}`);
 });
+
+// ── Loopback scheduler endpoint (fs/opt/bin file-shim backing) ────────────
+// The exec layer intercepts scheduler commands that arrive as TOP-LEVEL
+// segments, but the app's reconcile sweep embeds `$(squeue …)` / `$(sacct …)`
+// inside command substitutions — real bash resolves those against PATH, where
+// the fs/opt/bin file shims live. Shims are separate PROCESSES and cannot see
+// this process's in-memory jobs map, so they call this loopback and we answer
+// from the SAME emulators the exec layer uses (one state machine, two doors).
+// Loopback-only bind (127.0.0.1); fixed port 3023; test harness, not product.
+const SCHED_LOOPBACK_PORT = 3023;
+const SCHED_HOT_KEY = Symbol.for("foundry.mock-cluster.sched-loopback");
+const prevSched: any = (globalThis as any)[SCHED_HOT_KEY];
+if (prevSched) {
+  try { prevSched.stop(true); } catch { /* ignore */ }
+}
+// P2-5 (QA 34-a): Bun.serve throws synchronously on EADDRINUSE and this code
+// runs after the SSH listener — a :3023 squatter must degrade the shims, not
+// crash the whole harness. Shims then fail with exit 126 (honest signal).
+try {
+  const schedServer = Bun.serve({
+    port: SCHED_LOOPBACK_PORT,
+    hostname: "127.0.0.1",
+    idleTimeout: 10,
+    fetch(req) {
+      const url = new URL(req.url);
+      if (url.pathname !== "/sched") {
+        return new Response("not found", { status: 404 });
+      }
+      const tool = url.searchParams.get("tool") ?? "";
+      let argv: string[] = [];
+      try {
+        const parsed = JSON.parse(url.searchParams.get("argv") ?? "[]");
+        if (Array.isArray(parsed)) argv = parsed.map(String);
+      } catch {
+        return Response.json({ out: "", err: "bad argv json", code: 64 });
+      }
+      const cwd = url.searchParams.get("cwd") ?? FS_ROOT;
+      const seg = [tool, ...argv.map((a) => bashSingleQuote(a))].join(" ");
+      const emu = emulateSegment(seg, cwd);
+      if (!emu) {
+        return Response.json({ out: "", err: `unknown tool: ${tool}`, code: 127 });
+      }
+      return Response.json(emu);
+    },
+  });
+  (globalThis as any)[SCHED_HOT_KEY] = schedServer;
+  log(`sched loopback: http://127.0.0.1:${SCHED_LOOPBACK_PORT}/sched (fs/opt/bin file-shim backing)`);
+} catch (err: any) {
+  log(`sched loopback unavailable (port ${SCHED_LOOPBACK_PORT} in use: ${err?.message ?? err}) — scheduler file shims degraded`);
+}
 
 // One bad command must never take the server down.
 const GLOBALS_KEY = Symbol.for("foundry.mock-cluster.globals");

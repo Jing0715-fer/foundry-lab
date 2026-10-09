@@ -633,7 +633,18 @@ async function executeCompToolOnCluster(
   // (c) Poll loop: sweep the cluster + read the row every 3s. Real AF2
   // predictions (MSA + 5 models + relax) legitimately take hours — the
   // ceiling is per-tool; the timeout reports honestly either way.
-  const deadline = Date.now() + (toolKey === "alphafold" ? 120 : 30) * 60 * 1000;
+  // FOUNDRY_CLUSTER_POLL_CEILING_MS (G-lane e2e channel, roadmap #21): test
+  // override for the ceiling so the poll-ceiling HANDOFF (node left running
+  // + "[cluster run · job …]" marker in its logs → the SSE stream reconcile
+  // settles it later) is reproducibly exercisable without waiting 30
+  // minutes. Read per-call; only positive finite values apply. See
+  // scripts/e2e/cluster-lane.ts and docs/CONTRIBUTING.md.
+  const ceilingOverride = Number(process.env.FOUNDRY_CLUSTER_POLL_CEILING_MS ?? "");
+  const deadline =
+    Date.now() +
+    (Number.isFinite(ceilingOverride) && ceilingOverride > 0
+      ? ceilingOverride
+      : (toolKey === "alphafold" ? 120 : 30) * 60 * 1000);
   let lastTail = "";
   while (Date.now() < deadline) {
     await new Promise<void>((r) => setTimeout(r, 3000));

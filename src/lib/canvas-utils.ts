@@ -23,16 +23,17 @@ export interface EdgeGeom {
  * Module-level live-drag state.
  *
  * Holds the in-progress card drag offset (affected node IDS + dx/dy in WORLD
- * coordinates) so that ANY consumer of `computeAllEdgeGeoms` can read it
- * without going through React state or the zustand store. The drag loops in
- * node-card.tsx (single card) and sweep-group-card.tsx (aggregate group —
- * F-lane liveDrag extension: one drag, many member nodes shifted together)
- * write to this every rAF frame and clear it on pointerup.
+ * coordinates). This state is WRITE-ONLY for the drag loops: node-card.tsx
+ * (single card) and sweep-group-card.tsx (aggregate group — F-lane liveDrag
+ * extension: one drag, many member nodes shifted together) write to it every
+ * rAF frame and clear it on pointerup, so any future consumer that DOES need
+ * the live offset knows the shape it will find here.
  *
  * This is the cryoflow pattern: edges are patched directly via DOM setAttribute
- * (no React re-render per frame), but the shared geometry helpers can still
- * observe the live offset for defensive reads (e.g. by polling layers or the
- * SVG layer itself if it ever re-renders mid-drag).
+ * (no React re-render per frame); the shared geometry helpers receive the
+ * live offset through computeEdgeGeom/computeAllEdgeGeoms's optional `drag`
+ * param (a pure-function signature — the render-space callers pass it
+ * explicitly, see the P1-1 render-space fix in sweep-group-card.tsx).
  */
 export interface LiveDrag {
   ids: string[];
@@ -44,10 +45,6 @@ let liveDrag: LiveDrag | null = null;
 
 export function setLiveDrag(o: LiveDrag | null): void {
   liveDrag = o;
-}
-
-export function getLiveDrag(): LiveDrag | null {
-  return liveDrag;
 }
 
 /** Anchor point of a port on a card. dir = "out" (right edge) | "in" (left edge). */

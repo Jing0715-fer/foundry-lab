@@ -120,6 +120,28 @@ async function updateJobRow(jobId: string, data: JobRowPatch): Promise<void> {
   }
 }
 
+/** Conditional row write (P1-1, QA 34-a): only a row that is STILL
+ *  non-terminal takes a SWEEP verdict. stopClusterJob runs outside the
+ *  sweepInFlight guard, so a sweep whose SSH round trip (≤25s) straddles a
+ *  user Stop would otherwise clobber the just-cancelled row — an
+ *  unconditional update in the ALIVE branch resurrects `status: "running"`
+ *  (zombie row nothing re-settles + lost cancel-source badge), and the
+ *  EXIT/vanished branches can flip a cancelled row to "failed". Mirrors the
+ *  node-lane conditional-persist discipline (terminal verdicts are final). */
+async function updateJobRowIfSweepable(
+  jobId: string,
+  data: JobRowPatch,
+): Promise<void> {
+  try {
+    await db.toolJob.updateMany({
+      where: { id: jobId, status: { notIn: ["completed", "failed", "cancelled"] } },
+      data,
+    });
+  } catch {
+    /* row may be absent — nothing to do */
+  }
+}
+
 // ── Remote command construction ─────────────────────────────────────────────
 
 /**
@@ -692,16 +714,23 @@ async function applySweepBlock(
   run: ClusterRunState,
   block: SweepBlock,
 ): Promise<void> {
-  // P2-1 guard (QA 30-a): a run that reached a terminal phase (user Stop via
-  // stopClusterJob, or an earlier verdict) is NEVER re-written by a stale
-  // sweep block — the block's verdicts were read from the remote host up to
-  // a full SSH round-trip (25s timeout) ago and would otherwise flip a
-  // cancelled row back to "running" (ALIVE branch) or to "failed" (EXIT
-  // branch), clobbering the cancel-source badge. (syncing stays sweepable —
-  // the EXIT-0 branch's own in-flight guard handles it.)
-  if (run.phase === "done" || run.phase === "failed" || run.phase === "cancelled") {
+  // Terminal-phase guard. P2-1 guard (QA 30-a): a run that reached a
+  // terminal phase (user Stop via stopClusterJob, or an earlier verdict) is
+  // NEVER re-written by a stale sweep block. P1-1 hardening (QA 34-a): the
+  // `run` argument is a SNAPSHOT captured when the sweep started —
+  // stopClusterJob runs OUTSIDE the sweepInFlight guard, so it can flip the
+  // live record during this sweep's own SSH round trip (the ALIVE branch
+  // would then write `status:"running"` over the just-cancelled row). Re-read
+  // the live phase and work from the freshest record.
+  const live = getRun(run.jobId);
+  const phase = live?.phase ?? run.phase;
+  if (phase === "done" || phase === "failed" || phase === "cancelled") {
     return;
   }
+  if (live) run = live;
+  // (syncing stays sweepable — the EXIT-0 branch's own in-flight guard below
+  // handles a second EXIT-0 block, and syncBackOutputs re-checks the phase
+  // before finalizing so a mid-sync Stop wins.)
   const logTailOut = block.logTailLines.join("\n").replace(/\n+$/, "");
   const logTailErr = block.errTailLines.join("\n").replace(/\n+$/, "");
   const logTotalLines = block.logLines ?? run.logTotalLines;
@@ -719,11 +748,18 @@ async function applySweepBlock(
   }
 
   // sacct bookkeeping (slurm): state + elapsed.
+  // Field separator: real `sacct -P` (--parsable) separates with "|" and
+  // --parsable2 with ","; the mock cluster emits "|" too. Split on BOTH
+  // (G-lane e2e finding, Task 33-b): the comma-only split used to read a
+  // pipe-separated "COMPLETED|0:0|00:00:05" line as ONE giant state token —
+  // slurmState became the whole line and every sacct-based verdict fell
+  // through to "vanished" (only the .cf-exit ladder saved normal completions).
   let slurmState = run.slurmState;
   let slurmElapsedMs = run.slurmElapsedMs;
   const sacctV = block.verdicts.find((v) => v.kind === "SACCT" && v.detail.trim() !== "");
+  const sacctFields = (d: string): string[] => d.split(/[,|]/);
   if (sacctV) {
-    const [state, , elapsed] = sacctV.detail.split(",");
+    const [state, , elapsed] = sacctFields(sacctV.detail);
     if (state && state.trim()) slurmState = state.trim();
     const ms = parseSlurmElapsedMs(elapsed ?? "");
     if (ms != null) slurmElapsedMs = ms;
@@ -738,17 +774,20 @@ async function applySweepBlock(
     const rc = parseInt(exitV.detail.trim(), 10);
     if (Number.isFinite(rc)) verdict = { kind: "exit", code: rc };
   } else if (run.mode === "slurm" && run.slurmId && sacctV) {
-    const state = (sacctV.detail.split(",")[0] ?? "").trim().toUpperCase();
+    const state = (sacctFields(sacctV.detail)[0] ?? "").trim().toUpperCase();
     if (["PENDING", "RUNNING", "COMPLETING", "REQUEUED", "RESIZING", "CONFIGURING", "SUSPENDED"].includes(state)) {
       verdict = { kind: "alive", detail: state };
     } else if (state === "COMPLETED") {
       verdict = { kind: "exit", code: 0 };
-    } else if (state === "CANCELLED") {
+    } else if (state === "CANCELLED" || state.startsWith("CANCELLED by")) {
+      // Real sacct emits "CANCELLED by <uid>" for user-cancels (P2-9, QA
+      // 34-a) — the exact-match-only ladder used to route those to
+      // "vanished" (misleading "process vanished" failures).
       verdict = { kind: "exit", code: 143 };
     } else if (state === "TIMEOUT") {
       verdict = { kind: "exit", code: 124 };
     } else if (["FAILED", "NODE_FAIL", "OUT_OF_MEMORY", "BOOT_FAIL", "PREEMPTED"].includes(state)) {
-      const codeField = (sacctV.detail.split(",")[1] ?? "").trim(); // "N:signal"
+      const codeField = (sacctFields(sacctV.detail)[1] ?? "").trim(); // "N:signal"
       const parsedCode = parseInt(codeField.split(":")[0], 10);
       verdict = { kind: "exit", code: Number.isFinite(parsedCode) ? parsedCode : 1 };
     } else if (state) {
@@ -792,7 +831,7 @@ async function applySweepBlock(
       error: `exit code ${verdict.code}`,
       finishedAt: new Date().toISOString(),
     });
-    await updateJobRow(run.jobId, {
+    await updateJobRowIfSweepable(run.jobId, {
       status: "failed",
       exitCode: verdict.code,
       stderr:
@@ -816,7 +855,7 @@ async function applySweepBlock(
         vanishedStreak: streak,
         finishedAt: new Date().toISOString(),
       });
-      await updateJobRow(run.jobId, {
+      await updateJobRowIfSweepable(run.jobId, {
         status: "failed",
         stderr:
           "Cluster process vanished — no exit file and the pid is no longer alive " +
@@ -831,14 +870,16 @@ async function applySweepBlock(
     return;
   }
 
-  // ── ALIVE (or no verdict) → update tails + throttle-update the DB row. ────
+  // ── ALIVE (or no verdict) → update tails + throttle-update the DB row.
+  // P1-1 (QA 34-a): conditional write — a Stop that landed mid-sweep keeps
+  // its cancelled verdict + badge instead of being resurrected to running.
   updateRun(run.jobId, { ...common, vanishedStreak: 0 });
   if (
     logTailOut !== run.logTailOut ||
     logTailErr !== run.logTailErr ||
     logTotalLines !== run.logTotalLines
   ) {
-    await updateJobRow(run.jobId, {
+    await updateJobRowIfSweepable(run.jobId, {
       status: "running",
       stdout:
         clusterBanner(run) +
@@ -916,13 +957,22 @@ async function syncBackOutputs(conn: ClusterConnection, run: ClusterRunState): P
     (run.logTailOut || "(no captured output)") +
     (warnings.length ? `\n\n${warnings.join("\n")}` : "");
 
+  // P1-1 (QA 34-a): a user Stop can cancel a "syncing" run mid-download
+  // (stopClusterJob's guard only exempts done/failed/cancelled). Only a
+  // record STILL syncing takes the done verdict — the synced files stay on
+  // disk (harmless), but the row's cancelled verdict + cancel-source badge
+  // are never overwritten. The row write is conditional for the same reason.
+  const current = getRun(run.jobId);
+  if (!current || current.phase !== "syncing") {
+    return;
+  }
   updateRun(run.jobId, {
     phase: "done",
     syncedFiles,
     syncedBytes,
     finishedAt: new Date().toISOString(),
   });
-  await updateJobRow(run.jobId, {
+  await updateJobRowIfSweepable(run.jobId, {
     status: "completed",
     outputFiles: JSON.stringify(syncedFiles),
     stdout,

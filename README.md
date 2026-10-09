@@ -43,9 +43,11 @@
 每个节点自带检查器（右侧）：参数面板、运行日志（实时流式）、任务历史、
 产物文件入口，一键跳转 3D 查看器。
 
-- **手绘分组（持久化）**：框选 2+ 节点 → `Ctrl+G` → 命名分组——彩色虚线组框
+- **手绘分组（持久化 + 可编辑）**：框选 2+ 节点 → `Ctrl+G` → 命名分组——彩色虚线组框
   （四色可选）保存到工作流（`Workflow.groups`），刷新 / 切换 / 版本恢复后都在；
-  删除成员节点时组引用自动清理。
+  删除成员节点时组引用自动清理。点击组框可选中（✎/× 按钮），✎ 打开内联编辑器
+  **重命名 / 换色**（防抖持久化）；成员全部折叠进 sweep 聚合卡时组框淡化为
+  **ghost 幽灵框**（贴在聚合卡位置、显示 "N folded"，仍可选中编辑）。
 - **模板/导入/市场加载确认**：加载模板、导入 JSON、安装市场模板都会**替换**
   当前工作流——替换前弹确认对话框（明示将删除的节点/边数量，并提示先存
   版本快照或换新工作流），空工作流直接加载不打扰。
@@ -285,6 +287,7 @@ AF2 模型排名 / 6 候选抗体 Fv）。被实验弄脏后可用官方种子�
 │  └─ tutorial.md        # 完整使用攻略教程（图文并茂）
 ├─ scripts/
 │  ├─ algorithms/        # 5 个真实算法引擎（纯 numpy Python）
+│  ├─ e2e/               # 可复现 e2e 验收装置（cluster-lane：集群通道全链路）
 │  └─ foundry/           # 辅助脚本
 ├─ src/
 │  ├─ app/
@@ -302,12 +305,29 @@ AF2 模型排名 / 6 候选抗体 Fv）。被实验弄脏后可用官方种子�
 │  │  ├─ scheduler.ts         # DB 定时任务清扫器
 │  │  ├─ screening.ts         # 筛选收割/评分/提升
 │  │  ├─ real-executor.ts     # 真实命令执行
+│  │  ├─ cluster/             # SSH 集群通道（派发/对账 sweep/取消/同步）
 │  │  └─ molecular/           # 3D 引擎（worker/DSSP/SASA/…）
-│  └─ instrumentation.ts  # 随服务启动调度器
-├─ mini-services/        # 独立子服务（mock-cluster 集群模拟）
+└─ instrumentation.ts  # 随服务启动调度器 + 孤儿运行对账
+├─ mini-services/
+│  ├─ mock-cluster/      # 本地测试集群（真 ssh2 SSH 服务器 + 迷你 SLURM + 真实引擎）
+│  └─ job-events/        # socket.io 实时事件
 ├─ prisma/               # SQLite schema
 └─ outputs/              # 运行产物（PDB/FASTA/metrics，可被 file API 服务）
 ```
+
+### 可复现集群 e2e
+
+集群执行通道（直连 / Slurm 派发、对账 sweep、输出同步、节点 Stop → 远端取消 +
+`via node stop` 徽标、poll-ceiling 交接 → SSE 流 reconcile）有一条命令行验收通道：
+
+```bash
+( setsid bash -c 'cd mini-services/mock-cluster && exec bun run dev' >/dev/null 2>&1 </dev/null & )
+bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 基线恢复）
+# 完整验收（含 Stop 路径 + co-driver 实证）：见 docs/CONTRIBUTING.md 集群 e2e 节
+```
+
+跑真实 SSH 到 mock-cluster、执行真实 numpy 引擎，断言到引擎/文件/DB/流式事件级
+证据，并自行把演示数据恢复到跑前基线。
 
 ## API 一览
 

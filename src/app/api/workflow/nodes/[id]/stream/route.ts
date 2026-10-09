@@ -32,9 +32,17 @@
 // checks the ToolJob row: once it is terminal, the terminal state
 // (status/result/logs + ##OUTPUTS## trailer) is copied onto the NODE so the
 // UI settles honestly instead of spinning forever.
+//
+// G-lane sweep co-driver (roadmap #21): the sweep used to be driven ONLY by
+// the cluster panel / jobs-list pollers — with just this stream open, the
+// ToolJob row would never advance and the node would spin until the 2h hard
+// cap. While the node is "running" with a cluster marker, this stream now
+// fires the (re-entrant-guarded, best-effort) sweep itself every ~3s, so a
+// ceiling'd node settles even with no other surface attached.
 
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
+import { reconcileClusterJobs } from "@/lib/cluster/cluster-run";
 
 export const runtime = "nodejs";
 
@@ -66,6 +74,10 @@ export async function GET(
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let pollTimer: ReturnType<typeof setTimeout> | null = null;
+  // G-lane sweep co-driver: last time this stream fired reconcileClusterJobs
+  // (throttled — the 500ms poll only re-reads, the sweep does real SSH work).
+  let lastSweepAt = 0;
+  const SWEEP_INTERVAL_MS = 3000;
   const deadline = Date.now() + STREAM_HARD_CAP_MS;
 
   const stream = new ReadableStream<Uint8Array>({
@@ -191,6 +203,22 @@ export async function GET(
             send("error", { error: "Node not found" });
             close();
             return;
+          }
+
+          // G-lane sweep co-driver (see file header): while this node waits
+          // on a remote cluster job, keep the sweep advancing even when no
+          // cluster panel / jobs list is polling. Fire-and-forget — the
+          // sweep is global-re-entrant-guarded and never throws; the NEXT
+          // 500ms poll reads whatever it wrote to the ToolJob row.
+          if (
+            current.status === "running" &&
+            clusterJobIdFromLogs(current.logs ?? "")
+          ) {
+            const now = Date.now();
+            if (now - lastSweepAt >= SWEEP_INTERVAL_MS) {
+              lastSweepAt = now;
+              void reconcileClusterJobs().catch(() => {});
+            }
           }
 
           // Poll-ceiling reconciliation (see comment above).

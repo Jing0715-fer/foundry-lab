@@ -6,6 +6,21 @@ import type { NodeDTO } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { CARD_W, CARD_H } from "@/lib/workflow-catalog";
 
+// #9 double-rAF: wait for the Inspector-driven resize to settle before
+// measuring the canvas. HIDDEN TAB fallback: rAF is throttled to ~0 in a
+// background tab, which would queue the recenter until the tab is focused
+// again — while hidden the layout cannot visibly change, so a macrotask
+// timeout measures the (stable) size instead. (The timer itself may be
+// clamped to ~1s by the browser — still far better than "when the tab is
+// next focused"; P2-10 comment fix, QA 34-a.)
+const afterStableLayout = (cb: () => void) => {
+  if (document.hidden) {
+    setTimeout(cb, 0);
+    return;
+  }
+  requestAnimationFrame(() => requestAnimationFrame(cb));
+};
+
 export function NodeSearch({ onClose }: { onClose: () => void }) {
   const [query, setQuery] = React.useState("");
   const [results, setResults] = React.useState<NodeDTO[]>([]);
@@ -54,16 +69,14 @@ export function NodeSearch({ onClose }: { onClose: () => void }) {
       select(node.id);
       inspect(node.id);
       onClose();
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          const canvasEl = document.querySelector('[data-canvas="viewport"]');
-          const w = canvasEl?.clientWidth ?? 900;
-          const h = canvasEl?.clientHeight ?? 600;
-          const zoom = useAppStore.getState().viewport.zoom;
-          setViewport({
-            x: Math.round(w / 2 - (node.x + CARD_W / 2) * zoom),
-            y: Math.round(h / 2 - (node.y + CARD_H / 2) * zoom),
-          });
+      afterStableLayout(() => {
+        const canvasEl = document.querySelector('[data-canvas="viewport"]');
+        const w = canvasEl?.clientWidth ?? 900;
+        const h = canvasEl?.clientHeight ?? 600;
+        const zoom = useAppStore.getState().viewport.zoom;
+        setViewport({
+          x: Math.round(w / 2 - (node.x + CARD_W / 2) * zoom),
+          y: Math.round(h / 2 - (node.y + CARD_H / 2) * zoom),
         });
       });
     },

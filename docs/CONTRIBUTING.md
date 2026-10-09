@@ -92,6 +92,45 @@ python3 .zscripts/daemon-run.py /home/z/my-project <日志文件> \
   **执行通道任何新增写点必须条件化**（`where status="running"`）：
   Stop/看门狗落定的行不可被迟到引擎结果复活（不变量，见 ROADMAP 验收标准）。
 
+## 集群通道 e2e（G 线，可复现）
+
+`bun run e2e:cluster`（`scripts/e2e/cluster-lane.ts`）把集群执行通道的全部
+关键承诺搬进一条可复现的命令行验收：直连/sbatch 双模式真实远程执行
+（mock-cluster 是真 ssh2 SSH 服务器 + 真实 numpy 引擎）、输出同步回本地、
+节点 Stop → `stopClusterJob` 单点写入（cancelled 行 + via-node-stop 徽标）
++ 远端进程真死 + sweep 终态守卫（不复活）、poll-ceiling 交接 → SSE 流
+reconcile 落定（completed/cancelled 双映射）。测试自身的清理阶段会把
+DB / 连接注册表 / 运行记录 / mock 文件系统恢复到跑前基线并逐项核对计数。
+
+前置条件：
+
+```bash
+# 1) dev server（:3000，见「已知环境限制」的守护器）
+# 2) mock-cluster（:3022）：
+( setsid bash -c 'cd mini-services/mock-cluster && exec bun run dev' \
+    > /dev/null 2>&1 < /dev/null & )
+
+# 3) 基础验收（P0-P2/P4/P5a/P6，不需要任何环境变量）：
+bun run e2e:cluster
+
+# 4) 完整验收（加 P3 Stop 路径 + P5b cancelled 映射 + P5c co-driver 实证）：
+#    先给 dev server 注入短 poll ceiling（.env.local 追加 + 守护器重启；
+#    注意用 .env.local —— .env 是入库文件，写进去会把 8s ceiling 变成仓库默认）：
+echo "FOUNDRY_CLUSTER_POLL_CEILING_MS=8000" >> .env.local
+#    （守护器重启 dev server —— 见上节）
+bun run e2e:cluster --ceiling 8000
+#    测完删掉该行并再次重启，恢复默认 30min/120min ceiling。
+```
+
+注意：
+- `--ceiling` 的值只是**声明**给脚本的服务器环境期望值（脚本无法读服务器
+  env）；若服务器实际没带该变量，P3 会在等待 marker 时超时并以明确错误
+  失败 —— 这本身就是误配置的诚实信号。
+- 调试可加 `--keep`（跳过清理，保留现场）；正式验收必须让 P6 跑完。
+- `scripts/e2e/` 下的脚本是**测试装置**（同 mini-services/mock-cluster），
+  不属于产品代码路径；它们可以直连 Prisma / 读写 data/*.json —— 这个
+  豁免只对测试装置成立，产品代码仍然只走 API。
+
 ## 已知环境限制
 
 - 只暴露 3000 端口（Caddy 网关）；跨端口请求用 `?XTransformPort=` 查询参数。

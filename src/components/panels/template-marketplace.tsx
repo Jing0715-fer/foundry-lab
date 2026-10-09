@@ -67,7 +67,12 @@ export function TemplateMarketplace({
   // current canvas; gate behind TemplateLoadConfirm when nodes exist.
   // Subscribed (not getState) so the dialog reads fresh counts on open.
   const [confirmTmpl, setConfirmTmpl] = React.useState<MarketplaceTemplate | null>(null);
-  const workflow = useAppStore((s) => s.workflow);
+  // Narrowed selectors (QA P3 memo): the whole-workflow subscription made every
+  // 3s status poll (new object identity) re-render the whole modal. Primitives
+  // only re-render when the name/counts actually change.
+  const wfName = useAppStore((s) => s.workflow?.name ?? null);
+  const wfNodeCount = useAppStore((s) => s.workflow?.nodes.length ?? 0);
+  const wfEdgeCount = useAppStore((s) => s.workflow?.edges.length ?? 0);
 
   const filtered = React.useMemo(() => {
     let result = MARKETPLACE_TEMPLATES;
@@ -212,13 +217,13 @@ export function TemplateMarketplace({
   const requestInstall = React.useCallback(
     (tmpl: MarketplaceTemplate) => {
       if (installingId) return;
-      if (needsTemplateConfirm(workflow?.nodes?.length)) {
+      if (needsTemplateConfirm(wfNodeCount)) {
         setConfirmTmpl(tmpl);
         return;
       }
       void installTemplate(tmpl);
     },
-    [installingId, installTemplate, workflow],
+    [installingId, installTemplate, wfNodeCount],
   );
 
   return (
@@ -368,9 +373,9 @@ export function TemplateMarketplace({
           }}
           templateName={confirmTmpl?.name ?? ""}
           templateNodeCount={confirmTmpl?.nodes.length ?? 0}
-          workflowName={workflow?.name ?? null}
-          currentNodes={workflow?.nodes?.length ?? 0}
-          currentEdges={workflow?.edges?.length ?? 0}
+          workflowName={wfName}
+          currentNodes={wfNodeCount}
+          currentEdges={wfEdgeCount}
           onConfirm={() => {
             const tmpl = confirmTmpl;
             setConfirmTmpl(null);

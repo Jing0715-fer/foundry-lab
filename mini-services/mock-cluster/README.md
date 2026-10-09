@@ -111,6 +111,21 @@ stage-2 node), `gpu`, `cpu`.
 
 Password auth only; sftp is refused (files sync via exec + stdin, e.g. `head -c N > file`).
 
+## Scheduler calls nested in scripts / command substitutions
+
+The exec layer intercepts scheduler commands that arrive as TOP-LEVEL segments
+(`sbatch <script>`, `cd W && squeue …`, `;`-separated batches). The app's
+reconcile sweep however embeds `$(squeue …)` / `$(sacct …)` inside command
+substitutions — real bash resolves those against PATH, where the
+`fs/opt/bin/{squeue,sacct,sinfo,scancel,sbatch}` FILE SHIMS live. Shims are
+separate processes and cannot see the SSH server's in-memory jobs map, so each
+one (`shims/sched-client.ts`) calls the server's LOOPBACK endpoint
+`http://127.0.0.1:3023/sched?tool=<t>&argv=<json>&cwd=<dir>` and replays its
+stdout/stderr/exit code verbatim — one state machine, two doors (the exec
+interceptor and the shims answer from the same emulators, so standalone and
+nested invocations always agree). Loopback binds 127.0.0.1 only; fixed port
+3023; test harness, not a product surface.
+
 Run: `bun run dev` (hot) or `bun run start`; then connect with host `localhost`, port
 `3022`, user `foundry`, password `demo`, remoteRoot `~/foundry-lab`, remoteToolsDir
 `~/foundry-lab/tools`. Host key auto-generated at `keys/host_key_rsa` on first run.
