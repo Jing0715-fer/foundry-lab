@@ -83,6 +83,12 @@ def main():
     cdr_scheme = str(params.get("cdr_scheme", "imgt") or "imgt")
     target_pdb = str(params.get("target_pdb", "") or "")
     hotspot = str(params.get("hotspot", "") or "")
+    # D2 (affinity maturation): fixed CDR-H3 loop length when set (4–25,
+    # IMGT range). 0/absent keeps the historical behavior — one length
+    # sampled per run (5–17). Fixed lengths enable deterministic
+    # length-ladder sweeps (6/9/12/15 …).
+    h3_fixed = int(params.get("cdr_h3_length", 0) or 0)
+    h3_fixed = h3_fixed if 4 <= h3_fixed <= 25 else 0
 
     ts = lambda: __import__("datetime").datetime.now().strftime("%H:%M:%S")
     print(f"[{ts()}] RFantibody-style Fv design — REAL algorithm engine "
@@ -103,7 +109,10 @@ def main():
     rng = np.random.default_rng(seed)
     files = []
     stats = []
-    h3_len = int(rng.integers(5, 18))
+    h3_len = h3_fixed if h3_fixed > 0 else int(rng.integers(5, 18))
+    if h3_fixed > 0:
+        print(f"[{ts()}] Fixed CDR-H3 length: {h3_fixed} residues "
+              f"(affinity-maturation ladder mode).")
 
     for d in range(num_designs):
         # Real plans with per-design H3 length sampling.

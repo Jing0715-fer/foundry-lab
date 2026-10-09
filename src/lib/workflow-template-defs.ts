@@ -215,4 +215,56 @@ export const WORKFLOW_TEMPLATES: WorkflowTemplate[] = [
       { from: 3, to: 4, fromPort: "report", toPort: "value" },
     ],
   },
+
+  // 5. Antibody Affinity Maturation (D2) -------------------------------------
+  // Input → RFantibody (fixed CDR-H3 library) → ProteinMPNN (shotgunning)
+  // → AlphaFold (validation) → Output. Each hop auto-wires pdb_path /
+  // fasta_path from the upstream ##OUTPUTS## trailer; sweep the H3 ladder
+  // on the RFantibody node to compare loop lengths end-to-end.
+  {
+    id: "antibody-affinity-maturation",
+    name: "Antibody Affinity Maturation",
+    description:
+      "The affinity-maturation chain: RFantibody generates a fixed CDR-H3 Fv library, ProteinMPNN shotguns sequences onto the backbones, and AlphaFold validates the designs — outputs flow into a final report. Sweep cdr_h3_length (6/9/12/15) on the RFantibody node to ladder loop lengths.",
+    category: "design",
+    nodes: [
+      {
+        type: "input",
+        name: "Target Brief",
+        x: 0,
+        y: ROW,
+        params: {
+          text: "Affinity maturation campaign: design Fv libraries with a fixed CDR-H3 length, shotgun sequences, and validate folding.",
+        },
+      },
+      {
+        type: "rfantibody",
+        name: "RFantibody_Library",
+        x: COL,
+        y: ROW,
+        params: { num_designs: 4, cdr_h3_length: 12 },
+      },
+      {
+        type: "proteinmpnn",
+        name: "ProteinMPNN_Shotgunning",
+        x: COL * 2,
+        y: ROW,
+        params: { num_seq: 4, sampling_temp: 0.1 },
+      },
+      {
+        type: "alphafold",
+        name: "AlphaFold_Validation",
+        x: COL * 3,
+        y: ROW,
+        params: { output_dir: "affinity_maturation", gpu: "0" },
+      },
+      { type: "output", name: "Maturation Report", x: COL * 4, y: ROW },
+    ],
+    edges: [
+      { from: 0, to: 1, fromPort: "text", toPort: "input" },
+      { from: 1, to: 2, fromPort: "files", toPort: "input" },
+      { from: 2, to: 3, fromPort: "files", toPort: "input" },
+      { from: 3, to: 4, fromPort: "files", toPort: "value" },
+    ],
+  },
 ];

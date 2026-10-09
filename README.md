@@ -138,9 +138,14 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   批量操作、双候选并排对比（并列最优高亮）。
 - **详情 + 3D**：每个候选可打开详情抽屉 —— 指标网格、着色序列、标签/笔记、
   真实 3D 结构。
+- **结构叠合（Superpose 3D）**：对比视图选恰好 2 个带 PDB 的候选 →
+  刚体叠合（Needleman-Wunsch 序列比对 + Horn 四元数最优拟合）：
+  双骨架叠加视图 + **逐残基偏差着色**（<1 Å 翠绿 / 1–2.5 Å 琥珀 /
+  ≥2.5 Å 玫瑰 / 未匹配灰）+ 全局 RMSD 芯片 + 偏差直方图 + 图例。
 - **Promote 回画布**：把选中的候选提升为画布输入节点，下游工具节点
   **自动接线** pdb/fasta 文件（已用真实 ProteinMPNN 运行验证闭环）。
-- **导出 CSV**。
+- **导出 CSV / Markdown 报告**：选择子集或全量，报告含权重、全候选表、
+  starred/shortlisted 摘要与 curated 笔记（"带走结论"）。
 
 ![筛选结果表](docs/images/06-screening-table.png)
 

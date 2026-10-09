@@ -43,8 +43,25 @@ client 代码。
 ## 演示数据库
 
 `db/custom.db` 内含演示工作流与 screening 数据（README 与教程截图引用
-它们）。**e2e 测试后必须恢复基线**：测试工作流删除、节点/边计数与
-测试前一致、screening 权重回到默认。验收标准见 docs/ROADMAP.md。
+它们）。**该文件已 .gitignore（F6 提交卫生）**——它是运行态数据，每次
+引擎演示都会弄脏 git 树；事实源是入库的冻结基线 `db/demo-baseline.db`：
+
+```bash
+bun run demo:reset   # 交互确认后：基线 → custom.db（重启 dev server）
+bun run demo:fresh   # 免确认版：重置 + 打印重启提醒（e2e 收尾用）
+bun run demo:snapshot # 冻结当前 custom.db 为新基线（演示数据有意的
+                     # 变更时才用——记得 git add demo-baseline.db）
+```
+
+**e2e 测试后必须恢复基线**：`bun run demo:fresh` + daemon-run.py 重启
+（Prisma client 需要重新加载）；随后核对节点/边计数、screening 权重
+与冻结时一致。验收标准见 docs/ROADMAP.md。
+
+```bash
+# demo:fresh 之后的重启（守护器——见「已知环境限制」）：
+python3 .zscripts/daemon-run.py /home/z/my-project <日志文件> \
+  bash -c "cd /home/z/my-project && node_modules/.bin/next dev -p 3000 2>&1 | tee dev.log"
+```
 
 ## 代码约定
 

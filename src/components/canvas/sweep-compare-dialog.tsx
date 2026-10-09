@@ -33,8 +33,10 @@ import {
   ArrowUp,
   CheckCircle2,
   Crown,
+  Download,
   FileStack,
   FlaskConical,
+  Layers,
   Loader2,
   Table2,
   TriangleAlert,
@@ -42,10 +44,16 @@ import {
 import type { NodeDTO, SweepGroupDTO } from "@/lib/types";
 import { useAppStore } from "@/lib/store";
 import {
+  csvEscape,
+  downloadText,
   normalize,
   QUALITY_TEXT,
   formatMetric,
 } from "@/components/screening/scoring";
+import {
+  SuperposeDialog,
+  type SuperposeEntry,
+} from "@/components/screening/superpose-dialog";
 
 /** Screening default weights: primary metrics ×2, everything else ×1. */
 const PRIMARY = new Set(["plddt", "recovery", "rama_ll", "clashes"]);
@@ -86,6 +94,11 @@ export function SweepCompareDialog({
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
+  // D1: superposition overlay state (top-2 completed variants with PDBs).
+  const [superposeOpen, setSuperposeOpen] = React.useState(false);
+  const [superposeEntries, setSuperposeEntries] = React.useState<
+    [SuperposeEntry, SuperposeEntry] | null
+  >(null);
 
   // Fetch on open (fresh data every time — statuses/metrics move).
   React.useEffect(() => {
@@ -186,6 +199,84 @@ export function SweepCompareDialog({
     } finally {
       setCreating(false);
     }
+  };
+
+  // D1: superpose the two highest-scoring completed variants that both carry
+  // a PDB output (best = reference, runner-up = mobile).
+  const onSuperposeTop2 = () => {
+    if (!data) return;
+    const ranked = data.variants
+      .filter(
+        (v) =>
+          v.status === "completed" &&
+          v.files.some((f) => f.toLowerCase().endsWith(".pdb")),
+      )
+      .map((v) => ({
+        v,
+        score: scored.rows.find((r) => r.nodeId === v.nodeId)?.score ?? 0,
+      }))
+      .sort((a, b) => b.score - a.score);
+    if (ranked.length < 2) {
+      toast({
+        title: "Not enough structures",
+        description:
+          "Superposition needs two completed variants with PDB outputs.",
+        variant: "default",
+      });
+      return;
+    }
+    const pdbOf = (v: (typeof ranked)[number]["v"]) =>
+      v.files.find((f) => f.toLowerCase().endsWith(".pdb")) ?? "";
+    setSuperposeEntries([
+      { name: ranked[0].v.name, pdbPath: pdbOf(ranked[0].v) },
+      { name: ranked[1].v.name, pdbPath: pdbOf(ranked[1].v) },
+    ]);
+    setSuperposeOpen(true);
+  };
+
+  // D3: CSV export of the whole comparison table (axes + metrics + score).
+  const onExportCsv = () => {
+    if (!data) return;
+    const header = [
+      "variant",
+      "status",
+      ...data.axisKeys,
+      ...data.metrics.map((m) => m.key),
+      "score",
+      "file_count",
+      "nodeId",
+    ];
+    const lines: string[] = [header.map(csvEscape).join(",")];
+    for (const v of data.variants) {
+      const score =
+        v.status === "completed"
+          ? (scored.rows.find((r) => r.nodeId === v.nodeId)?.score ?? 0).toFixed(1)
+          : "";
+      const cells = [
+        v.name,
+        v.status,
+        ...data.axisKeys.map((k) => String(v.params[k] ?? "")),
+        ...data.metrics.map((m) => {
+          const val = v.metrics[m.key];
+          return typeof val === "number" && Number.isFinite(val) ? String(val) : "";
+        }),
+        score,
+        String(v.files.length),
+        v.nodeId,
+      ];
+      lines.push(cells.map(csvEscape).join(","));
+    }
+    const slug =
+      data.toolLabel
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "sweep";
+    downloadText(`${slug}-sweep.csv`, lines.join("\n"), "text/csv;charset=utf-8");
+    toast({
+      title: "Sweep CSV exported",
+      description: `${data.variants.length} variant(s) · ${data.axisKeys.length} axis column(s)`,
+      variant: "success",
+    });
   };
 
   return (
@@ -375,6 +466,30 @@ export function SweepCompareDialog({
             Close
           </Button>
           <Button
+            variant="outline"
+            onClick={onExportCsv}
+            disabled={!data}
+            title="Export the comparison table as CSV (axes, metrics, score)"
+            data-sweep-export-csv
+          >
+            <Download className="size-4" />
+            Export CSV
+          </Button>
+          <Button
+            variant="outline"
+            onClick={onSuperposeTop2}
+            disabled={!data || completedCount < 2}
+            title={
+              completedCount < 2
+                ? "Needs two completed variants"
+                : "Rigid-fit the two best completed variants and inspect deviations"
+            }
+            data-sweep-superpose
+          >
+            <Layers className="size-4" />
+            Superpose top 2
+          </Button>
+          <Button
             onClick={onCreateCampaign}
             disabled={!data || creating || completedCount === 0}
             title={
@@ -393,6 +508,11 @@ export function SweepCompareDialog({
           </Button>
         </DialogFooter>
       </DialogContent>
+      <SuperposeDialog
+        open={superposeOpen}
+        onOpenChange={setSuperposeOpen}
+        entries={superposeEntries}
+      />
     </Dialog>
   );
 }

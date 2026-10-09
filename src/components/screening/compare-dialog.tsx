@@ -11,7 +11,7 @@
  */
 
 import * as React from "react";
-import { Columns3, Eye } from "lucide-react";
+import { Columns3, Eye, Layers } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,6 +46,9 @@ interface CompareDialogProps {
   rows: ScoredRow[];
   metricDefs: ScreeningMetricDef[];
   onOpenCandidate: (id: string) => void;
+  /** Open the 3D superposition overlay (D1). Only callable with exactly 2
+   *  rows that both carry PDB files — the button below enforces it. */
+  onSuperpose?: (rows: [ScoredRow, ScoredRow]) => void;
 }
 
 export function CompareDialog({
@@ -54,10 +57,19 @@ export function CompareDialog({
   rows,
   metricDefs,
   onOpenCandidate,
+  onSuperpose,
 }: CompareDialogProps) {
   if (rows.length === 0) return null;
 
   const winner = rows.reduce((best, r) => (r.score > best.score ? r : best), rows[0]);
+  const bothHavePdb =
+    rows.length === 2 && rows.every((r) => !!r.candidate.pdbPath);
+  const superposeTitle =
+    rows.length !== 2
+      ? "Select exactly 2 candidates to superpose"
+      : bothHavePdb
+        ? "Rigid-fit these two structures and inspect per-residue deviations"
+        : "Both candidates need a linked PDB file";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -152,8 +164,27 @@ export function CompareDialog({
           </Table>
         </div>
 
-        {/* Footer: open per column + winner summary */}
+        {/* Footer: superpose (D1) + open per column + winner summary */}
         <div className="space-y-2">
+          {onSuperpose && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-11 w-full gap-1.5 md:h-9"
+              disabled={!bothHavePdb}
+              title={superposeTitle}
+              onClick={() => {
+                if (rows.length === 2) onSuperpose([rows[0], rows[1]]);
+              }}
+              data-superpose-trigger
+            >
+              <Layers className="size-3.5" />
+              Superpose 3D
+              <span className="ml-auto text-[10px] font-normal text-muted-foreground">
+                {rows.length === 2 ? "2 selected" : `needs 2 (has ${rows.length})`}
+              </span>
+            </Button>
+          )}
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {rows.map((r) => (
               <Button

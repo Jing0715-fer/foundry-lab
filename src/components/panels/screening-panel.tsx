@@ -24,6 +24,7 @@ import {
   Boxes,
   ChevronDown,
   Download,
+  FileText,
   FlaskConical,
   Loader2,
   Plus,
@@ -73,8 +74,10 @@ import type {
 import {
   applyPreset,
   buildCsv,
+  buildReportMarkdown,
   buildScoredRows,
   downloadCsv,
+  downloadText,
   initWeights,
   weightsDirty as weightsDiffer,
   type ScoredRow,
@@ -91,6 +94,10 @@ import { NewScreeningDialog } from "@/components/screening/new-screening-dialog"
 import { CandidateDetail, type CandidatePatch } from "@/components/screening/candidate-detail";
 import { CompareDialog } from "@/components/screening/compare-dialog";
 import { PromoteDialog } from "@/components/screening/promote-dialog";
+import {
+  SuperposeDialog,
+  type SuperposeEntry,
+} from "@/components/screening/superpose-dialog";
 
 type SortDir = "asc" | "desc" | null;
 
@@ -284,6 +291,11 @@ export function ScreeningPanel() {
   const [detailId, setDetailId] = React.useState<string | null>(null);
   const [compareOpen, setCompareOpen] = React.useState(false);
   const [promoteOpen, setPromoteOpen] = React.useState(false);
+  // D1: 3D superposition overlay — [reference, mobile] candidate pair.
+  const [superposeOpen, setSuperposeOpen] = React.useState(false);
+  const [superposeEntries, setSuperposeEntries] = React.useState<
+    [SuperposeEntry, SuperposeEntry] | null
+  >(null);
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [deleteBusy, setDeleteBusy] = React.useState(false);
   const [rescanBusy, setRescanBusy] = React.useState(false);
@@ -700,6 +712,44 @@ export function ScreeningPanel() {
 
   const canRescan = screening?.sourceType === "node" || screening?.sourceType === "job";
 
+  // D1: open the superposition overlay for exactly two rows (first =
+  // reference, second = mobile — mobile is rigid-fitted onto the reference).
+  const openSuperpose = React.useCallback(
+    (rows: [ScoredRow, ScoredRow]) => {
+      setSuperposeEntries([
+        { name: rows[0].candidate.name, pdbPath: rows[0].candidate.pdbPath ?? null },
+        { name: rows[1].candidate.name, pdbPath: rows[1].candidate.pdbPath ?? null },
+      ]);
+      setSuperposeOpen(true);
+    },
+    [],
+  );
+
+  /** D3: export the Markdown screening report (same row semantics as the CSV). */
+  function exportReport() {
+    if (!screening) return;
+    const useSelection = selectedIds.length > 0;
+    const rows = useSelection
+      ? scoredRows.filter((r) => selectedSet.has(r.candidate.id))
+      : scoredRows;
+    if (rows.length === 0) {
+      toast({ title: "Nothing to export", variant: "default" });
+      return;
+    }
+    const md = buildReportMarkdown(screening, rows, metricDefs);
+    const slug =
+      screening.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "") || "screening";
+    downloadText(`${slug}-report.md`, md, "text/markdown;charset=utf-8");
+    toast({
+      title: "Report exported",
+      description: `${rows.length} row(s) · Markdown${useSelection ? " (selection)" : ""}`,
+      variant: "success",
+    });
+  }
+
   // --- Render ---------------------------------------------------------------
 
   const controlsProps = {
@@ -887,6 +937,21 @@ export function ScreeningPanel() {
               <Download className="size-4" />
               <span className="hidden sm:inline">Export CSV</span>
             </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-11 gap-1.5 md:h-9"
+              onClick={exportReport}
+              disabled={detailLoading}
+              title={
+                selectedIds.length > 0
+                  ? "Export a Markdown report of the selected rows"
+                  : "Export a Markdown report of all candidates"
+              }
+            >
+              <FileText className="size-4" />
+              <span className="hidden sm:inline">Report</span>
+            </Button>
             <AlertDialog open={deleteOpen} onOpenChange={setDeleteOpen}>
               <AlertDialogTrigger asChild>
                 <Button
@@ -1044,6 +1109,12 @@ export function ScreeningPanel() {
         rows={compareRows}
         metricDefs={metricDefs}
         onOpenCandidate={(id) => setDetailId(id)}
+        onSuperpose={openSuperpose}
+      />
+      <SuperposeDialog
+        open={superposeOpen}
+        onOpenChange={setSuperposeOpen}
+        entries={superposeEntries}
       />
       <PromoteDialog
         open={promoteOpen}

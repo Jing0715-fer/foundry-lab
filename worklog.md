@@ -3606,3 +3606,42 @@ Work Log:
 
 Stage Summary:
 - 双会话同题实现整合完成：以实测验证线为代码基座，并行线文档/溯源资产并入，死代码清理干净；仓库回到单一连贯代码库 + 完整双线历史记录。
+
+---
+Task ID: 27-a
+Agent: qa-reviewer (Z.ai Code)
+Task: QA 深度代码审查 D+F 线（superpose 叠合 / cdr_h3_length 亲和力成熟链路 / CSV+报告导出 / failure-reason 三通道分类 / demo 提交卫生；纯审查不改码）
+
+Work Log:
+- 前置：读 worklog Task 22-25 尾部（C+E 不变量：执行通道写点必须条件化、卡内交互真实指针、stop 不可复活）+ git status/diff 全量（14 改 + 3 新文件 ~530 行 + db/custom.db staged 删除）。
+- 逐文件精读：superpose-compare.ts（链回解析/索引数学/偏差 join）、superpose-dialog.tsx（effect 依赖/cancelled 守卫/嵌套 Dialog/fetch 错误路径）、failure-reason.ts、runs route（第二次有界查询）、node-card/runs-sheet（pill）、screening-panel/compare-dialog（门控/回调稳定性）、scoring.ts（downloadText/buildReportMarkdown）、sweep-compare-dialog（top-2 排序/CSV）、sweep-templates/tools.ts/workflow-template-defs（模板/schema/端口）、antibody_engine.py（h3 定长）、package.json/.gitignore/CONTRIBUTING（F6）。
+- 邻居核验：parser AtomData 布局与 Residue start/end、superpose 核心链选择与 pairs 顺序、stop 路由/watchdog/instrumentation 孤儿/stream cluster reconcile 四写点 result 标记串逐一比对 classifyFailure；real-executor/cluster-run 的 engineOnly 跳过；nodes POST/inspector PATCH 的 params 透传与合并；sweep route 数值轴 min/max 校验；模板 loader POST 流程。
+- 纯逻辑冒烟（bun + python3，脚本在 /tmp/qa27 不入仓）：compareStructures 对真实 outputs PDB（同构→RMSD 0.000/100 全有限；异构→30.1 Å；真实 Fv H/L 输出→H↔H 95 对、16.9 Å；垃圾输入→ok:false 内联错误；空白链→"?" 回退可用）；classifyFailure 八例三通道全对（stop/watchdog/engine/孤儿/cluster/null）；antibody_engine 定长 12 生效、30 越界回退自动采样；templateMatches 在 rfantibody 上 4 模板命中、cdr 模板对 rfdiffusion 无泄漏（除 affinity-library 经 num_designs 半命中——见 P2-4）；Math.min spread 200k 参数不炸。
+- 复跑工具链：bunx tsc --noEmit（过滤 examples/skills 后零输出）、bun run lint 零告警、dev server GET / 200 + /api/runs 200（新 payload 形状正常）。未修改任何源代码。
+
+Stage Summary:
+- P0×0：全 diff 零 Node.status 写点（唯一 db 访问是 runs route 只读 findMany）、fetch 全相对路径、scoring.ts 仅被 "use client" 组件引用——C+E 不变量全部保持。
+- P1×1（预存、紧邻本 diff，merge 时被丢弃的修复）：RunsSheet Row onKeyDown 无事件来源守卫——键盘 Enter 聚焦 Stop/Retry 被行吞掉并误导航（并行线 23-b 曾修，bc8f3b3 取本线时丢弃；一行 `e.target !== e.currentTarget` 修复）。
+- P2×10：matchedProteinChain 对 "?"（空白链）回退最长链可致偏差全 NaN 静默降级（引擎输出 H/L/A 命名下实际难触发，附一行修复）；runs route 分类读取整段 result（建议 slice 512 前缀）；node-card 每渲染重算 classifyFailure（建议 useMemo）；affinity-library 模板半命中非抗体节点标签误导；报告 tags 未转义 "|"；CSV files 列实为计数；superpose 无 AbortController；staged db 删除需与 .gitignore 同 commit；直方图刻度标签位置不精确；cdr_h3_length hint 未披露 engineOnly（集群路由下轴无效）。
+- 已验证无问题 24 项（含 superpose 纯逻辑六组实测、三失败通道标记串逐一比对、嵌套 Radix 层级/ESC 语义、runs route 有界无 N+1、模板/端口/参数全链路、tsc+lint+dev 健康）。产出 qa-review-df-lane.md（P0/P1/P2 + 已验证清单 + Task 28 e2e 建议 9 条，键盘回归列为预期失败项）。
+---
+Task ID: 27-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P1-1（键盘守卫复活）+ P2×9（27-a 审查报告 qa-review-df-lane.md）
+
+Work Log:
+- P1-1：RunsSheet Row onKeyDown 恢复事件来源守卫（e.target !== e.currentTarget 直接返回）——并行会话 Task 23-b 的同款修复在 merge bc8f3b3 "--ours" 决议中被丢弃，本轮复活；聚焦 Stop/Retry 按 Enter 不再被行吞掉误导航。
+- P2-1：superpose-compare matchedProteinChain 把核心报告的 "?"（空白链 id）按空白 id 匹配回去——叠合链与渲染链一致，偏差 join 不再静默全 NaN（兜底仍是最长蛋白链）。
+- P2-2：runs 路由失败分类改用 512 字符前缀（三个标记都是头部锚定），3s 轮询代价与 result 行内容解耦。
+- P2-3：node-card classifyFailure 改 useMemo（[status, result]）——拖拽帧不再对 256KB 字符串做 toLowerCase。
+- P2-4：sweep 模板多轴全匹配要求（templateMatches：out.length !== 轴数 → 隐藏）——affinity-library 不再半匹配到非抗体节点冒充错误实验；文件头注释同步。
+- P2-5：报告 tags 列过 mdCell（防管道符幻影列）；BOM 从 downloadText 移到 downloadCsv（markdown 不带 BOM）。
+- P2-6：sweep CSV 表头 files → file_count（诚实命名）。
+- P2-7：SuperposeDialog fetch 接 AbortController（dialog 关闭即中止下载；cancelled 守卫本就正确）。
+- P2-9：偏差直方图刻度改绝对定位（0/good/warn/max 按真实比例，不再均匀分布误导）。
+- P2-10：cdr_h3_length hint 披露 engineOnly 边界（原生/集群 CLI 忽略该参数）。
+- P2-8（提交卫生）记入最终提交策略：.gitignore + db/custom.db 删除 + demo:fresh + CONTRIBUTING 必须同一提交落地。
+- 复验：tsc src/ 零错误、lint 零告警。
+
+Stage Summary:
+- 27-a 的 P1 全部闭环 + P2 修 9 条（P2-8 归入提交纪律）；D+F 线代码达到 e2e 就绪状态。核心不变量（执行通道零新增写点）在审查与修复全程保持。

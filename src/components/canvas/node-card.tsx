@@ -35,6 +35,10 @@ import { useHistoryStore } from "@/lib/history-store";
 import { withHistorySuppressed } from "@/lib/history-apply";
 import { computeAllEdgeGeoms, setLiveDrag } from "@/lib/canvas-utils";
 import { cn } from "@/lib/utils";
+import {
+  classifyFailure,
+  FAILURE_META,
+} from "@/lib/failure-reason";
 import { motion } from "framer-motion";
 import {
   ContextMenu,
@@ -526,6 +530,14 @@ function NodeCardImpl({ node }: NodeCardProps) {
 
   const Icon = spec ? ICON_MAP[spec.icon] ?? Box : Box;
   const status = node.status;
+  // F1: failed nodes tell WHY they failed (user stop / watchdog / engine)
+  // straight on the card, from the persisted result marker. Memoized —
+  // classifyFailure lowercases the (possibly 256KB) result string, and a
+  // failed node being dragged re-renders every pointer frame (P2-3).
+  const failureReason = React.useMemo(
+    () => (status === "failed" ? classifyFailure(node.result) : null),
+    [status, node.result],
+  );
 
   // Native browser tooltip — works correctly with absolutely-positioned elements
   // (a Radix HoverCard would clip or mis-position when the node is dragged
@@ -600,7 +612,11 @@ function NodeCardImpl({ node }: NodeCardProps) {
               {status === "failed" && (
                 <span
                   className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-rose-500 text-white font-bold shadow-sm"
-                  title="Failed"
+                  title={
+                    failureReason
+                      ? `Failed — ${FAILURE_META[failureReason].description}`
+                      : "Failed"
+                  }
                 >
                   !
                 </span>
@@ -638,6 +654,18 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 >
                   {status}
                 </span>
+                {failureReason && (
+                  <span
+                    className={cn(
+                      "shrink-0 rounded px-1 py-0.5 text-[9px] font-medium",
+                      FAILURE_META[failureReason].pillClass,
+                    )}
+                    title={FAILURE_META[failureReason].description}
+                    data-node-failure-pill={failureReason}
+                  >
+                    {FAILURE_META[failureReason].label}
+                  </span>
+                )}
                 {node.sweepGroup && (
                   <button
                     type="button"

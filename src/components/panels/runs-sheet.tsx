@@ -37,6 +37,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/lib/store";
+import {
+  FAILURE_META,
+  type FailureReason,
+} from "@/lib/failure-reason";
 import type { WorkflowDTO } from "@/lib/types";
 
 interface RunRow {
@@ -48,6 +52,8 @@ interface RunRow {
   startedAt: string | null;
   completedAt: string | null;
   workflow: { id: string; name: string } | null;
+  /** F1: failure lane classification (failed rows only). */
+  failureReason?: FailureReason;
 }
 
 interface RunsPayload {
@@ -106,6 +112,11 @@ function Row({
       aria-label={`${run.name} — ${run.status}. Activate to open on the canvas.`}
       onClick={onClick}
       onKeyDown={(e) => {
+        // P1-1 (restored from the parallel C+E line): only activate the ROW
+        // when the row itself is focused — a focused Stop/Retry button's
+        // Enter/Space must activate the button, not bubble here (which
+        // preventDefault-kills the button AND mis-navigates the canvas).
+        if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onClick?.();
@@ -136,8 +147,22 @@ function Row({
         )}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium leading-tight">
-          {run.name}
+        <span className="flex items-center gap-1.5">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
+            {run.name}
+          </span>
+          {run.status === "failed" && run.failureReason && (
+            <span
+              className={cn(
+                "shrink-0 rounded-full px-1.5 py-px text-[10px] font-medium",
+                FAILURE_META[run.failureReason].pillClass,
+              )}
+              title={FAILURE_META[run.failureReason].description}
+              data-failure-pill={run.failureReason}
+            >
+              {FAILURE_META[run.failureReason].label}
+            </span>
+          )}
         </span>
         <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
           {run.workflow?.name ?? "—"} · started {timeAgo(run.startedAt)}

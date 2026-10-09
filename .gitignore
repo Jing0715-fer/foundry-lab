@@ -72,3 +72,8 @@ data/cluster-*.json
 
 # transient tool outputs
 tool-results/
+
+# F6 commit hygiene: the LIVE demo database is runtime state (every run churns
+# it). db/demo-baseline.db stays tracked as the source of truth — fresh clones
+# materialize the live DB via `bun run demo:reset` (see README quick start).
+db/custom.db

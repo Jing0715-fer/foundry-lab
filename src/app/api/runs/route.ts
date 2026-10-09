@@ -16,6 +16,7 @@
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { classifyFailure, type FailureReason } from "@/lib/failure-reason";
 
 const MAX_RECENT = 40;
 const MAX_ACTIVE = 200;
@@ -45,7 +46,7 @@ type RunNode = {
   workflow: { id: string; name: string } | null;
 };
 
-function trim(n: RunNode) {
+function trim(n: RunNode, failureReason?: FailureReason) {
   return {
     nodeId: n.id,
     name: n.name,
@@ -55,6 +56,8 @@ function trim(n: RunNode) {
     startedAt: n.startedAt?.toISOString() ?? null,
     completedAt: n.completedAt?.toISOString() ?? null,
     workflow: n.workflow,
+    // F1: only failed rows carry a reason (completed rows omit the field).
+    ...(n.status === "failed" ? { failureReason: failureReason ?? "engine" } : {}),
   };
 }
 
@@ -91,15 +94,38 @@ export async function GET() {
       }),
     ]);
 
+    // F1: classify the failed rows by their persisted result marker
+    // (stopped / watchdog / engine). The main SELECT stays trimmed for the
+    // 3s poll — result bodies are fetched here ONLY for the failed rows
+    // already in `terminalRows`, bounded by the same MAX_RECENT cap.
+    const failedIds = terminalRows
+      .filter((n) => n.status === "failed")
+      .map((n) => n.id);
+    const reasonById = new Map<string, FailureReason>();
+    if (failedIds.length > 0) {
+      const reasonRows = await db.node.findMany({
+        where: { id: { in: failedIds } },
+        select: { id: true, result: true },
+      });
+      for (const r of reasonRows) {
+        // All three markers are head-anchored — classifying on a 512-char
+        // prefix keeps the 3s poll constant-bound even for pathological
+        // 256KB result rows (P2-2).
+        reasonById.set(r.id, classifyFailure(r.result?.slice(0, 512)));
+      }
+    }
+
     const failed = terminalRows
       .filter((n) => n.status === "failed")
       .slice(0, MAX_RECENT)
-      .map(trim);
-    const recent = terminalRows.slice(0, MAX_RECENT).map(trim);
+      .map((n) => trim(n, reasonById.get(n.id)));
+    const recent = terminalRows
+      .slice(0, MAX_RECENT)
+      .map((n) => trim(n, reasonById.get(n.id)));
 
     return NextResponse.json({
       scannedAt: new Date().toISOString(),
-      active: activeRows.map(trim),
+      active: activeRows.map((n) => trim(n)),
       failed,
       recent,
       summary: {

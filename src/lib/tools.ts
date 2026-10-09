@@ -112,6 +112,7 @@ export const COMP_TOOLS: CompToolDef[] = [
       { key: "target_pdb", label: "Target PDB path", type: "path", default: "", flag: "inference.target_pdb", group: "Target", hint: "Path to target structure" },
       { key: "hotspot", label: "Hotspot residues", type: "text", default: "", flag: "inference.hotspot_res", group: "Target" },
       { key: "cdr_scheme", label: "CDR scheme", type: "select", default: "imgt", options: ["imgt", "kabat", "chothia"], flag: "inference.cdr_scheme", group: "Antibody" },
+      { key: "cdr_h3_length", label: "CDR-H3 length", type: "number", default: 0, min: 0, max: 25, step: 1, group: "Antibody", engineOnly: true, hint: "0 = auto-sample per run (5–17). Set 4–25 for a fixed H3 loop length — the backbone of affinity-maturation length-ladder sweeps. Built-in engine only: the native/cluster CLI ignores this parameter." },
     ],
     resultSummary: (p) =>
       `RFantibody designed ${p.num_designs ?? 4} Fv candidates against the target.`,
