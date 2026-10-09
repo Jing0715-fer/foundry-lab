@@ -3670,3 +3670,18 @@ Work Log:
 
 Stage Summary:
 - D+F 线三重验证闭环（QA 审查 27-a → 修复 27-b → 浏览器级 e2e 28）：9 项建议全过，2 个 P1 现场发现现场修复（多工作流 picker + 移动端 min-w-0 裁剪，后者经 VLM 复验）；条件写回、H3 轴贯通、失败三车道分类等核心承诺全部拿到引擎/文件/DB 级证据；演示 DB 零污染。e2e 工程经验新增 4 条（进程孤儿化、模板替换语义、CDP 点击落空、role=checkbox）。
+
+---
+Task ID: 29
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：基于 Task 28 e2e 结果重写 ROADMAP + 文档增补 + git 提交推送
+
+Work Log:
+- docs/ROADMAP.md 重写：本阶段成果补 E2E 全量验证段（9 项全过 + 2 个 P1 现场修复 + 条件写回第四次实证）；测试结论表 10→14 项（新增 #11 多工作流契约缺口模式、#12 min-width:auto 移动端裁剪陷阱与排查法、#13 sandbox 进程生存机制、#14 VLM 截图时机陷阱）；下一阶段 F 线 P1 重排——模板加载确认对话框（#10 两轮实锤）与多工作流一致性收口（#11，dashboard-panel 待修）列前二，#6/#9 竞态排查、CONTRIBUTING 增补、Stop 语义收尾、组卡 liveDrag、手绘组持久化、基线 PDB 空态提示继后；D 线 P2（叠合深化/NextAuth/worker 线程）不变。
+- docs/CONTRIBUTING.md 增补：守护器小节加轻量替代（subshell 孤儿化一键启动 `( setsid bash -c 'exec bun run dev' & )`，Task 28 实测跨命令存活 + 死亡症状描述）；新增"e2e 截图前断言目标 UI 在 DOM"守则（#14）。
+- 验收标准扩充三条：Radix footer 坐标点击必须验证副作用（可 DOM click 兜底）、多工作流场景必测（非首工作流下验证取数）、移动端宽度检查用 main 宽度而非页面 scrollWidth（overflow-hidden 假阴性）。
+- 最终检查：lint 零告警、tsc 4 条全在预存 examples/skills（src 零错误）、GET / 200、演示 DB 基线字段级核对（My First 14/12 + Antibody 5/3 + 3 screening 60/20/6 + ToolJobs 16）、dev.log 零运行时错误。
+- git 提交 2529ab3 并推送（6a44ace..2529ab3 main）。
+
+Stage Summary:
+- D+F 线完成"QA 审查 → 修复 → 浏览器级 e2e → 按测试结果重写 roadmap"全闭环；e2e 过程产出 2 个 P1 修复与 4 条新工程教训全部固化进 ROADMAP/CONTRIBUTING；下一阶段（F 线 P1）以 14 项测试结论为据。
