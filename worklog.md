@@ -3589,3 +3589,20 @@ Work Log:
 Stage Summary:
 - C 线 + E 线全部交付并三重验证（API 冒烟/QA 审查闭环 P0+P1×2+P2×2/浏览器 e2e 含真实引擎与真实指针事件）；下一阶段方向以本轮 12 项实测结论为据——F 线（执行可控性与溯源闭环）成为 P1。
 
+---
+Task ID: 25 (merge 附录)
+Agent: main-orchestrator (Z.ai Code)
+Task: 并行会话合并：remote 53c085c（Oct 8 另一会话的同阶段 C+E 独立实现）与本线 7423d95 的整合
+
+Work Log:
+- 发现：推送时 non-fast-forward——remote 存在 Oct 8 并行会话提交 53c085c（node-lifecycle.ts + /api/runs/abort 实现线，含自己的 QA 报告 qa-review-c-e-lane.md 与 CONTRIBUTING.md）；首试 rebase 因功能等价双实现产生大面积冲突，改走显式 merge。
+- 冲突解决（14 个 src/docs 文件）：全部 --ours 取本线（Oct 9 dev server 实测验证实现）；db/custom.db 取本线（demo:reset 后字段级验证的基线）。
+- 自动合并的双份叠加手术清理：sweep-dialog 双份 C5 语义提示去重（保留单一权威版）；screening-panel 双份 pendingScreeningId 消费 effect 移除并行版（其引用本线已删的 clearPendingScreening）。
+- 采纳并行线独有资产：docs/CONTRIBUTING.md（运维指南——修正 node-lifecycle 失效引用 → 指向本线 workflow-engine/stop route + 补充本会话发现的 daemon-run.py 进程收割坑与看门狗测试规范）；qa-review-c-e-lane.md（其 QA 报告存档）；screening.ts promote 结构化 params.source 溯源块（独立加性变更，与本线 refId chip 兼容）。
+- 弃用并行线死代码：src/lib/node-lifecycle.ts + src/app/api/runs/abort/route.ts（被本线等价实现取代，全仓无引用残留）。
+- worklog 双记录保留：并行线 4 个 Task 记录原样并入，加并行线说明标记（含两线实现差异注记）。
+- 合并后验证：tsc src/ 零错误、lint 零告警、GET / 与 /api/workflow 200、stop 路由 409 守卫完好、浏览器复核筛选面板完整渲染（campaign 列表 + 统计）、console/page errors 零。
+- git merge 提交 bc8f3b3 并推送成功（53c085c + 7423d95 → merge）。
+
+Stage Summary:
+- 双会话同题实现整合完成：以实测验证线为代码基座，并行线文档/溯源资产并入，死代码清理干净；仓库回到单一连贯代码库 + 完整双线历史记录。
