@@ -1,17 +1,21 @@
 // GET /api/workflows/[id] — return one workflow as a full WorkflowDTO. 404 if not found.
-// PATCH /api/workflows/[id] — rename a workflow. Body: { name? }. Returns WorkflowDTO.
+// PATCH /api/workflows/[id] — rename a workflow and/or persist the canvas
+//   group layer. Body: { name?, groups? } — `groups` is the full replacement
+//   array [{id, label, color, nodeIds}] (F-lane persistence; null/[] clears).
+//   Returns WorkflowDTO.
 // DELETE /api/workflows/[id] — delete the workflow (cascades nodes + edges via Prisma).
 //   If the deleted workflow was the LAST one, a new default workflow is created so the
 //   app always has at least one workflow to land on.
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { toNodeDTO, toEdgeDTO } from "@/lib/workflow-engine";
+import { toNodeDTO, toEdgeDTO, toGroupDTOs, sanitizeGroupsJSON } from "@/lib/workflow-engine";
 import type { WorkflowDTO } from "@/lib/types";
 
 function toWorkflowDTO(w: {
   id: string;
   name: string;
+  groups?: string | null;
   createdAt: Date;
   updatedAt: Date;
   nodes: unknown[];
@@ -20,6 +24,7 @@ function toWorkflowDTO(w: {
   return {
     id: w.id,
     name: w.name,
+    groups: toGroupDTOs(w.groups) ?? undefined,
     nodes: (w.nodes as unknown[]).map((n) => toNodeDTO(n as never)),
     edges: (w.edges as unknown[]).map((e) => toEdgeDTO(e as never)),
     createdAt: w.createdAt.toISOString(),
@@ -62,6 +67,19 @@ export async function PATCH(
         ? body.name.trim()
         : undefined;
 
+    // Groups persistence (F-lane): the full replacement array, sanitized +
+    // capped server-side. `groups` ABSENT from the body → no change; an
+    // explicit `groups: null` or `groups: []` → CLEARS the layer (writes
+    // NULL / "[]").
+    let groupsData: string | null | undefined;
+    if (body && "groups" in body) {
+      const sanitized = sanitizeGroupsJSON(body.groups);
+      if (typeof sanitized === "object" && sanitized && "error" in sanitized) {
+        return NextResponse.json({ error: sanitized.error }, { status: 400 });
+      }
+      groupsData = sanitized as string | null;
+    }
+
     const existing = await db.workflow.findUnique({ where: { id } });
     if (!existing) {
       return NextResponse.json(
@@ -70,9 +88,12 @@ export async function PATCH(
       );
     }
 
+    const data: { name?: string; groups?: string | null } = {};
+    if (name) data.name = name;
+    if (groupsData !== undefined) data.groups = groupsData;
     const updated = await db.workflow.update({
       where: { id },
-      data: name ? { name } : {},
+      data,
       include: { nodes: true, edges: true },
     });
     return NextResponse.json(toWorkflowDTO(updated));

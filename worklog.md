@@ -3685,3 +3685,72 @@ Work Log:
 
 Stage Summary:
 - D+F 线完成"QA 审查 → 修复 → 浏览器级 e2e → 按测试结果重写 roadmap"全闭环；e2e 过程产出 2 个 P1 修复与 4 条新工程教训全部固化进 ROADMAP/CONTRIBUTING；下一阶段（F 线 P1）以 14 项测试结论为据。
+---
+Task ID: 30-a
+Agent: qa-code-reviewer (Z.ai Code)
+Task: QA 深度审查 F 线 P1 七项交付（模板加载确认 / 多工作流一致性 / ToolJob cancelled 双向 badge / 空态引导 / 组卡 liveDrag / 手绘组持久化 / 竞态守卫；纯审查不改码）
+
+Work Log:
+- 通读 worklog 不变量（条件化写点 / Stop 不可复活 / 真实指针实测 / 多工作流契约）+ 全量 git diff（24 改 + 3 新，+574/−168）逐文件过读，新文件全文通读。
+- 工具链：tsc --noEmit 仅 4 条预存（examples/skills，src 零错误）、bun run lint 零告警、Prisma client 含 groups 列且 custom.db 运行时探针可查——与审查前一致。
+- **P1×4**：① F5 折叠组 liveDrag 锚点空间错位——EdgesLayer 用 layoutNodes（成员映射到聚合角 g.x,g.y）渲染，patchEdgeGroups 却用 workflow.nodes 原始成员坐标 → 组拖拽首帧边跳 (x_i−g.x, y_i−g.y)（典型 ~440 世界像素）飞向不可见散点、释放再跳回，功能目标未达成（建议 patch 支持 nodesOverride 传 layout 等价数组）；② F6 组持久化防抖竞态——scheduleGroupPersist 触发时才读 store workflow，600ms 窗口内切工作流 → A 的组 PATCH 打到 B（剪枝后 [] → 清空 B 的组、A 的编辑丢失），且 hydrate 被 persistPending 抑制（与 Task 12 跨工作流撤销污染同族；伴随 .finally 无条件清标志 → in-flight 期间二次编辑可被 stale refetch 覆盖）；③ F7 rowUpdatedAt 只接线一半——setNodeStatus 从不把水位写进节点 DTO，SSE 落定后 existing.updatedAt 仍为旧值 → 晚到 run POST running 快照（起跑时间 > 旧水位）击穿守卫，恰为 #6 目标场景（快节点必失守，轮询 busy=false 停止不自愈）；④ F6/运维 demo 基线库缺 Workflow.groups 列——demo:reset 是裸 copyFileSync，复制后全站 workflow 查询 500（探针实证 "column does not exist"），提交前必须重冻基线或 reset 加列校验。
+- **P2×5**：stop route stderr 标记与集群 sweep 读改写竞态（ALIVE 分支 :830-837 可整写回 running+覆盖标记 → 僵尸行/badge 丢失，建议 applySweepBlock 复核终态 phase + 行写条件化）；陈旧 nodeIds 仅在下一次组编辑才剪枝（删节点/模板/导入留隐形组，且 persist 非 2xx 静默吞）；PATCH 路由头注释与内联注释对 groups:null 语义自相矛盾（实现=清列）；settled 水位用 new Date() 而非行写时刻（P1-3 落盘后需改）；patchEdgeGroups 每帧 O(E²) find + 中途重渲染单帧锚点闪变（当前规模可接受）。
+- 误杀推演全通过：Retry/Stop/watchdog/undo(history-apply 走 setWorkflow 绕过守卫)/C3 completed 快照/删除后 Ctrl+Z(existing 缺失跳过) 均不被拒；setNodeStatus 无 rowUpdatedAt 旧调用方放行（5 调用点逐一核对）；NodeStatus 枚举下守卫只可能拒 running 晚包——条件收敛精确。
+- 已验证无问题 15 组：F1 确认框捕获后清空/取消残留/双开互斥/空工作流直载/市场 TDZ 顺序+依赖完备/runImport 拆分无双 toast/AlertDialog 嵌套层级；F2 dashboard 单一数据源+Badge+loading 语义等价+全仓 /api/workflow 消费点清零（剩余均为 boot/回退形态）；F3 C+E 保持（标记写点全在节点翻转前、双层吞错、翻转无条件可达）+cancelled fallback/badge 条件/stderr 不切片可达；F4 r.text() 每分支恰读一次+触发串与路由原文精确匹配；F5 提取逐行保真+pointerup/cancel 清理完备+释放提交用 live 行防陈旧；F6 sanitize 有界+4 个 DTO 生产者与全部 setWorkflow 路径往返闭环+3s 轮询不碰 groups+删除级联+restore 逐 id 复建。
+- 产出 /home/z/my-project/qa-review-f-lane.md（P0=0 / P1=4 / P2=5 + P3 备忘 4 + 已验证清单 + e2e 后续 6 条）；零源码修改。
+
+Stage Summary:
+- F 线七项交付的守卫与契约面总体扎实（不变量全部保持、tsc/lint 干净、DTO 往返闭环），但四条 P1 集中在"竞态时序半接线"模式：liveDrag 用错坐标空间、组持久化目标解析滞后、水位只比较不落盘、基线库 schema 漂移——均为窄窗口数据丢失/可见性缺陷，修复建议已给出。P1-4（demo 基线）列为提交前阻断项。
+---
+Task ID: 30-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P1×4 + P2×5（基于 30-a 审查报告 qa-review-f-lane.md）
+
+Work Log:
+- P1-1（折叠组 liveDrag 锚点空间错位）：patchEdgeGroups 增加可选 nodesOverride（渲染空间节点数组）；sweep-group-card 拖拽 rAF 构造 renderNodes（本组成员映射到聚合角 (g.x, g.y)，镜像 workflow-canvas layoutNodes 语义）传入——边从首帧起就锚定聚合卡位置跟踪拖拽，消除"飞向不可见散点成员"的两次跳变。node-card 不传（可见节点 raw==render 天然一致）。
+- P1-2（防抖跨工作流污染）：scheduleGroupPersist 改捕获式——workflowId/groups 快照/liveIds 剪枝基准全部在 SCHEDULE 时捕获（PendingPersist 接口），触发时 PATCH 打到捕获的工作流（切换后仍正确写入 A）；finally 改"仅当无新 timer 时清 persistPending"（第二次编辑的 hydrate 盾不丢）；hydrate effect 加 hydratedFor ref——workflow.id 变化时强制 hydrate（本地组属于上一个工作流，盾不得把它粘在新画布上）。
+- P1-3（rowUpdatedAt 仲裁只接一半）：setNodeStatus 写入 updatedAt 水位——终态时 max(rowUpdatedAt, 本地 now)（守卫需要严格新标记），非终态仅在 rowUpdatedAt 晚于本地标记时提升。晚到的 run POST running 快照（起跑时间早于终态水位）被守卫正确拦截。
+- P1-4（demo 基线缺 groups 列）：字段级核对当前 DB（14/12+5/3+60/20/6+16/2/4 与冻结基线一致）→ bun scripts/reset-demo.ts snapshot --force 重冻（基线带上 Workflow.groups 列）→ reset --force 往返实测 + Prisma 探针验证（列查询不再报错）。
+- P2-1（stop 标记与 sweep 竞态）：双管齐下——① stopClusterJob 加 opts.viaNodeStop（标记随行翻转同一次 update 单点写入，消除 follow-up 写窗口），节点 stop route 传 true、jobs/:id/stop 不传（来源可区分）；② applySweepBlock 入口加终态守卫（done/failed/cancelled 直接 return——陈旧 sweep block 不再把 cancelled 行写回 running/failed；syncing 保持 sweepable 由 EXIT-0 分支自有守卫处理）。
+- P2-2（stale nodeIds + 静默失败）：node DELETE 路由在删行后 best-effort 剪枝 workflow.groups 中的被删 id（空组移除、全空置 null）——服务端单一事实源清理，不再等下一次组编辑；persist 的非 2xx 改 console.warn（防静默丢编辑后被 hydrate 回滚）。
+- P2-3（PATCH 注释矛盾）：修正内联注释为"groups 缺省 → 不变；显式 null/[] → 清空"。
+- P2-4（settled 水位）：reconcileClusterOutcome 返回 writtenAt（updateMany 用的同一 writeMark），status 事件用写入时刻而非发射时刻。
+- P2-5（edges.find O(E²)）：patchEdgeGroups 改 edgeById Map 化。
+- 复验：tsc src/ 零错误、lint 零告警、GET / 与 /api/workflow 200、demo:reset 往返 + 基线字段级核对通过。
+
+Stage Summary:
+- 30-a 的 P1×4 全部闭环；P2 修 5 条。核心加固：组持久化的跨工作流写定向（捕获式）、客户端终态水位仲裁补全（setNodeStatus 落 updatedAt）、折叠组拖拽边几何进渲染空间、集群取消标记单点写入 + sweep 终态守卫（与节点 lane 的条件写纪律对齐）、demo 基线随 schema 同步重冻。
+---
+Task ID: 31
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：F 线 P1 七项浏览器级全链路 + 回归 + 演示 DB 零污染
+
+Work Log:
+- **F1 确认框（三入口全过）**：Templates 面板在 14 节点演示工作流上点 Load template → AlertDialog 出现（"Replace My First Workflow?" + "14 nodes (and 12 edges) will be deleted, 4 new nodes created" + 快照/新工作流双建议）→ Cancel → 确认框关 + 14 节点零变化；一次性空工作流直载（无确认直接加载 4 节点 + toast）；有节点再载 → 确认（"Delete 4 nodes & load"）→ 接受 → DB 节点全新替换（Prisma 直查 id 验证）。Marketplace Install → 嵌套确认框（"Replace F-Lane E2E Test... 4 nodes"）→ Esc 只关确认框、marketplace Dialog 保留（嵌套层级与 Task 28 E2E-8 一致）。
+- **F2 Dashboard 多工作流 ✓**：激活非首工作流（F-Lane E2E Test）→ Workflow Status 卡显示 Badge "F-Lane E2E Test" + "4 total · Idle 4"（修复前恒显示最早工作流 My First Workflow 14 total）。
+- **F6 手绘组持久化全链路 ✓**：真实框选 2 节点（shift+band 事件序列）→ "2 selected" 浮条 → Ctrl+G → "Group label…" 输入 → 提交 → 组框渲染 "E2E Persistence Group (2)" → 600ms 防抖后 Prisma 直查 groups JSON 落库（id/label/color/nodeIds 完整）→ reload + 切回工作流 → 组框重新渲染（hydrate 生效）→ 删除工作流（组随行级联）。
+- **F5 组卡 liveDrag（P1-1 修复实证）✓**：API 建 sweep（num_designs 1/2 ×2 变体）→ run → 2 变体真实引擎 completed → 折叠组卡 → CDP 真实拖拽（+200,+100，视口内落点）→ 拖拽中：组卡 transform 平移 + **连接边的 path 实时更新**——patch 边终点 x=840=聚合 x(640)+offset，**而非成员 raw x(940)+offset=1140（P1-1 渲染空间锚定的铁证）**；释放：DB 两变体坐标精确 (640,390)→(840,490)/(940,390)→(1140,490) + React re-render 边到新聚合位置。
+- **F7 NodeSearch 双 rAF ✓**：搜索 "Design Report"（唯一结果）→ Enter → 节点中心 (880,462) = 画布 (480,56,800,812) 的**正中心**（画布 800 宽 = Inspector 打开后——双 rAF 用最终尺寸计算，修复前按 1120 宽会偏移 ~160px）。
+- **E2E-7 Stop 回归（第 5 次实证）✓**：40 designs 重节点 run 3s 后 Stop → failed + "Stopped by user" + [stop] 日志 → 45s 后仍 failed（progress 10，晚到引擎结果被条件写回丢弃）。
+- **F4 空态引导 ✓**：基线缺 PDB 候选详情 → "File not found on disk." + "Run artifacts live under outputs/... re-run the producing node" 引导文案渲染（DOM 文本断言）。
+- **回归**：移动端 375×812 main 宽 319 / docScroll 相等 / footer 贴底 780/812；console/page errors 零；dev.log 无运行时错误（仅调度轮询 prisma 查询日志）；演示 DB 基线字段级核对（14/12+5/3+60/20/6+16/2/4）零污染。
+- **e2e 工具经验（新增）**：① agent-browser 视口默认 1280×577——拖拽/点击前必须 elementFromPoint 断言落点在视口内（组卡在 1240,526 曾整卡在视口外静默失败）；② React 18+ 批处理会把同一 eval 内同步派发的 input+keydown 合并——事件序列必须 setTimeout 间隔派发（NodeSearch Enter 与 band-select 都踩此坑）；③ Ctrl+F 的 keydown target 为 INPUT 时被 canvas listener 拒绝——先 blur；④ agent-browser press 组合键（Control+f）不可靠，dispatchEvent KeyboardEvent 兜底；⑤ sweep API body 格式是 { sweeps: [{key,values}] } 非 { axes }。
+- F3 的 via-node-stop badge：本地节点（无 [cluster run · job] 标记）不触发 stopLinkedJob——真实 SSH cluster 场景无法在 sandbox 复现，标记写入路径由 QA 30-a 审查背书（单点写入 + sweep 终态守卫），记入 ROADMAP 测试结论待真实集群验证。
+
+Stage Summary:
+- F 线 P1 七项全部浏览器级或 DB 级实证通过（F1 三入口/F2 激活工作流一致/F4 引导/F5 liveDrag 含 P1-1 铁证/F6 建组→落库→hydrate 全链路/F7 双 rAF 精确居中 + Stop 不可复活第 5 次实证）；演示 DB 零污染；5 条新 e2e 工程经验固化。
+---
+Task ID: 32
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：基于 QA+E2E 测试结果重写 ROADMAP（G 线规划）+ README/CONTRIBUTING 增补 + git 提交推送
+
+Work Log:
+- docs/ROADMAP.md 重写：本阶段成果（F 线 P1 七项 + QA 闭环 + E2E 证据）+ 测试结论表 14→22 项（新增 #15 F1 三入口实测、#16 F6 全链路、#17 liveDrag 渲染空间铁证、#18 F7 双竞态闭环 + Stop 第五次实证、#19 e2e 工程经验 5 条、#20 demo 基线 schema 漂移陷阱与提交纪律、#21 cluster e2e 覆盖缺口、#22 组层 UI 缺口）+ 下一阶段 **G 线 P1（验证通道与生产化）**：SSH mock/真实集群 e2e 通道（#21）、组层 UI 完善（#22：updateGroup 持久化已就绪无 UI 触发点）、F 线 P3 备忘清理、CONTRIBUTING 增补；D 线 P2（叠合深化/NextAuth/worker）不变。
+- 验收标准扩充四条：集群 sweep 行写不得覆盖终态（applySweepBlock 入口守卫）、客户端终态水位仲裁镜像、schema 变更必须与重冻基线同 commit（#20）、拖拽/点击 e2e 前 elementFromPoint 断言 + 同 eval 事件序列 setTimeout 间隔派发（React 批处理）。
+- README.md：画布章节新增"手绘分组（持久化）"与"模板/导入/市场加载确认"两条特性；组卡描述补"拖拽中连线实时跟随"；Runs 队列补"cancelled + via node stop 溯源徽标"；API 表新增 PATCH /api/workflows/:id（重命名/组持久化）。
+- docs/CONTRIBUTING.md：新增"schema 增列/新表必须同 commit 重冻演示基线"小节（症状/根因/标准三步流程/实测案例 Workflow.groups——QA 30-a P1-4 教训成文）；数据库变更命令清单插入重冻步骤。
+- 提交纪律：schema diff + 重冻 demo-baseline.db + CONTRIBUTING 同 commit 落地（P2-8 延续）。
+- 最终检查：lint 零告警、tsc src/ 零错误（4 条预存 examples/skills）、GET / 200、演示 DB 基线字段级核对（14/12+5/3+60/20/6）、dev.log 无运行时错误。
+
+Stage Summary:
+- F 线 P1 完成"开发 → QA 审查（30-a）→ 修复（30-b）→ 浏览器级 e2e（31）→ 按测试结果重写 roadmap"全闭环；8 项新测试结论与 5 条新工程教训固化进 ROADMAP/CONTRIBUTING/README；下一阶段（G 线验证通道 + D 线科研深度）以 22 项测试结论为据。

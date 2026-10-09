@@ -484,7 +484,20 @@ function FilePreview({
     setText(null);
     setError(null);
     fetch(fileUrl(path), { signal: controller.signal })
-      .then((r) => (r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then(async (r) => {
+        if (r.ok) return r.text();
+        // Prefer the API's JSON error message ("File not found on disk.")
+        // over a bare status code — it's what the empty-state guidance below
+        // keys off (F-lane #7).
+        let msg = `HTTP ${r.status}`;
+        try {
+          const j = JSON.parse(await r.text());
+          if (j?.error) msg = j.error;
+        } catch {
+          /* raw text body — keep status line */
+        }
+        throw new Error(msg);
+      })
       .then((t) => {
         if (!cancelled) setText(t);
       })
@@ -500,10 +513,20 @@ function FilePreview({
   }, [path, kind, fileUrl]);
 
   if (error) {
+    const missing = error.includes("File not found on disk");
     return (
-      <div className="flex items-center gap-2 rounded-md border border-rose-500/30 bg-rose-500/5 p-3 text-xs text-rose-600 dark:text-rose-400">
-        <FileWarning className="size-4 shrink-0" />
-        <span>Failed to load file: {error}</span>
+      <div className="space-y-1 rounded-md border border-rose-500/30 bg-rose-500/5 p-3 text-xs text-rose-600 dark:text-rose-400">
+        <div className="flex items-center gap-2">
+          <FileWarning className="size-4 shrink-0" />
+          <span>Failed to load file: {error}</span>
+        </div>
+        {missing && (
+          <p className="pl-6 text-muted-foreground">
+            Run artifacts live under <code className="font-mono">outputs/</code> and
+            are produced by workflow runs — re-run the producing node to
+            regenerate, or pick a candidate whose files still exist.
+          </p>
+        )}
       </div>
     );
   }

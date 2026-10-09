@@ -12,7 +12,7 @@
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { toNodeDTO, toEdgeDTO } from "@/lib/workflow-engine";
+import { toNodeDTO, toEdgeDTO, toGroupDTOs } from "@/lib/workflow-engine";
 import type { WorkflowDTO } from "@/lib/types";
 
 interface SnapshotNodeRow {
@@ -148,6 +148,9 @@ export async function POST(
   const dto: WorkflowDTO = {
     id: fresh.id,
     name: fresh.name,
+    // Groups live on the workflow row (not in the version snapshot) — they
+    // survive a restore, matching the sweepGroup linkage semantics.
+    groups: toGroupDTOs(fresh.groups) ?? undefined,
     nodes: fresh.nodes.map(toNodeDTO),
     edges: fresh.edges.map(toEdgeDTO),
     createdAt: fresh.createdAt.toISOString(),

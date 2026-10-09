@@ -24,6 +24,7 @@ import { basename, join, resolve } from "path";
 import { db } from "@/lib/db";
 import { getCompTool, buildCommand, buildArgs, type CompToolDef } from "@/lib/tools";
 import { getToolRegistryEntry, type ToolRegistryEntry } from "@/lib/tool-registry";
+import { CANCELLED_VIA_NODE_STOP } from "@/lib/job-cancel-source";
 import { getConnection } from "./connections";
 import {
   exec,
@@ -691,6 +692,16 @@ async function applySweepBlock(
   run: ClusterRunState,
   block: SweepBlock,
 ): Promise<void> {
+  // P2-1 guard (QA 30-a): a run that reached a terminal phase (user Stop via
+  // stopClusterJob, or an earlier verdict) is NEVER re-written by a stale
+  // sweep block — the block's verdicts were read from the remote host up to
+  // a full SSH round-trip (25s timeout) ago and would otherwise flip a
+  // cancelled row back to "running" (ALIVE branch) or to "failed" (EXIT
+  // branch), clobbering the cancel-source badge. (syncing stays sweepable —
+  // the EXIT-0 branch's own in-flight guard handles it.)
+  if (run.phase === "done" || run.phase === "failed" || run.phase === "cancelled") {
+    return;
+  }
   const logTailOut = block.logTailLines.join("\n").replace(/\n+$/, "");
   const logTailErr = block.errTailLines.join("\n").replace(/\n+$/, "");
   const logTotalLines = block.logLines ?? run.logTotalLines;
@@ -922,9 +933,14 @@ async function syncBackOutputs(conn: ClusterConnection, run: ClusterRunState): P
 
 // ── Stop ────────────────────────────────────────────────────────────────────
 
-/** Cancel a cluster run: scancel (slurm) or process-group kill (direct). */
+/** Cancel a cluster run: scancel (slurm) or process-group kill (direct).
+ *  `viaNodeStop` — P2-1 fix (QA 30-a): when a canvas node Stop triggered the
+ *  cancellation, stamp the cancel-source marker onto the ToolJob stderr in
+ *  the SAME single write that flips the row (the old stop-route follow-up
+ *  write raced the reconcile sweep's own row writes and could be clobbered). */
 export async function stopClusterJob(
   jobId: string,
+  opts?: { viaNodeStop?: boolean },
 ): Promise<{ ok: boolean; error?: string }> {
   const run = getRun(jobId);
   if (!run) return { ok: false, error: "no cluster run record for this job" };
@@ -961,6 +977,23 @@ export async function stopClusterJob(
     phase: "cancelled",
     finishedAt: new Date().toISOString(),
   });
+  if (opts?.viaNodeStop) {
+    // Single-write marker: read current stderr, append, and flip status in
+    // one update (no read-then-write window for the sweep to clobber).
+    const job = await db.toolJob.findUnique({ where: { id: jobId } });
+    await db.toolJob
+      .update({
+        where: { id: jobId },
+        data: {
+          status: "cancelled",
+          finishedAt: new Date(),
+          stderr: `${job?.stderr ?? ""}${job?.stderr ? "\n" : ""}${CANCELLED_VIA_NODE_STOP}`,
+        },
+      })
+      .catch(() => {
+        // Best-effort trace — the row flip itself is retried below.
+      });
+  }
   await updateJobRow(jobId, { status: "cancelled", finishedAt: new Date() });
   return { ok: true };
 }

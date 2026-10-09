@@ -30,7 +30,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { toNodeDTO } from "@/lib/workflow-engine";
 import { getRun, stopClusterJob } from "@/lib/cluster/cluster-run";
-
+import { CANCELLED_VIA_NODE_STOP } from "@/lib/job-cancel-source";
 const STOP_NOTE = "\n[stop] Stopped by user — node marked failed; downstream nodes proceed with no upstream output.";
 
 /** Extract the cluster ToolJob id from a node's run logs (same regex as the
@@ -47,8 +47,11 @@ async function stopLinkedJob(nodeLogs: string): Promise<string | null> {
   if (!jobId) return null;
   try {
     // Cluster run record present → remote cancellation (scancel / kill).
+    // P2-1 fix (QA 30-a): the via-node-stop stderr marker is stamped inside
+    // stopClusterJob's own row write (single point, no follow-up window for
+    // the reconcile sweep to clobber).
     if (getRun(jobId)) {
-      const res = await stopClusterJob(jobId);
+      const res = await stopClusterJob(jobId, { viaNodeStop: true });
       return res.ok
         ? `\n[stop] cluster job ${jobId} cancelled on the remote host.`
         : `\n[stop] cluster job ${jobId} could not be cancelled (${res.error}) — it may keep running until its own ceiling.`;
@@ -68,7 +71,12 @@ async function stopLinkedJob(nodeLogs: string): Promise<string | null> {
     }
     await db.toolJob.update({
       where: { id: jobId },
-      data: { status: "cancelled", finishedAt: new Date() },
+      data: {
+        status: "cancelled",
+        finishedAt: new Date(),
+        // Two-way badge (ToolJob half): cancel-source trace in stderr.
+        stderr: `${job.stderr}${job.stderr ? "\n" : ""}${CANCELLED_VIA_NODE_STOP}`,
+      },
     });
     return note + ".";
   } catch (e) {

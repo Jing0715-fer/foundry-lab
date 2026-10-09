@@ -294,8 +294,20 @@ export interface WorkflowDTO {
   name: string;
   nodes: NodeDTO[];
   edges: EdgeDTO[];
+  /** Hand-drawn canvas groups (F-lane persistence) — undefined = none saved. */
+  groups?: CanvasGroupDTO[];
   createdAt: string;
   updatedAt: string;
+}
+
+// --- Canvas groups (hand-drawn group layer) ----------------------------------
+
+export interface CanvasGroupDTO {
+  id: string;
+  label: string;
+  /** Color key from the layer's palette (teal | violet | amber | rose). */
+  color: string;
+  nodeIds: string[];
 }
 
 // --- Tools -------------------------------------------------------------------

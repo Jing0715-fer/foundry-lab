@@ -149,6 +149,10 @@ model ToolJob {
 model Workflow {
   id        String   @id @default(cuid())
   name      String   @default("Untitled Workflow")
+  // JSON: hand-drawn canvas groups [{id, label, color, nodeIds}] (F-lane
+  // persistence — previously the group layer was memory-only and lost on
+  // refresh). Null = no groups.
+  groups    String?
   nodes     Node[]
   edges     Edge[]
   versions  WorkflowVersion[]

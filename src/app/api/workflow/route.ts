@@ -3,12 +3,13 @@
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { toNodeDTO, toEdgeDTO } from "@/lib/workflow-engine";
+import { toNodeDTO, toEdgeDTO, toGroupDTOs } from "@/lib/workflow-engine";
 import type { WorkflowDTO } from "@/lib/types";
 
 function toWorkflowDTO(w: {
   id: string;
   name: string;
+  groups?: string | null;
   createdAt: Date;
   updatedAt: Date;
   nodes: unknown[];
@@ -17,6 +18,7 @@ function toWorkflowDTO(w: {
   return {
     id: w.id,
     name: w.name,
+    groups: toGroupDTOs(w.groups) ?? undefined,
     nodes: (w.nodes as unknown[]).map((n) => toNodeDTO(n as never)),
     edges: (w.edges as unknown[]).map((e) => toEdgeDTO(e as never)),
     createdAt: w.createdAt.toISOString(),

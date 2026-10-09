@@ -273,8 +273,17 @@ export function SuperposeDialog({
         )}
 
         {!loading && error && (
-          <div className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
-            {error}
+          <div className="space-y-1.5 rounded-lg border border-destructive/30 bg-destructive/5 p-4 text-sm text-destructive">
+            <p>{error}</p>
+            {error.includes("File not found on disk") && (
+              <p className="text-xs text-muted-foreground">
+                Structure files are run artifacts — they live under{" "}
+                <code className="font-mono">outputs/</code> and are produced when the
+                workflow runs. If the file is missing (e.g. after a demo reset or
+                artifact cleanup), re-run the producing node or pick candidates
+                whose PDB files still exist.
+              </p>
+            )}
           </div>
         )}
 

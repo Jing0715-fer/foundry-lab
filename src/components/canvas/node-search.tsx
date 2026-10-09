@@ -43,20 +43,29 @@ export function NodeSearch({ onClose }: { onClose: () => void }) {
   // zoom is preserved (it used to hard-reset to 1, yanking the user from a
   // comfortable zoom level to 100% on every search jump) — only the pan
   // (x/y) is recentered around the node.
+  //
+  // #9 fix: select+inspect can open the Inspector, which RESIZES the canvas
+  // after this frame. Measuring clientWidth before that resize produced
+  // jump coordinates computed for a wider canvas — the node landed near/off
+  // the right edge ("viewport recenter onto nothing" flavor). Double-rAF
+  // (render commit → stable layout) so the recenter uses the FINAL size.
   const navigateToNode = React.useCallback(
     (node: NodeDTO) => {
       select(node.id);
       inspect(node.id);
-      // Center the node in the viewport
-      const canvasEl = document.querySelector('[data-canvas="viewport"]');
-      const w = canvasEl?.clientWidth ?? 900;
-      const h = canvasEl?.clientHeight ?? 600;
-      const zoom = useAppStore.getState().viewport.zoom;
-      setViewport({
-        x: Math.round(w / 2 - (node.x + CARD_W / 2) * zoom),
-        y: Math.round(h / 2 - (node.y + CARD_H / 2) * zoom),
-      });
       onClose();
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const canvasEl = document.querySelector('[data-canvas="viewport"]');
+          const w = canvasEl?.clientWidth ?? 900;
+          const h = canvasEl?.clientHeight ?? 600;
+          const zoom = useAppStore.getState().viewport.zoom;
+          setViewport({
+            x: Math.round(w / 2 - (node.x + CARD_W / 2) * zoom),
+            y: Math.round(h / 2 - (node.y + CARD_H / 2) * zoom),
+          });
+        });
+      });
     },
     [inspect, onClose, select, setViewport],
   );

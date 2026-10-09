@@ -22,6 +22,10 @@ import {
   parseWorkflowJSON,
 } from "@/lib/workflow-io";
 import {
+  TemplateLoadConfirm,
+  needsTemplateConfirm,
+} from "@/components/canvas/template-load-confirm";
+import {
   ArrowRight,
   Ban,
   Bot,
@@ -117,6 +121,12 @@ export function WorkflowTemplates({
   const [importing, setImporting] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
+  // Destructive-replace confirmations (F-lane #10): loading a template or
+  // importing JSON REPLACES the current workflow — with nodes present, both
+  // routes gate behind TemplateLoadConfirm first.
+  const [confirmTemplate, setConfirmTemplate] = React.useState<WorkflowTemplate | null>(null);
+  const [confirmImport, setConfirmImport] = React.useState<ReturnType<typeof parseWorkflowJSON> | null>(null);
+
   // Version history state — fetched on mount (the dialog mounts this
   // component, so this fires whenever the user opens the templates gallery).
   const [versions, setVersions] = React.useState<VersionItem[]>([]);
@@ -155,16 +165,12 @@ export function WorkflowTemplates({
     }
   }
 
-  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0];
-    // Reset the input so the same file can be re-selected later.
-    e.target.value = "";
-    if (!file) return;
+  // Parse + confirm + run — split so the confirm dialog can re-run the
+  // import after the user accepts the replacement.
+  async function runImport(data: ReturnType<typeof parseWorkflowJSON>) {
     if (importing) return;
     setImporting(true);
     try {
-      const text = await file.text();
-      const data = parseWorkflowJSON(text);
       // Pass the CURRENT workflow id so the import clears + rebuilds the
       // workflow the user is looking at (multi-workflow contract).
       const result = await importWorkflow(data, workflow?.id);
@@ -185,6 +191,40 @@ export function WorkflowTemplates({
     } finally {
       setImporting(false);
     }
+  }
+
+  async function handleImportFile(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    // Reset the input so the same file can be re-selected later.
+    e.target.value = "";
+    if (!file) return;
+    if (importing) return;
+    try {
+      const text = await file.text();
+      const data = parseWorkflowJSON(text);
+      // Import is a REPLACE operation — confirm when nodes would be lost.
+      if (needsTemplateConfirm(workflow?.nodes?.length)) {
+        setConfirmImport(data);
+        return;
+      }
+      await runImport(data);
+    } catch (err) {
+      toast({
+        title: "Import failed",
+        description: err instanceof Error ? err.message : String(err),
+        variant: "destructive",
+      });
+    }
+  }
+
+  /** Guarded entry: confirm before the destructive replace (F-lane #10). */
+  function requestLoadTemplate(t: WorkflowTemplate) {
+    if (loadingId) return;
+    if (needsTemplateConfirm(workflow?.nodes?.length)) {
+      setConfirmTemplate(t);
+      return;
+    }
+    void loadTemplate(t);
   }
 
   async function loadTemplate(t: WorkflowTemplate) {
@@ -677,7 +717,7 @@ export function WorkflowTemplates({
                   </span>
                   <Button
                     size="sm"
-                    onClick={() => loadTemplate(t)}
+                    onClick={() => requestLoadTemplate(t)}
                     disabled={!!loadingId}
                   >
                     {isLoading ? (
@@ -1077,6 +1117,40 @@ export function WorkflowTemplates({
           </>
         )}
       </section>
+
+      {/* Destructive-replace confirmations (F-lane #10). */}
+      <TemplateLoadConfirm
+        open={confirmTemplate !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfirmTemplate(null);
+        }}
+        templateName={confirmTemplate?.name ?? ""}
+        templateNodeCount={confirmTemplate?.nodes.length ?? 0}
+        workflowName={workflow?.name ?? null}
+        currentNodes={workflow?.nodes?.length ?? 0}
+        currentEdges={workflow?.edges?.length ?? 0}
+        onConfirm={() => {
+          const t = confirmTemplate;
+          setConfirmTemplate(null);
+          if (t) void loadTemplate(t);
+        }}
+      />
+      <TemplateLoadConfirm
+        open={confirmImport !== null}
+        onOpenChange={(o) => {
+          if (!o) setConfirmImport(null);
+        }}
+        templateName={confirmImport?.name ?? "Imported workflow"}
+        templateNodeCount={confirmImport?.nodes.length ?? 0}
+        workflowName={workflow?.name ?? null}
+        currentNodes={workflow?.nodes?.length ?? 0}
+        currentEdges={workflow?.edges?.length ?? 0}
+        onConfirm={() => {
+          const data = confirmImport;
+          setConfirmImport(null);
+          if (data) void runImport(data);
+        }}
+      />
     </div>
   );
 }

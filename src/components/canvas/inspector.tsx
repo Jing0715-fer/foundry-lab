@@ -1073,6 +1073,7 @@ function NodeInspectorImpl() {
           progress?: number;
           logs?: string;
           result?: string;
+          rowUpdatedAt?: string;
         };
         setNodeStatus(
           nodeId,
@@ -1080,6 +1081,7 @@ function NodeInspectorImpl() {
           data.progress,
           data.result,
           data.logs,
+          data.rowUpdatedAt,
         );
         if (data.status === "completed" || data.status === "failed") {
           if (!finished) {

@@ -128,7 +128,7 @@ export async function GET(
        */
       const reconcileClusterOutcome = async (
         nodeRow: { id: string; status: string; logs: string | null },
-      ): Promise<{ status: string; progress: number; logs: string; result: string | null } | null> => {
+      ): Promise<{ status: string; progress: number; logs: string; result: string | null; writtenAt: Date } | null> => {
         if (nodeRow.status !== "running") return null;
         const jobId = clusterJobIdFromLogs(nodeRow.logs ?? "");
         if (!jobId) return null;
@@ -164,6 +164,7 @@ export async function GET(
         // takes the cluster outcome — a user Stop (or the local watchdog)
         // may have settled this node between the poll's read and this write,
         // and a late cluster completion must never resurrect that verdict.
+        const writeMark = new Date();
         const settled = await db.node
           .updateMany({
             where: { id: nodeRow.id, status: "running" },
@@ -172,12 +173,12 @@ export async function GET(
               result,
               logs,
               progress: 100,
-              completedAt: new Date(),
+              completedAt: writeMark,
             },
           })
           .catch(() => ({ count: 0 }));
         if (settled.count === 0) return null;
-        return { status: nodeStatus, progress: 100, logs, result };
+        return { status: nodeStatus, progress: 100, logs, result, writtenAt: writeMark };
       };
 
       // Poll every 500ms until the node reaches a terminal state (or the
@@ -199,7 +200,18 @@ export async function GET(
           const logs = settled?.logs ?? current.logs ?? "";
           const result = settled?.result ?? current.result ?? "";
 
-          send("status", { status, progress, logs, result });
+          // rowUpdatedAt (#6 stale-snapshot guard): the observed row's write
+          // timestamp. The client drops a late status event that predates a
+          // terminal state it already landed (run POST response race). The
+          // settled branch reports the WRITE moment (P2-4) — not the emit
+          // moment, which lags the row write by the poll+write latency.
+          send("status", {
+            status,
+            progress,
+            logs,
+            result,
+            rowUpdatedAt: (settled ? settled.writtenAt : current.updatedAt).toISOString(),
+          });
           if (status === "completed" || status === "failed") {
             send("done", { status });
             close();

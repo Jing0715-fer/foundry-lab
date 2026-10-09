@@ -109,7 +109,7 @@ interface AppState {
   confirmEdge: (tempId: string, real: EdgeDTO) => void;
   rollbackEdge: (tempId: string) => void;
   removeEdge: (id: string) => void;
-  setNodeStatus: (id: string, status: NodeDTO["status"], progress?: number, result?: string, logs?: string) => void;
+  setNodeStatus: (id: string, status: NodeDTO["status"], progress?: number, result?: string, logs?: string, rowUpdatedAt?: string) => void;
   /** Merge polled node rows into the store. Pass the incoming EDGES array
    *  as the second argument when the caller polled a whole workflow: the
    *  merge then also (a) reaps local nodes whose ids are absent from the
@@ -208,7 +208,24 @@ export const useAppStore = create<AppState>((set, get) => ({
   upsertNode: (n) =>
     set((s) => {
       if (!s.workflow) return {};
-      const exists = s.workflow.nodes.some((x) => x.id === n.id);
+      const existing = s.workflow.nodes.find((x) => x.id === n.id);
+      // Stale-snapshot guard (#6): a late payload (run POST response arriving
+      // after the SSE tail already landed the terminal state) must not knock
+      // the node back to a non-terminal snapshot whose row timestamp is not
+      // newer. Legitimate transitions (retry → pending/running) always carry
+      // a FRESHER rowUpdatedAt, so they pass.
+      if (
+        existing &&
+        (existing.status === "completed" || existing.status === "failed") &&
+        n.status !== "completed" &&
+        n.status !== "failed" &&
+        n.status !== "pending" &&
+        n.status !== "idle" &&
+        (n.updatedAt ?? "") <= (existing.updatedAt ?? "")
+      ) {
+        return {};
+      }
+      const exists = !!existing;
       // Track when an id first enters the local store so mergeNodes can
       // distinguish "server deleted it" from "an in-flight poll predates
       // this node" (see localNodeArrivedAt above).
@@ -270,9 +287,28 @@ export const useAppStore = create<AppState>((set, get) => ({
       };
     }),
 
-  setNodeStatus: (id, status, progress, result, logs) =>
+  setNodeStatus: (id, status, progress, result, logs, rowUpdatedAt) =>
     set((s) => {
       if (!s.workflow) return {};
+      // Stale-snapshot guard (#6, SSE tail vs run POST response): if the node
+      // is already terminal locally and this event is non-terminal yet its
+      // observed row timestamp is not newer, drop it — the run response won
+      // the race. Retry transitions (pending/running) are always allowed:
+      // they only happen after a server-side row write, which refreshes
+      // rowUpdatedAt past the terminal timestamp.
+      const existing = s.workflow.nodes.find((n) => n.id === id);
+      if (
+        existing &&
+        (existing.status === "completed" || existing.status === "failed") &&
+        status !== "completed" &&
+        status !== "failed" &&
+        status !== "pending" &&
+        status !== "idle" &&
+        rowUpdatedAt &&
+        rowUpdatedAt <= (existing.updatedAt ?? "")
+      ) {
+        return {};
+      }
       return {
         workflow: {
           ...s.workflow,
@@ -286,6 +322,20 @@ export const useAppStore = create<AppState>((set, get) => ({
                   logs: logs ?? n.logs,
                   completedAt: status === "completed" || status === "failed" ? new Date().toISOString() : n.completedAt,
                   startedAt: status === "running" && !n.startedAt ? new Date().toISOString() : n.startedAt,
+                  // P1-3 fix (QA 30-a): land the row watermark on the DTO so the
+                  // upsertNode/setNodeStatus guards can arbitrate late
+                  // snapshots. Terminal states without an observed timestamp
+                  // bump to local now (the guard needs a strictly-fresh mark);
+                  // non-terminal events only bump when the server row was
+                  // actually written later than our local mark.
+                  updatedAt:
+                    status === "completed" || status === "failed"
+                      ? rowUpdatedAt && rowUpdatedAt > (n.updatedAt ?? "")
+                        ? rowUpdatedAt
+                        : new Date().toISOString()
+                      : rowUpdatedAt && rowUpdatedAt > (n.updatedAt ?? "")
+                        ? rowUpdatedAt
+                        : n.updatedAt,
                 }
               : n,
           ),

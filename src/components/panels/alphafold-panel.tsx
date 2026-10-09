@@ -34,6 +34,7 @@
 
 import * as React from "react";
 import { useAppStore } from "@/lib/store";
+import { isCancelledViaNodeStop } from "@/lib/job-cancel-source";
 import {
   af2OutputDirFor,
   buildTutorialPreview,
@@ -2096,6 +2097,7 @@ export default function AlphaFoldPanel() {
               const c = job.cluster;
               const phase = jobPhase(job);
               const live = isLivePhase(phase);
+              const viaNodeStop = phase === "cancelled" && isCancelledViaNodeStop(job.stderr);
               const expanded = expandedJob === job.id;
               const pdbCount = job.outputFiles.filter((f) =>
                 f.toLowerCase().endsWith(".pdb"),
@@ -2144,6 +2146,15 @@ export default function AlphaFoldPanel() {
                         >
                           {phase}
                         </Badge>
+                        {viaNodeStop && (
+                          <Badge
+                            variant="outline"
+                            className="shrink-0 text-[10px] text-muted-foreground"
+                            title="Cancelled by stopping its canvas node (Runs sheet / node Stop)"
+                          >
+                            via node stop
+                          </Badge>
+                        )}
                         {c ? (
                           <>
                             <Badge
@@ -2251,7 +2262,9 @@ export default function AlphaFoldPanel() {
                               {(c?.logTailOut || job.stdout || "").slice(-4000)}
                             </pre>
                             {(c?.logTailErr ||
-                              (phase === "failed" ? job.stderr : "")) && (
+                              (phase === "failed" || phase === "cancelled"
+                                ? job.stderr
+                                : "")) && (
                               <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-rose-400">
                                 {(
                                   c?.logTailErr ||

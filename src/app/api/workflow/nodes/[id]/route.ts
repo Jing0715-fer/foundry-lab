@@ -1,9 +1,12 @@
 // PATCH /api/workflow/nodes/[id] — update a Node.
-// DELETE /api/workflow/nodes/[id] — delete a Node (cascades edges via Prisma).
+// DELETE /api/workflow/nodes/[id] — delete a Node (cascades edges; prunes the
+//   deleted id out of the workflow's persisted canvas groups — P2-2, the
+//   group layer's stale-reference cleanup otherwise only happened on the
+//   next group edit).
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
-import { toNodeDTO } from "@/lib/workflow-engine";
+import { toNodeDTO, toGroupDTOs } from "@/lib/workflow-engine";
 
 // The NodeStatus union from src/lib/types.ts — spelled out here so an
 // unknown status string gets an honest 400 instead of silently persisting
@@ -95,12 +98,42 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
+    const existing = await db.node.findUnique({
+      where: { id },
+      select: { workflowId: true },
+    });
     // Prisma cascade handles edges (onDelete: Cascade on Edge.workflowId is via Workflow,
     // but Edge has no direct relation to Node — we must manually clean up edges referencing this node).
     await db.edge.deleteMany({
       where: { OR: [{ fromNodeId: id }, { toNodeId: id }] },
     });
     await db.node.delete({ where: { id } });
+    // P2-2 (QA 30-a): prune the deleted id from the workflow's persisted
+    // canvas groups. Without this, deleted nodes leave invisible stale
+    // references in Workflow.groups forever (rendered groups filter by live
+    // members, so a fully-stale group is unselectable and undeletable in the
+    // UI — it only disappears on the next group edit's full-replacement
+    // persist). Best-effort: a failed prune never fails the DELETE.
+    if (existing?.workflowId) {
+      try {
+        const wf = await db.workflow.findUnique({
+          where: { id: existing.workflowId },
+          select: { groups: true },
+        });
+        const groups = toGroupDTOs(wf?.groups);
+        if (groups && groups.some((g) => g.nodeIds.includes(id))) {
+          const pruned = groups
+            .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((nid) => nid !== id) }))
+            .filter((g) => g.nodeIds.length > 0);
+          await db.workflow.update({
+            where: { id: existing.workflowId },
+            data: { groups: pruned.length ? JSON.stringify(pruned) : null },
+          });
+        }
+      } catch {
+        // ignore — the node deletion itself already succeeded.
+      }
+    }
     return NextResponse.json({ ok: true });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);

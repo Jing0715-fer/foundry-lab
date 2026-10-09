@@ -12,9 +12,11 @@
 // E3 group drag: pointer-down on the card body (outside its buttons) starts a
 // drag that visually translates the aggregate; on release every MEMBER node
 // is committed to its shifted position (store merge + per-node PATCH). A
-// click without movement still expands the group. Edges re-route on release
-// (they anchor at the aggregate position via layoutNodes); live edge patching
-// is per-node-id keyed and can't express a multi-member shift.
+// click without movement still expands the group. Edges follow the drag
+// LIVE via the shared edge-drag-patch module (F-lane liveDrag group
+// extension): every edge attached to any member is re-geometried each rAF
+// frame with the whole-group offset, so connections visually track the
+// aggregate instead of snapping on release.
 //
 // A11y: the root is a labeled GROUP region (not a fake button with focusable
 // descendants — nested interactive elements are illegal HTML in a button);
@@ -32,7 +34,11 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
-import { clamp } from "@/lib/canvas-utils";
+import { clamp, setLiveDrag } from "@/lib/canvas-utils";
+import {
+  collectEdgeGroups,
+  patchEdgeGroups,
+} from "@/components/canvas/edge-drag-patch";
 import { CARD_W, CARD_H, WORLD_MIN, WORLD_MAX } from "@/lib/workflow-catalog";
 import { useAppStore } from "@/lib/store";
 import type { NodeDTO } from "@/lib/types";
@@ -76,6 +82,7 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
   const [compareOpen, setCompareOpen] = React.useState(false);
 
   const cardRef = React.useRef<HTMLDivElement | null>(null);
+  const edgeDomRef = React.useRef<Map<string, SVGGElement> | null>(null);
   const dragState = React.useRef<{
     pointerId: number;
     startX: number;
@@ -149,6 +156,9 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
       if (Math.hypot(dx, dy) < 4) return;
       st.moved = true;
       setDragActive(true);
+      // First significant move: cache the edge `<g>` groups attached to ANY
+      // member (F-lane liveDrag group extension) — live-follow during drag.
+      edgeDomRef.current = collectEdgeGroups(members.map((m) => m.id));
     }
     st.latestDx = dx;
     st.latestDy = dy;
@@ -157,11 +167,38 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
     if (st.raf !== null) return;
     st.raf = requestAnimationFrame(() => {
       st.raf = null;
+      const zoom = useAppStore.getState().viewport.zoom || 1;
+      const cdx = st.latestDx / zoom;
+      const cdy = st.latestDy / zoom;
       // Visual-only translation in WORLD units (the card lives inside the
       // scaled workspace, so screen px / zoom = world units).
-      const zoom = useAppStore.getState().viewport.zoom || 1;
       if (cardRef.current) {
-        cardRef.current.style.transform = `translate(${(st.latestDx / zoom).toFixed(2)}px, ${(st.latestDy / zoom).toFixed(2)}px)`;
+        cardRef.current.style.transform = `translate(${cdx.toFixed(2)}px, ${cdy.toFixed(2)}px)`;
+      }
+      // LIVE edge follow (F-lane): patch every connected edge's geometry for
+      // the whole-group offset — the shared liveDrag state (ids = members)
+      // also informs any defensive geometry consumer mid-drag.
+      if (edgeDomRef.current) {
+        // P1-1 fix: geometry must run in RENDER space. Collapsed members
+        // render at the AGGREGATE's top-left (workflow-canvas layoutNodes) —
+        // patching against raw store positions made every connected edge
+        // jump to the invisible scattered members on the first frame.
+        const memberIds = new Set(members.map((m) => m.id));
+        const renderNodes = (useAppStore.getState().workflow?.nodes ?? []).map(
+          (n) => (memberIds.has(n.id) ? { ...n, x: group.x, y: group.y } : n),
+        );
+        patchEdgeGroups(
+          edgeDomRef.current,
+          members.map((m) => m.id),
+          cdx,
+          cdy,
+          renderNodes,
+        );
+        setLiveDrag({
+          ids: members.map((m) => m.id),
+          dx: cdx,
+          dy: cdy,
+        });
       }
     });
   };
@@ -176,6 +213,10 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
     }
     if (st.raf !== null) cancelAnimationFrame(st.raf);
     if (cardRef.current) cardRef.current.style.transform = "";
+    // Clear live edge-follow state — the upcoming mergeNodes commit triggers
+    // a React re-render that recomputes edges at their final positions.
+    setLiveDrag(null);
+    edgeDomRef.current = null;
     if (!st.moved) {
       // Click on the card body → expand (same affordance as before E3).
       toggleSweepCollapse(group.groupId);
@@ -242,6 +283,8 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
     if (!st || e.pointerId !== st.pointerId) return;
     if (st.raf !== null) cancelAnimationFrame(st.raf);
     if (cardRef.current) cardRef.current.style.transform = "";
+    setLiveDrag(null);
+    edgeDomRef.current = null;
     if (st.moved) setDragActive(false);
     dragState.current = null;
   };

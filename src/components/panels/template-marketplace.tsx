@@ -29,6 +29,10 @@ import {
 import { useAppStore } from "@/lib/store";
 import type { AgentDTO, EdgeDTO, NodeDTO } from "@/lib/types";
 import { cn } from "@/lib/utils";
+import {
+  TemplateLoadConfirm,
+  needsTemplateConfirm,
+} from "@/components/canvas/template-load-confirm";
 
 const CATEGORY_COLORS: Record<MarketplaceCategory, string> = {
   research: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
@@ -59,6 +63,11 @@ export function TemplateMarketplace({
     "all",
   );
   const [installingId, setInstallingId] = React.useState<string | null>(null);
+  // Destructive-replace confirmation (F-lane #10) — install replaces the
+  // current canvas; gate behind TemplateLoadConfirm when nodes exist.
+  // Subscribed (not getState) so the dialog reads fresh counts on open.
+  const [confirmTmpl, setConfirmTmpl] = React.useState<MarketplaceTemplate | null>(null);
+  const workflow = useAppStore((s) => s.workflow);
 
   const filtered = React.useMemo(() => {
     let result = MARKETPLACE_TEMPLATES;
@@ -199,6 +208,19 @@ export function TemplateMarketplace({
     [installingId, onClose],
   );
 
+  /** Guarded install entry: confirm before the destructive replace. */
+  const requestInstall = React.useCallback(
+    (tmpl: MarketplaceTemplate) => {
+      if (installingId) return;
+      if (needsTemplateConfirm(workflow?.nodes?.length)) {
+        setConfirmTmpl(tmpl);
+        return;
+      }
+      void installTemplate(tmpl);
+    },
+    [installingId, installTemplate, workflow],
+  );
+
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent className="flex max-h-[85vh] w-full flex-col gap-0 p-0 sm:max-w-3xl">
@@ -317,7 +339,7 @@ export function TemplateMarketplace({
                     size="sm"
                     className="mt-auto w-full gap-1.5"
                     disabled={installingId !== null}
-                    onClick={() => void installTemplate(tmpl)}
+                    onClick={() => requestInstall(tmpl)}
                   >
                     {installingId === tmpl.id ? (
                       <>
@@ -336,6 +358,25 @@ export function TemplateMarketplace({
             </div>
           )}
         </ScrollArea>
+
+        {/* Destructive-replace confirmation (F-lane #10) — renders as a
+            portal layer above this marketplace Dialog. */}
+        <TemplateLoadConfirm
+          open={confirmTmpl !== null}
+          onOpenChange={(o) => {
+            if (!o) setConfirmTmpl(null);
+          }}
+          templateName={confirmTmpl?.name ?? ""}
+          templateNodeCount={confirmTmpl?.nodes.length ?? 0}
+          workflowName={workflow?.name ?? null}
+          currentNodes={workflow?.nodes?.length ?? 0}
+          currentEdges={workflow?.edges?.length ?? 0}
+          onConfirm={() => {
+            const tmpl = confirmTmpl;
+            setConfirmTmpl(null);
+            if (tmpl) void installTemplate(tmpl);
+          }}
+        />
       </DialogContent>
     </Dialog>
   );

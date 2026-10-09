@@ -39,7 +39,6 @@ import type {
   TaskDTO,
   MeetingDTO,
   ResearchReportDTO,
-  WorkflowDTO,
 } from "@/lib/types";
 
 /** Relative time formatter — "3m ago", "2h ago", "1d ago". */
@@ -95,30 +94,32 @@ const STATUS_BAR_ORDER: { status: string; label: string }[] = [
 
 export function DashboardPanel() {
   const setActivePanel = useAppStore((s) => s.setActivePanel);
+  // Multi-workflow contract (F-lane #11): the status card reads the ACTIVE
+  // workflow from the store — the single source of truth the canvas uses —
+  // instead of /api/workflow (which always returns the FIRST workflow).
+  // Switching workflows now updates the dashboard in lockstep.
+  const activeWorkflow = useAppStore((s) => s.workflow);
   const [agents, setAgents] = React.useState<AgentDTO[]>([]);
   const [tasks, setTasks] = React.useState<TaskDTO[]>([]);
   const [meetings, setMeetings] = React.useState<MeetingDTO[]>([]);
   const [research, setResearch] = React.useState<ResearchReportDTO[]>([]);
-  const [workflow, setWorkflow] = React.useState<WorkflowDTO | null>(null);
   const [loading, setLoading] = React.useState(true);
 
   React.useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [a, t, m, r, w] = await Promise.all([
+        const [a, t, m, r] = await Promise.all([
           fetch("/api/agents").then((x) => x.json()),
           fetch("/api/tasks").then((x) => x.json()),
           fetch("/api/meetings").then((x) => x.json()),
           fetch("/api/research").then((x) => x.json()),
-          fetch("/api/workflow").then((x) => x.json()),
         ]);
         if (cancelled) return;
         setAgents(Array.isArray(a) ? a : []);
         setTasks(Array.isArray(t) ? t : []);
         setMeetings(Array.isArray(m) ? m : []);
         setResearch(Array.isArray(r) ? r : []);
-        setWorkflow(w ?? null);
       } catch {
         // ignore — leave empties
       } finally {
@@ -146,6 +147,7 @@ export function DashboardPanel() {
     failed: tasks.filter((t) => t.status === "failed").length,
   };
 
+  const workflow = activeWorkflow;
   const nodes = workflow?.nodes ?? [];
   const nodesByStatus: Record<string, number> = {};
   for (const n of nodes) nodesByStatus[n.status] = (nodesByStatus[n.status] ?? 0) + 1;
@@ -271,12 +273,18 @@ export function DashboardPanel() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-3">
-        {/* Workflow Status bar chart */}
+        {/* Workflow Status bar chart — reflects the ACTIVE workflow (store
+            single-source, follows workflow switching). */}
         <Card className="card-lift-hover lg:col-span-2">
           <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
+            <CardTitle className="flex flex-wrap items-center gap-2 text-base">
               <Activity className="size-4" />
               Workflow Status
+              {workflow?.name && (
+                <Badge variant="outline" className="max-w-[180px] truncate text-[10px] font-normal text-muted-foreground">
+                  {workflow.name}
+                </Badge>
+              )}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">

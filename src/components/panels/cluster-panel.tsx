@@ -19,6 +19,7 @@
 
 import * as React from "react";
 import { useAppStore } from "@/lib/store";
+import { isCancelledViaNodeStop } from "@/lib/job-cancel-source";
 import { COMP_TOOLS, getCompTool } from "@/lib/tools";
 import type { CompParamField } from "@/lib/tools";
 import type { ToolJobDTO } from "@/lib/types";
@@ -936,8 +937,17 @@ export function ClusterPanel() {
             <div className="grid gap-3">
               {jobs.map((job) => {
                 const c = job.cluster;
-                const phase = c?.phase ?? (job.status === "completed" ? "done" : job.status === "failed" ? "failed" : "running");
+                const phase =
+                  c?.phase ??
+                  (job.status === "completed"
+                    ? "done"
+                    : job.status === "failed"
+                      ? "failed"
+                      : job.status === "cancelled"
+                        ? "cancelled"
+                        : "running");
                 const isLive = ["staging", "running", "syncing"].includes(phase);
+                const viaNodeStop = phase === "cancelled" && isCancelledViaNodeStop(job.stderr);
                 const expanded = expandedJob === job.id;
                 return (
                   <Card key={job.id}>
@@ -956,6 +966,15 @@ export function ClusterPanel() {
                             {phase === "running" && <Loader2 className="mr-1 size-3 animate-spin" />}
                             {phase}
                           </Badge>
+                          {viaNodeStop && (
+                            <Badge
+                              variant="outline"
+                              className="shrink-0 text-[10px] text-muted-foreground"
+                              title="Cancelled by stopping its canvas node (Runs sheet / node Stop)"
+                            >
+                              via node stop
+                            </Badge>
+                          )}
                           {c && (
                             <span className="truncate font-mono text-[11px] text-muted-foreground">
                               {c.user}@{c.host} · {c.mode}
@@ -1002,7 +1021,7 @@ export function ClusterPanel() {
                               <pre className="whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-emerald-300/90">
                                 {(c?.logTailOut || job.stdout || "").slice(-4000)}
                               </pre>
-                              {(c?.logTailErr || (phase === "failed" ? job.stderr : "")) && (
+                              {(c?.logTailErr || ((phase === "failed" || phase === "cancelled") ? job.stderr : "")) && (
                                 <pre className="mt-2 whitespace-pre-wrap break-all font-mono text-[11px] leading-relaxed text-rose-400">
                                   {(c?.logTailErr || job.stderr || "").slice(-2000)}
                                 </pre>

@@ -121,7 +121,11 @@ export function Sidebar({
 
   async function refetchWorkflow() {
     try {
-      const res = await fetch("/api/workflow");
+      // Multi-workflow contract (#11): refetch the ACTIVE workflow by id so
+      // seeding on a non-first workflow doesn't snap the canvas back to the
+      // first one (/api/workflow always returns the oldest).
+      const activeId = useAppStore.getState().workflow?.id;
+      const res = await fetch(activeId ? `/api/workflows/${activeId}` : "/api/workflow");
       if (res.ok) {
         const w = await res.json();
         useAppStore.getState().setWorkflow(w);

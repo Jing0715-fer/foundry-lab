@@ -33,7 +33,11 @@ import {
 import { canConnect, useAppStore, type PendingFrom } from "@/lib/store";
 import { useHistoryStore } from "@/lib/history-store";
 import { withHistorySuppressed } from "@/lib/history-apply";
-import { computeAllEdgeGeoms, setLiveDrag } from "@/lib/canvas-utils";
+import { setLiveDrag } from "@/lib/canvas-utils";
+import {
+  collectEdgeGroups,
+  patchEdgeGroups,
+} from "@/components/canvas/edge-drag-patch";
 import { cn } from "@/lib/utils";
 import {
   classifyFailure,
@@ -85,94 +89,8 @@ const STATUS_PILL: Record<string, string> = {
   failed: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
 };
 
-// --- Edge DOM patching (cryoflow pattern) ----------------------------------
-// During a card drag, the SVG edge layer is NOT re-rendered via React (that
-// would be far too expensive per frame). Instead, on the first significant
-// pointermove we collect references to the per-edge `<g>` SVG groups connected
-// to this node, and each rAF frame we patch their attributes directly via
-// setAttribute. No React state writes, no zustand writes — just direct DOM
-// mutations on cached elements.
-
-/**
- * Collect the per-edge `<g data-edge-id="…">` groups connected to `nodeId`.
- * Returns null if the SVG layer isn't found or the node has no edges.
- */
-function collectEdgeGroups(nodeId: string): Map<string, SVGGElement> | null {
-  const svg = document.querySelector("svg[data-edges-layer]");
-  if (!svg) return null;
-  const state = useAppStore.getState();
-  const workflow = state.workflow;
-  if (!workflow) return null;
-  let any = false;
-  const map = new Map<string, SVGGElement>();
-  for (const e of workflow.edges) {
-    if (e.fromNodeId !== nodeId && e.toNodeId !== nodeId) continue;
-    const g = svg.querySelector(`g[data-edge-id="${e.id}"]`);
-    if (g) {
-      map.set(e.id, g as SVGGElement);
-      any = true;
-    }
-  }
-  return any ? map : null;
-}
-
-/**
- * Patch the cached edge `<g>` groups in place for the live drag offset
- * `(dx, dy)` (world coordinates). Computes the new geometry for ALL edges
- * (cheap) and updates only the ones connected to `nodeId`.
- */
-function patchEdgeGroups(
-  groups: Map<string, SVGGElement>,
-  nodeId: string,
-  dx: number,
-  dy: number,
-): void {
-  const state = useAppStore.getState();
-  const workflow = state.workflow;
-  if (!workflow) return;
-  const geoms = computeAllEdgeGeoms(workflow.edges, workflow.nodes, {
-    id: nodeId,
-    dx,
-    dy,
-  });
-  for (const g of geoms) {
-    const edge = workflow.edges.find((e) => e.id === g.id);
-    if (!edge) continue;
-    if (edge.fromNodeId !== nodeId && edge.toNodeId !== nodeId) continue;
-    const el = groups.get(g.id);
-    if (!el) continue;
-    // Patch all edge-geometry paths (hit area + visible stroke).
-    const paths = el.querySelectorAll('[data-e="d"]');
-    paths.forEach((p) => {
-      (p as SVGPathElement).setAttribute("d", g.d);
-    });
-    // Patch every animateMotion (running-edge traveling dots).
-    const motions = el.querySelectorAll('[data-e="motion"]');
-    motions.forEach((m) => {
-      (m as SVGElement).setAttribute("path", g.d);
-    });
-    // Patch source dot.
-    const src = el.querySelector('[data-e="src"]');
-    if (src) {
-      src.setAttribute("cx", String(g.src.x));
-      src.setAttribute("cy", String(g.src.y));
-    }
-    // Patch target dot(s).
-    const tgts = el.querySelectorAll('[data-e="tgt"]');
-    tgts.forEach((t) => {
-      t.setAttribute("cx", String(g.tgt.x));
-      t.setAttribute("cy", String(g.tgt.y));
-    });
-    // Patch running-gradient endpoints (only present on running edges).
-    const grad = el.querySelector('[data-e="grad"]');
-    if (grad) {
-      grad.setAttribute("x1", String(g.src.x));
-      grad.setAttribute("y1", String(g.src.y));
-      grad.setAttribute("x2", String(g.tgt.x));
-      grad.setAttribute("y2", String(g.tgt.y));
-    }
-  }
-}
+// Edge DOM patching during drags lives in the shared
+// @/components/canvas/edge-drag-patch module (node-card + sweep-group-card).
 
 interface NodeCardProps {
   node: NodeDTO;
@@ -263,7 +181,7 @@ function NodeCardImpl({ node }: NodeCardProps) {
       // First significant move: cache the connected edge `<g>` SVG groups so
       // subsequent frames can patch their attributes directly without
       // querySelectorAll-ing the document every frame.
-      edgeDomRef.current = collectEdgeGroups(node.id);
+      edgeDomRef.current = collectEdgeGroups([node.id]);
     }
     st.latestDx = dx;
     st.latestDy = dy;
@@ -282,9 +200,9 @@ function NodeCardImpl({ node }: NodeCardProps) {
       // Live-patch edge geometry directly on the cached SVG groups.
       // This is the cryoflow pattern: NO React state writes per frame.
       if (edgeDomRef.current) {
-        patchEdgeGroups(edgeDomRef.current, node.id, cdx, cdy);
+        patchEdgeGroups(edgeDomRef.current, [node.id], cdx, cdy);
         // Defensive read for any other consumer (polling layers, etc.).
-        setLiveDrag({ id: node.id, dx: cdx, dy: cdy });
+        setLiveDrag({ ids: [node.id], dx: cdx, dy: cdy });
       }
     });
   };

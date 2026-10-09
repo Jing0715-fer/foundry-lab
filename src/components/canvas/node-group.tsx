@@ -5,19 +5,84 @@ import { create } from "zustand";
 import { useAppStore } from "@/lib/store";
 import { CARD_W, CARD_H } from "@/lib/workflow-catalog";
 import { cn } from "@/lib/utils";
+import type { CanvasGroupDTO } from "@/lib/types";
 
-interface Group {
-  id: string;
-  label: string;
-  color: string;
-  nodeIds: string[];
-}
+type Group = CanvasGroupDTO;
 
 interface GroupColor {
   name: string;
   bg: string;
   border: string;
   label: string;
+}
+
+// ── F-lane persistence (groups → Workflow.groups column) ────────────────────
+// The group layer used to be memory-only (lost on refresh). Mutations now
+// schedule a debounced best-effort PATCH /api/workflows/:id { groups } with
+// stale node ids pruned against the live workflow. Hydration happens on
+// workflow load/switch (NodeGroupLayer effect below); while a persist is
+// pending, hydration is suppressed so a concurrent refetch can't clobber
+// unsaved local edits.
+
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+let persistPending = false;
+// P1-2 fix (QA 30-a): the debounce CAPTURES the target workflowId, the group
+// snapshot, and the prune basis (live node ids) at SCHEDULE time. Firing
+// after a workflow switch therefore still PATCHes the ORIGINAL workflow —
+// the old code resolved the id at fire time and wrote A's groups into B
+// (nodeIds pruned to [] → B's saved groups wiped, A's never persisted).
+interface PendingPersist {
+  workflowId: string;
+  groups: CanvasGroupDTO[];
+  liveIds: Set<string>;
+}
+let pendingPersist: PendingPersist | null = null;
+
+function scheduleGroupPersist() {
+  const workflow = useAppStore.getState().workflow;
+  if (!workflow?.id) {
+    pendingPersist = null;
+    return;
+  }
+  // Capture NOW — a later workflow switch must not redirect this write.
+  pendingPersist = {
+    workflowId: workflow.id,
+    groups: useGroupStore.getState().groups.map((g) => ({ ...g, nodeIds: [...g.nodeIds] })),
+    liveIds: new Set((workflow.nodes ?? []).map((n) => n.id)),
+  };
+  persistPending = true;
+  if (persistTimer) clearTimeout(persistTimer);
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    const job = pendingPersist;
+    pendingPersist = null;
+    if (!job) return;
+    // Prune node ids that no longer exist in the CAPTURED workflow (deleted
+    // nodes keep the persisted layer honest).
+    const payload = job.groups
+      .map((g) => ({ ...g, nodeIds: g.nodeIds.filter((id) => job.liveIds.has(id)) }))
+      .filter((g) => g.nodeIds.length > 0);
+    void fetch(`/api/workflows/${job.workflowId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ groups: payload }),
+    })
+      .then((res) => {
+        if (!res.ok) {
+          // Surface non-2xx (e.g. validation 400) — a silent drop would let
+          // the next hydrate revert local edits to the stale server state.
+          console.warn(`[groups] persist failed (HTTP ${res.status}) — edits not saved.`);
+        }
+      })
+      .catch(() => {
+        // best-effort: transient network failure — the next mutation retries.
+      })
+      .finally(() => {
+        // Only clear the flag when NO newer debounce is in flight (a second
+        // edit during the fetch would otherwise lose its hydrate shield).
+        if (persistTimer === null) persistPending = false;
+      });
+  }, 600);
 }
 
 // Tiny store for groups (don't modify the foundation useAppStore)
@@ -33,16 +98,23 @@ interface GroupState {
 export const useGroupStore = create<GroupState>((set) => ({
   groups: [],
   activeGroupId: null,
-  addGroup: (g) => set((s) => ({ groups: [...s.groups, g] })),
-  removeGroup: (id) =>
+  addGroup: (g) => {
+    set((s) => ({ groups: [...s.groups, g] }));
+    scheduleGroupPersist();
+  },
+  removeGroup: (id) => {
     set((s) => ({
       groups: s.groups.filter((g) => g.id !== id),
       activeGroupId: s.activeGroupId === id ? null : s.activeGroupId,
-    })),
-  updateGroup: (id, patch) =>
+    }));
+    scheduleGroupPersist();
+  },
+  updateGroup: (id, patch) => {
     set((s) => ({
       groups: s.groups.map((g) => (g.id === id ? { ...g, ...patch } : g)),
-    })),
+    }));
+    scheduleGroupPersist();
+  },
   setActiveGroup: (id) => set({ activeGroupId: id }),
 }));
 
@@ -71,6 +143,40 @@ export function NodeGroupLayer() {
   const collapsedSweepGroups = useAppStore((s) => s.collapsedSweepGroups);
   const { groups, activeGroupId, removeGroup, setActiveGroup } = useGroupStore();
   const nodes = workflow?.nodes ?? [];
+
+  // ── Hydration (F-lane persistence) ─────────────────────────────────────
+  // When the ACTIVE workflow changes (load / switch / restore) or its
+  // server-side groups reference changes, sync the persisted groups into
+  // the group store. A workflow SWITCH always hydrates (local groups belong
+  // to the PREVIOUS workflow — the persistPending shield must not keep them
+  // stuck on the new canvas, P1-2); same-workflow refetches are suppressed
+  // while a local persist is pending so they can't clobber unsaved edits.
+  const wfGroups = workflow?.groups;
+  const hydratedFor = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!workflow?.id) {
+      hydratedFor.current = null;
+      return;
+    }
+    const idChanged = hydratedFor.current !== workflow.id;
+    if (idChanged) hydratedFor.current = workflow.id;
+    if (!idChanged && persistPending) return;
+    const incoming = wfGroups ?? [];
+    const local = useGroupStore.getState().groups;
+    const same =
+      incoming.length === local.length &&
+      incoming.every(
+        (g, i) =>
+          g.id === local[i]?.id &&
+          g.label === local[i]?.label &&
+          g.color === local[i]?.color &&
+          g.nodeIds.length === local[i]?.nodeIds.length &&
+          g.nodeIds.every((id, j) => id === local[i]?.nodeIds[j]),
+      );
+    if (!same) {
+      useGroupStore.setState({ groups: incoming.map((g) => ({ ...g })), activeGroupId: null });
+    }
+  }, [workflow?.id, wfGroups]);
 
   // Compute each group's bounding box from its member nodes.
   // E3 collapse consistency: members folded into a sweep aggregate card are

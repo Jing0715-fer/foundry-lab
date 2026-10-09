@@ -18,6 +18,7 @@ import type {
   EdgeDTO,
   NodeStatus,
   NodeType,
+  CanvasGroupDTO,
 } from "@/lib/types";
 
 export type NodeExecResult = {
@@ -134,6 +135,71 @@ export function toEdgeDTO(e: {
     createdAt:
       typeof e.createdAt === "string" ? e.createdAt : new Date(e.createdAt).toISOString(),
   };
+}
+
+// ── Canvas groups (F-lane persistence) ───────────────────────────────────────
+
+const GROUP_COLORS_ALLOW = new Set(["teal", "violet", "amber", "rose"]);
+const MAX_GROUPS = 32;
+const MAX_GROUP_MEMBERS = 100;
+
+/**
+ * Parse + sanitize the Workflow.groups JSON column into CanvasGroupDTO[].
+ * Returns null when absent/corrupt (callers serialize `undefined`).
+ * Shared by every workflow→DTO mapper so the hand-drawn group layer
+ * round-trips identically no matter which route served the workflow.
+ */
+export function toGroupDTOs(json: string | null | undefined): CanvasGroupDTO[] | null {
+  if (!json) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const out: CanvasGroupDTO[] = [];
+  for (const raw of parsed.slice(0, MAX_GROUPS)) {
+    if (!raw || typeof raw !== "object") continue;
+    const g = raw as Record<string, unknown>;
+    const id = typeof g.id === "string" ? g.id : "";
+    const label = typeof g.label === "string" ? g.label.slice(0, 64).trim() : "";
+    const color = typeof g.color === "string" && GROUP_COLORS_ALLOW.has(g.color) ? g.color : "teal";
+    const nodeIds = Array.isArray(g.nodeIds)
+      ? [...new Set(g.nodeIds.filter((x): x is string => typeof x === "string"))].slice(0, MAX_GROUP_MEMBERS)
+      : [];
+    if (!id || !label || nodeIds.length === 0) continue;
+    out.push({ id, label, color, nodeIds });
+  }
+  return out;
+}
+
+/**
+ * Sanitize client-submitted groups for the Workflow.groups column.
+ * Returns the JSON string to persist (or null to clear). Enforces the same
+ * caps as toGroupDTOs — the DB never sees unbounded blobs.
+ */
+export function sanitizeGroupsJSON(input: unknown): string | null | { error: string } {
+  if (input == null) return null;
+  if (!Array.isArray(input)) return { error: "'groups' must be an array" };
+  if (input.length > MAX_GROUPS) {
+    return { error: `Too many groups (max ${MAX_GROUPS})` };
+  }
+  const out: CanvasGroupDTO[] = [];
+  for (const raw of input) {
+    if (!raw || typeof raw !== "object") return { error: "Each group must be an object" };
+    const g = raw as Record<string, unknown>;
+    const id = typeof g.id === "string" ? g.id.trim().slice(0, 40) : "";
+    const label = typeof g.label === "string" ? g.label.trim().slice(0, 64) : "";
+    const color = typeof g.color === "string" && GROUP_COLORS_ALLOW.has(g.color) ? g.color : "teal";
+    const nodeIds = Array.isArray(g.nodeIds)
+      ? [...new Set(g.nodeIds.filter((x): x is string => typeof x === "string"))].slice(0, MAX_GROUP_MEMBERS)
+      : [];
+    if (!id || !label) return { error: "Each group needs an id and a non-empty label" };
+    if (nodeIds.length === 0) return { error: `Group "${label}" has no node ids` };
+    out.push({ id, label, color, nodeIds });
+  }
+  return JSON.stringify(out);
 }
 
 /**

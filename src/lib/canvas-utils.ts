@@ -22,23 +22,31 @@ export interface EdgeGeom {
 /**
  * Module-level live-drag state.
  *
- * Holds the in-progress card drag offset (nodeId + dx/dy in WORLD coordinates)
- * so that ANY consumer of `computeAllEdgeGeoms` can read it without going through
- * React state or the zustand store. The drag loop in node-card.tsx writes to
- * this every rAF frame and clears it on pointerup.
+ * Holds the in-progress card drag offset (affected node IDS + dx/dy in WORLD
+ * coordinates) so that ANY consumer of `computeAllEdgeGeoms` can read it
+ * without going through React state or the zustand store. The drag loops in
+ * node-card.tsx (single card) and sweep-group-card.tsx (aggregate group —
+ * F-lane liveDrag extension: one drag, many member nodes shifted together)
+ * write to this every rAF frame and clear it on pointerup.
  *
  * This is the cryoflow pattern: edges are patched directly via DOM setAttribute
  * (no React re-render per frame), but the shared geometry helpers can still
  * observe the live offset for defensive reads (e.g. by polling layers or the
  * SVG layer itself if it ever re-renders mid-drag).
  */
-let liveDrag: { id: string; dx: number; dy: number } | null = null;
+export interface LiveDrag {
+  ids: string[];
+  dx: number;
+  dy: number;
+}
 
-export function setLiveDrag(o: { id: string; dx: number; dy: number } | null): void {
+let liveDrag: LiveDrag | null = null;
+
+export function setLiveDrag(o: LiveDrag | null): void {
   liveDrag = o;
 }
 
-export function getLiveDrag(): { id: string; dx: number; dy: number } | null {
+export function getLiveDrag(): LiveDrag | null {
   return liveDrag;
 }
 
@@ -88,14 +96,14 @@ export function resolvePortIndices(
 export function computeEdgeGeom(
   edge: EdgeDTO,
   jobs: NodeDTO[],
-  drag?: { id: string; dx: number; dy: number },
+  drag?: LiveDrag,
 ): EdgeGeom | null {
   const { from, to } = resolvePortIndices(edge, jobs);
   if (!from || !to) return null;
-  const fromDx = drag && drag.id === from.id ? drag.dx : 0;
-  const fromDy = drag && drag.id === from.id ? drag.dy : 0;
-  const toDx = drag && drag.id === to.id ? drag.dx : 0;
-  const toDy = drag && drag.id === to.id ? drag.dy : 0;
+  const fromDx = drag && drag.ids.includes(from.id) ? drag.dx : 0;
+  const fromDy = drag && drag.ids.includes(from.id) ? drag.dy : 0;
+  const toDx = drag && drag.ids.includes(to.id) ? drag.dx : 0;
+  const toDy = drag && drag.ids.includes(to.id) ? drag.dy : 0;
   const src = { x: from.x + CARD_W + fromDx, y: from.y + 58 + fromDy };
   const tgt = { x: to.x + toDx, y: to.y + 58 + toDy };
   const { d, mid } = bezierPath(src, tgt);
@@ -105,7 +113,7 @@ export function computeEdgeGeom(
 export function computeAllEdgeGeoms(
   edges: EdgeDTO[],
   jobs: NodeDTO[],
-  drag?: { id: string; dx: number; dy: number },
+  drag?: LiveDrag,
 ): EdgeGeom[] {
   return edges
     .map((e) => computeEdgeGeom(e, jobs, drag))

@@ -24,7 +24,8 @@ bun run db:push # Prisma schema → SQLite（见下节）
 # 1. 编辑 prisma/schema.prisma
 # 2. 推送 schema
 bun run db:push
-# 3. 重启 dev server —— 见下
+# 3. 【schema 增列/新表时】重冻演示基线 —— 见下节 ⚠️
+# 4. 重启 dev server —— 见下
 ```
 
 ### ⚠️ db:push 之后必须重启 dev server
@@ -39,6 +40,21 @@ client 代码。
 
 **修复**：重启 `bun run dev`（杀掉旧实例再起，避免双实例争抢 3000 端口）。
 此坑来自实测（ROADMAP 测试结论 #7/#9），验收清单已包含该检查。
+
+### ⚠️ schema 增列/新表必须同 commit 重冻演示基线（#20 教训）
+
+**症状**：`bun run db:push` 只作用于 `db/custom.db`；入库的冻结基线
+`db/demo-baseline.db` 仍是旧 schema。此后任何人跑 `bun run demo:reset`
+得到一个**缺新列**的 custom.db —— 再生成的 Prisma client 每次查询
+workflow 表都抛 `The column main.Workflow.<new> does not exist`，
+全站 workflow API 500，直到人工再 push。
+
+**修复（已固化为流程）**：schema 变更后的标准三步——
+`bun run db:push` → 演示数据核对无误 → `bun scripts/reset-demo.ts
+snapshot --force` 重冻基线，并跑一次 `demo:reset --force` 往返验证
+（Prisma 探针查新列不报错）。**schema diff 与重冻后的
+`db/demo-baseline.db` 必须同一 commit 落地。**（实测案例：F 线
+`Workflow.groups` 列，QA 30-a P1-4。）
 
 ## 演示数据库
 
