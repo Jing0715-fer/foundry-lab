@@ -20,6 +20,7 @@ import { db } from "@/lib/db";
 import { COMP_TOOLS, getCompTool } from "@/lib/tools";
 import { materializeSequence } from "@/lib/alphafold";
 import { executeCompToolReal } from "@/lib/real-executor";
+import { recordSkillInvocation } from "@/lib/skills";
 import { extractClusterTarget } from "@/lib/run-utils";
 import { listConnections, getConnection } from "@/lib/cluster/connections";
 import {
@@ -227,8 +228,29 @@ export async function POST(request: Request) {
   await fs.mkdir(workDir, { recursive: true }).catch(() => {});
 
   let result;
+  const skillT0 = Date.now();
+  // Attribution for the audit row: the triggering agent (when the run came
+  // from an agent context) — minimal { id, title } projection.
+  const agentRow = agentId
+    ? await db.agent.findUnique({ where: { id: agentId }, select: { id: true, title: true } })
+    : null;
   try {
     result = await executeCompToolReal(tool, userParams, workDir);
+    // J lane: unified audit — the ToolJob lane keeps its queue substrate
+    // (cancel/stop, files, stdout streaming) but every run now ALSO lands in
+    // the same SkillInvocation table as chat/workflow/canvas operations.
+    await recordSkillInvocation({
+      skillId: `comp.${tool}`,
+      source: "api",
+      status: result.exitCode === 0 ? "ok" : "error",
+      params: userParams,
+      summary: `${result.executor} executor — exit ${result.exitCode}`,
+      ...(result.exitCode !== 0
+        ? { error: (result.stderr || result.stdout).slice(0, 300) }
+        : {}),
+      durationMs: Date.now() - skillT0,
+      ...(agentRow ? { agent: agentRow } : {}),
+    });
   } catch (e) {
     // Catastrophic failure — executor itself threw. Mark the job failed.
     const errMsg = (e as Error).message ?? String(e);
@@ -241,6 +263,15 @@ export async function POST(request: Request) {
         finishedAt: new Date(),
       },
     });
+    await recordSkillInvocation({
+      skillId: `comp.${tool}`,
+      source: "api",
+      status: "error",
+      params: userParams,
+      summary: "executor threw",
+      error: errMsg,
+      durationMs: Date.now() - skillT0,
+    }).catch(() => {});
     return NextResponse.json(
       { error: "Tool execution failed", detail: errMsg, jobId: job.id },
       { status: 500 },

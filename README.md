@@ -61,12 +61,23 @@
   知识域配置与系统提示词。
 - **工具调用循环**（最多 5 轮，并行 bio + comp 工具调用）：智能体聊天中可自主调用
   BLAST / PDB / PubMed / UniProt 等真实 API。
+- **技能标准化层（Skill Layer）**：所有智能体操作统一为技能 —— 单一注册表（18 技能
+  4 族：comp / bio / web / canvas）、单一执行管道（解析→校验→门控→执行→审计）、
+  单一审计表（SkillInvocation，含 source/agent/时长/五态状态）。能力门控
+  （bioToolsEnabled / webSearchEnabled）在**执行层强制**；提示词清单从注册表实时渲染，
+  与执行门控永不漂移；旧 ```tool / ```bio 围栏向后兼容归一。
+- **Web 搜索技能**：智能体可真实联网检索（z-ai-web-dev-sdk），当前信息/文献/新闻
+  直接折入回复。
 - **持久化运行时参数**：微调对话框可配置 temperature / max-tokens / top-p /
   附加系统指令 / 流式输出，作用于该智能体的每一次 LLM 调用。
 - **团队会议**：多智能体多轮辩论，产出结构化纪要。
 - **研究管线**：规划 → 检索 → 撰写三阶段深度研究，输出 Markdown 报告。
 - **PI Copilot**：悬浮于画布之上的 PI 助手，边看工作流边讨论。
+- **技能面板（Skills）**：注册表浏览器（族分组/参数文档/搜索）+ 调用审计日志
+  （状态/源/agent 归因/时长），每个智能体操作（聊天工具调用、工作流节点、
+  PI 画布变更、REST 工具运行）都可观测。
 
+![技能面板](docs/images/28-skills-panel.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -366,6 +377,8 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | POST | `/api/screening/:id/rmsd` | 结构 RMSD 指标轴计算（`{refId}`，原子事务） |
 | POST | `/api/screening/:id/promote` | 候选提升回画布 |
 | GET | `/api/bio-tools/:type` | BLAST / PDB / PubMed / UniProt |
+| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析） |
+| GET | `/api/skills/invocations` | 统一调用审计日志（limit/skillId/source/status/agentId 过滤） |
 
 ## 常见问题
 

@@ -3,8 +3,8 @@
 > 下一阶段开发方向。基于 2026-10-05（Sweep）、10-06（A 线 Campaign 体验）、10-07（B 线画布与
 > 执行引擎）、10-09（C+E 线数据可信度与执行健壮性）、10-10（D+F 线科研深度与可读性）、
 > 10-11（F 线 P1 打磨与运维）、10-12（G 线验证通道与生产化）、10-13（H 线科研深度与可及性
-> 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）九轮测试结论滚动更新，随每个
-> 阶段交付后重写。
+> 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）、10-14（J 线智能体操作
+> skill 标准化）十轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -59,6 +59,26 @@
   swap 角色互换重算 + 复位。移动端 375 零溢出 + footer 贴底；page/console/dev.log 零错误；
   VLM 复核两截图 PASS；演示 DB 零污染（含一处自我污染的发现与清理——tour 调色板按钮误点
   产生的 stray Input 节点）。
+- **J 线 · 智能体操作 Skill 标准化（本轮交付）**：用户问"agent 层是否有 skill 机制" →
+  摸底发现 8 条互不复用的操作协议 + 三个结构性缺陷（门控只在 prompt 文案层、prompt 与执行
+  双维护漂移、无统一审计）→ 全部收敛为**单一技能层**：
+  - `src/lib/skills/`（types/registry/runner/catalog/prompt/fences）——SkillDefinition 声明式
+    定义 + `runSkill` 单管道（resolve→validate→gate→execute→audit）+ 18 内置技能 4 族
+    （comp.* 11 参数 schema 从 COMP_TOOLS 派生同源 / bio.* 4 / web.search 1 / canvas.* 2）。
+  - **门控执行层强制**：bioToolsEnabled/webSearchEnabled 从 prompt 文案升级为 runSkill 硬门
+    （denied 状态 + 审计）；**prompt 清单从注册表实时渲染**——与执行门控同规则永不漂移。
+  - **统一协议 ```skill fence** + 旧 ```tool/```bio/```web 围栏向后兼容归一；未知名不静默丢弃
+    → invalid 信封（幻觉可见）；流式泳道慢技能拒绝 → skipped 状态（可见化）。
+  - **web.search 补真**：原 webSearchEnabled 是宣传无执行的假能力，现为 z-ai-web-dev-sdk
+    真实联网检索（浏览器 e2e：真模型发 ```skill → 真结果折入回复 → 审计 1.3s ok）。
+  - **全链路收敛**：chat / chat-stream / workflow agent+biotool+comp 节点（审计钩子，专门
+    执行器保留集群路由+auto-wire）/ PI canvas 变更（canvas.* 技能化，同不变量同审计）/ REST
+    bio-tools / ToolJob 泳道 —— 全部落 SkillInvocation 审一表（source/agent/五态/时长）。
+  - **观测面**：GET /api/skills（?agentId= 资格解析）+ GET /api/skills/invocations + 技能面板
+    （Registry 浏览器 + Activity 审计日志，J6-a 子代理交付）。
+  - 浏览器级 e2e：金路径（真模型 ```skill bio.pdb → 真 RCSB → 卡片 bio|bio.pdb|completed）+
+    web.search 首执行 + done.toolCalls 即时合并修复 + Activity 双行核对 + 移动端 + console
+    零告警；基线纪律遵守（schema 变更重冻 + e2e 后恢复 + 字段级核对）。
 
 ## 测试结论（驱动后续优先级）
 
@@ -74,6 +94,9 @@
 | 37 | **拖拽失败的 pan 副作用使坐标全漂**：失败拖拽 = 背景按下 → 画布平移 → 后续测量全部过期——每次拖拽前重新测量 + "Fit to content" 恢复；坐标经文件中转防转录错误 | e2e 工程标准 | 验收参考 |
 | 38 | **基线 demo screening 的 PDB 引用悬空**（预存 F4）：RMSD 轴需真实产出——服务端 400 "needs a linked PDB file on disk" 诚实报错；参考选择器只查 pdbPath 不查磁盘存在（P2-8） | UX | I 线 |
 | 39 | **参考 rmsd=0 锚定域**（设计取舍）：参考参与 metricDefs 域计算（min=0 恒定）→ 其余候选归一化区间被压扁 + 参考 rmsd 轴恒满分。chip 明示 + "与参考相似度"排序语义下可辩，但可考虑把参考排除出域计算 | 科研语义 | I 线（可选项） |
+| 40 | **barrel 副作用注册模式**：直接 import 子模块（skills/registry）绕过 barrel 的 `import "./catalog"` 副作用 → 注册表空、零报错静默失效。教训：**有副作用注册的中心化模块，消费方一律从 barrel 导入**；客户端安全子集（prompt/types）例外直连防服务端模块进 client bundle | 架构 | 已修复（e2e 实证 18/18） |
+| 41 | **Prisma schema 变更后运行中 dev server 持旧 client**：新模型 db.x undefined → 500。既有纪律 #20 的强化实例：**db push 后必须 daemon 重启**（不依赖报错发现） | 运维 | 已遵守 |
+| 42 | **流式 SSE done 事件字段丢失**：chat-stream 泳道执行的 toolCalls 只在持久化后 refetch 可见（done 处理器只 merge content/messageId）——新执行的操作卡片对用户不可见。修复：done 全字段合并 | UX | 已修复（e2e 实证卡片即时出现） |
 
 ## I 线 — RMSD 轴打磨与遗留收口（P1，下一阶段建议）
 
@@ -87,6 +110,20 @@
 4. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
    建议独立分支推进。
 5. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
+
+## K 线 — Skill 层运营化（P2，J 线后续建议）
+
+1. **技能使用分析**：SkillInvocation 聚合视图（按 skill/source/agent 的成功率、P50/P95
+   延迟、denied/invalid 趋势）——面板 Activity Tab 已有原始流，缺聚合统计卡。
+2. **智能体维度资格编辑直达**：Activity 中 denied 行一键跳转该 agent 的编辑对话框
+   （知识开关就在那里）——闭环门控反馈环。
+3. **技能级速率与配额**：runSkill 管道加 per-agent 简单速率限制（技能滥用防护，
+   web.search 尤其）。
+4. **动态技能注册 API**：POST /api/skills 注册自定义技能（handler 白名单模板或外部
+   webhook URL）——当前注册表仅代码内静态注册。
+5. **comp 技能在流式泳道的异步入队**：慢技能当前直接 skip，可改为入 ToolJob 队列后回
+   推卡片（策略泳道统一）。
+6. **审计保留策略**：SkillInvocation 定期归档/清理（SQLite 体积治理）+ 筛选视图分页游标。
 
 ## 验收标准（延续并扩充）
 
@@ -120,3 +157,9 @@
 - 收尾必查：`bun run lint` 零告警、`tsc --noEmit`（src/ + scripts/ + mini-services）零新增、
   dev.log 无运行时错误、**console 无警告（含 React 受控切换类）**、e2e 截图 VLM 复核
   （截图前断言目标 UI 在 DOM）。
+- **有副作用注册的中心化模块（如 skill 注册表）消费方一律从 barrel 导入**（#40：直连子
+  模块绕过副作用 → 注册表空、零报错静默失效）；**Prisma schema 变更（db push）后必须
+  daemon 重启 dev server**（#41，#20 强化）。
+- **新增智能体操作路径必须走 runSkill 管道**（J 线后）：声明 SkillDefinition（含参数 schema
+  + requires）→ 注册进 catalog → 不得手写旁路执行器；专门执行器（集群/队列）必须至少
+  recordSkillInvocation 落审计表。

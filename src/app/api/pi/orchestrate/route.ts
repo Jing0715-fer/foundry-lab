@@ -18,12 +18,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { toAgentDTO } from "@/lib/run-utils";
 import { chat, type ChatMessage } from "@/lib/llm";
+import { runSkill } from "@/lib/skills";
 // nodeSpec is the single source of truth for valid canvas node types
 // (NODE_SPECS — agents + tasks + every comp tool + biotool + input/output).
 import { nodeSpec } from "@/lib/workflow-catalog";
-// Same cycle/duplicate helpers POST /api/workflow/edges uses — the PI's
-// emitted edges must pass the exact same graph invariants as user-drawn ones.
-import { wouldCreateCycle } from "@/lib/canvas-utils";
 
 export const runtime = "nodejs";
 
@@ -82,8 +80,9 @@ export async function POST(request: NextRequest) {
       { status: 404 },
     );
   }
-  // Build a typed DTO (also validates the knowledge JSON parses).
-  void toAgentDTO(piAgent);
+  // Build a typed DTO (also validates the knowledge JSON parses) — kept as
+  // the skill-context agent so PI canvas mutations carry attribution.
+  const piAgentDTO = toAgentDTO(piAgent);
 
   // Fetch current workflow state to give the PI context.
   const workflow = await db.workflow.findUnique({
@@ -214,17 +213,17 @@ Be concise in your prose. Put the structured plan + actions in the JSON block. A
     }
   }
 
-  // Execute the actions server-side (create nodes, edges).
-  // run_workflow is returned to the frontend so it can refresh the canvas
-  // and then trigger the workflow run via POST /api/workflow/run.
+  // Execute the actions server-side (create nodes, edges) — every mutation
+  // flows through the canvas.* skills (J lane), gaining the SAME validation,
+  // invariants (duplicate/cycle checks), and audit rows as every other agent
+  // operation. run_workflow is returned to the frontend so it can refresh
+  // the canvas and then trigger the workflow run via POST /api/workflow/run.
   const executedActions: PiAction[] = [];
   const nodeNameToId = new Map<string, string>();
   // Seed the map with existing node names → ids so create_edge can find them.
   for (const n of workflow.nodes) nodeNameToId.set(n.name, n.id);
   // Live edge list (existing + newly created) for duplicate + cycle checks —
-  // the same invariants POST /api/workflow/edges enforces for user-drawn
-  // edges, checked BEFORE creating (the old path only caught duplicates via
-  // the DB unique constraint and never checked cycles at all).
+  // shared mutable state threaded through the skill context.
   const liveEdges: { fromNodeId: string; toNodeId: string; fromPort: string | null; toPort: string | null }[] =
     workflow.edges.map((e) => ({
       fromNodeId: e.fromNodeId,
@@ -242,108 +241,58 @@ Be concise in your prose. Put the structured plan + actions in the JSON block. A
         ) {
           continue;
         }
-        // Skip if a node with the same name already exists — the PI may
-        // accidentally re-emit the same create_node in a follow-up turn.
-        if (nodeNameToId.has(action.nodeName)) {
-          executedActions.push(action);
-          continue;
-        }
-        // Resolve agent refId by title. The PI's prompt asks for
-        // nodeRefTitle as a top-level field, but the LLM occasionally
-        // nests it inside params — check both as a robustness fallback.
-        let refId: string | null = null;
-        const refTitle =
-          action.nodeType === "agent"
-            ? (action.nodeRefTitle ??
-              (action.params as { nodeRefTitle?: string } | undefined)
-                ?.nodeRefTitle)
-            : undefined;
-        if (refTitle) {
-          const agent = await db.agent.findFirst({
-            where: { title: refTitle },
-          });
-          if (agent) refId = agent.id;
-        }
-        // Position nodes in a grid — column based on order, row based on count.
-        const existingCount = nodeNameToId.size;
-        const col = Math.floor(existingCount / 4);
-        const row = existingCount % 4;
-        const x = 80 + col * 320;
-        const y = 80 + row * 170;
-        const node = await db.node.create({
-          data: {
-            workflowId,
-            type: action.nodeType,
-            name: action.nodeName,
-            x,
-            y,
-            refId,
-            params: action.params
-              ? JSON.stringify(action.params)
-              : "{}",
-            status: "idle",
+        // Skill handles: nodeSpec validation, existing-name idempotent no-op,
+        // agent refId resolution (nodeRefTitle top-level OR nested in params),
+        // grid positioning, and the audit row.
+        const res = await runSkill(
+          "canvas.create_node",
+          {
+            nodeType: action.nodeType,
+            nodeName: action.nodeName,
+            ...(action.nodeRefTitle ? { nodeRefTitle: action.nodeRefTitle } : {}),
+            ...(action.params && typeof action.params === "object"
+              ? { params: action.params }
+              : {}),
           },
-        });
-        nodeNameToId.set(node.name, node.id);
-        executedActions.push(action);
-      } else if (action.type === "create_edge") {
-        const fromId = action.fromNodeName
-          ? nodeNameToId.get(action.fromNodeName)
-          : undefined;
-        const toId = action.toNodeName
-          ? nodeNameToId.get(action.toNodeName)
-          : undefined;
-        if (!fromId || !toId) {
-          // Skip silently — the PI may reference a node name we don't have.
-          continue;
-        }
-        const fromPort = action.fromPort ?? null;
-        const toPort = action.toPort ?? null;
-        // Duplicate check (same from/to/ports) — same rule as the edges route.
-        const dup = liveEdges.some(
-          (e) =>
-            e.fromNodeId === fromId &&
-            e.toNodeId === toId &&
-            (e.fromPort ?? null) === fromPort &&
-            (e.toPort ?? null) === toPort,
+          {
+            source: "canvas",
+            agent: piAgentDTO,
+            workflowId,
+            extras: { workflowId, nodeNameToId, liveEdges },
+          },
         );
-        if (dup) {
+        if (res.status === "ok") {
+          executedActions.push(action);
+        } else {
           console.warn(
-            `[pi-orchestrate] skipping duplicate edge ${action.fromNodeName} → ${action.toNodeName}`,
+            `[pi-orchestrate] ${res.skillId} — ${res.error}`,
           );
-          continue;
         }
-        // Cycle check — same rule (and same helper) as the edges route, run
-        // BEFORE creating so a cyclic PI plan can never reach the DB.
-        if (
-          wouldCreateCycle(
-            liveEdges.map((e) => ({
-              fromNodeId: e.fromNodeId,
-              toNodeId: e.toNodeId,
-            })),
-            fromId,
-            toId,
-          )
-        ) {
-          console.warn(
-            `[pi-orchestrate] skipping edge ${action.fromNodeName} → ${action.toNodeName} (would create a cycle)`,
-          );
-          continue;
-        }
-        // The Edge model's unique constraint on
-        // [workflowId, fromNodeId, toNodeId, fromPort, toPort] stays as the
-        // last-resort belt (races) — caught below.
-        await db.edge.create({
-          data: {
-            workflowId,
-            fromNodeId: fromId,
-            toNodeId: toId,
-            fromPort,
-            toPort,
+      } else if (action.type === "create_edge") {
+        const res = await runSkill(
+          "canvas.create_edge",
+          {
+            fromNodeName: action.fromNodeName ?? "",
+            toNodeName: action.toNodeName ?? "",
+            ...(action.fromPort ? { fromPort: action.fromPort } : {}),
+            ...(action.toPort ? { toPort: action.toPort } : {}),
           },
-        });
-        liveEdges.push({ fromNodeId: fromId, toNodeId: toId, fromPort, toPort });
-        executedActions.push(action);
+          {
+            source: "canvas",
+            agent: piAgentDTO,
+            workflowId,
+            extras: { workflowId, nodeNameToId, liveEdges },
+          },
+        );
+        if (res.status === "ok") {
+          executedActions.push(action);
+        } else {
+          // Duplicate / cycle / unknown-node — recorded in the audit log;
+          // one bad action must not abort the rest of the plan.
+          console.warn(
+            `[pi-orchestrate] ${res.skillId} — ${res.error}`,
+          );
+        }
       } else if (action.type === "run_workflow") {
         // Don't run here — return the action so the frontend can trigger it
         // after refreshing the canvas (so the user sees the new nodes first).

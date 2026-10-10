@@ -9,6 +9,11 @@ async function getClient() {
   return _zai;
 }
 
+/** Shared ZAI client for server-side SDK consumers (web-search skill, …). */
+export function getZaiClient() {
+  return getClient();
+}
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;

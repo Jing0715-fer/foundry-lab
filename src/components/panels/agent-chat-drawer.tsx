@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
-import { Loader2, Send, Trash2, Wrench, Database, type LucideIcon } from "lucide-react";
+import { Loader2, Send, Trash2, Wrench, Database, Globe, type LucideIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -179,6 +179,14 @@ export function AgentChatDrawer({
                 if (typeof data.content === "string") {
                   accumulated = data.content;
                   patchPlaceholder({ content: accumulated });
+                }
+                // J lane: the stream route executes skills during the turn and
+                // returns the invocation cards on done — merge them so the
+                // user sees the executed skill without a refetch.
+                if (Array.isArray(data.toolCalls) && data.toolCalls.length > 0) {
+                  patchPlaceholder({
+                    toolCalls: data.toolCalls as ChatMessageDTO["toolCalls"],
+                  });
                 }
                 if (typeof data.messageId === "string") {
                   patchPlaceholder({ id: data.messageId });
@@ -397,7 +405,8 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
 
 function ToolCallCard({ call }: { call: ToolCall }) {
   const isComp = call.kind === "comp";
-  const Icon: LucideIcon = isComp ? Wrench : Database;
+  const isWeb = call.kind === "web";
+  const Icon: LucideIcon = isComp ? Wrench : isWeb ? Globe : Database;
   const resultText = call.result ?? "";
   const truncated = resultText.length > 240 ? resultText.slice(0, 240) + "…" : resultText;
   const statusPill =
@@ -413,7 +422,7 @@ function ToolCallCard({ call }: { call: ToolCall }) {
       <div className="mb-1 flex items-center gap-1.5 font-medium">
         <Icon className="size-3.5 text-muted-foreground" />
         <span className="uppercase tracking-wide text-muted-foreground">{call.kind}</span>
-        <span className="font-mono">{call.tool}</span>
+        <span className="font-mono">{call.skillId ?? call.tool}</span>
         {call.status && (
           <span
             className={`ml-auto inline-flex items-center rounded-md px-1.5 py-0.5 text-[10px] font-medium uppercase ${statusPill}`}

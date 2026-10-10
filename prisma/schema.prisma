@@ -237,6 +237,37 @@ model Edge {
   @@index([workflowId])
 }
 
+// ─── Skill layer (J lane: agent-operation standardization) ──────────────────
+// Unified audit log for EVERY agent operation. One row per invocation flowing
+// through the skill pipeline (runSkill: validate → gate → execute → audit) or
+// recorded by specialized executors (workflow engine comp nodes, REST tool
+// runs) via recordSkillInvocation. This is the single observability surface
+// for what agents actually did — previously comp/bio/PI-canvas operations were
+// scattered across ChatMessage.toolCalls JSON / ToolJob / nothing at all.
+model SkillInvocation {
+  id            String   @id @default(cuid())
+  // Registry id, e.g. "comp.rfdiffusion" | "bio.blast" | "web.search" | "canvas.create_node"
+  skillId       String
+  // chat | chat-stream | workflow | canvas | api | task | meeting | research
+  source        String
+  // FK-less (agents can be deleted) — same defensive pattern as Screening.rmsdRefId.
+  agentId       String?
+  // Denormalized for display when the agent row is gone.
+  agentTitle    String?
+  workflowId    String?
+  nodeId        String?
+  // ok | error | denied | invalid | skipped
+  status        String
+  params        String   // JSON (post-validation)
+  resultSummary String?
+  error         String?
+  durationMs    Int?
+  createdAt     DateTime @default(now())
+
+  @@index([skillId, createdAt])
+  @@index([source, createdAt])
+}
+
 // ─── Screening (large-scale result evaluation & ranking) ─────────────────────
 // A Screening is one evaluation campaign over a harvested set of design
 // candidates (PDB/FASTA artifacts + numeric metrics). Candidates come from

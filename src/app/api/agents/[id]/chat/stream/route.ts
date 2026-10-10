@@ -1,10 +1,9 @@
 import { NextRequest } from "next/server";
 import { db } from "@/lib/db";
-import { toAgentDTO } from "@/lib/run-utils";
-import { generateAgentSystemPrompt } from "@/lib/agents";
+import { toAgentDTO, buildAgentSystemPrompt, skillCallToToolCall } from "@/lib/run-utils";
 import { chatStream, type ChatMessage } from "@/lib/llm";
-import { extractToolCalls } from "@/lib/tools";
-import { runBio } from "@/lib/bio-tools";
+// Barrel import — self-registers the skill catalog (side effect).
+import { getSkill, extractSkillCalls, runSkill, skipSkill, skillFeedback } from "@/lib/skills";
 import type { ToolCall } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -30,18 +29,19 @@ export const runtime = "nodejs";
  * the OLDEST 50, so once a chat exceeded 50 turns the agent answered with
  * ancient context.)
  *
- * Tool-calling loop (pragmatic streaming version): after the first streamed
- * reply completes, parse it with the SAME extractToolCalls helper the
- * non-stream lane uses. When tool fences are present:
- *   - BIO tool calls execute immediately (fast HTTP queries) and their
- *     results are recorded as ToolCalls;
- *   - COMP tool fences are NOT executed inline (they can run for minutes —
- *     the model is told to point the user at the canvas/Tools panel);
- *   - ONE follow-up streamed completion runs with the tool results appended
+ * Skill-calling round (pragmatic streaming version, J lane): after the first
+ * streamed reply completes, parse it with extractSkillCalls (```skill + legacy
+ * ```tool / ```bio fences). Per call:
+ *   - FAST skills (bio / web) execute via runSkill — full validate → gate →
+ *     execute → audit, exactly like the non-stream lane;
+ *   - SLOW skills (comp engines, minutes) are declined by lane policy and
+ *     recorded as "skipped" SkillInvocations — visible, not invisible;
+ *   - unknown ids / invalid params return honest "invalid" envelopes;
+ *   - ONE follow-up streamed completion runs with the skill feedback appended
  *     to the conversation, streaming its deltas into this same SSE response
  *     (what the user sees = exactly what gets persisted);
- *   - the parsed+executed toolCalls are persisted on the assistant message
- *     so the chat UI renders them like the non-stream lane's.
+ *   - the invocation results are persisted on the assistant message as
+ *     ToolCalls so the chat UI renders them like the non-stream lane's.
  */
 export async function POST(
   request: NextRequest,
@@ -69,12 +69,9 @@ export async function POST(
   });
 
   const agentDTO = toAgentDTO(agent);
-  // System prompt = agent persona + the fine-tune dialog's saved suffix.
-  const baseSystem = generateAgentSystemPrompt(agentDTO);
-  const suffix = agentDTO.runtime?.systemPromptSuffix?.trim();
-  const system = suffix
-    ? `${baseSystem}\n\n--- Additional operator instructions ---\n${suffix}`
-    : baseSystem;
+  // System prompt = persona + live skill manifest + fine-tune suffix — the
+  // exact same builder the non-stream lane uses (single source of truth).
+  const system = buildAgentSystemPrompt(agentDTO);
   // Runtime sampling defaults (fine-tune dialog); fall back to sane values.
   const rt = agentDTO.runtime;
   const llmOpts = {
@@ -150,57 +147,38 @@ export async function POST(
         return;
       }
 
-      // ── Tool-calling round (pragmatic streaming version) ────────────────
-      // Parse the streamed reply with the same fence parser the non-stream
-      // lane uses; execute the FAST bio tools and run ONE follow-up streamed
-      // completion folding the results in. Everything streamed into this SSE
-      // response is what gets persisted (content === what the user saw).
+      // ── Skill-calling round (pragmatic streaming version) ────────────────
+      // Parse the streamed reply with the unified fence parser; execute the
+      // FAST skills and run ONE follow-up streamed completion folding the
+      // feedback in. Everything streamed into this SSE response is what gets
+      // persisted (content === what the user saw).
       const toolCalls: ToolCall[] = [];
       let content = fullText;
       try {
-        const { comp, bio } = extractToolCalls(fullText);
-        if (bio.length > 0 || comp.length > 0) {
+        const calls = extractSkillCalls(fullText);
+        if (calls.length > 0) {
           const followUps: string[] = [];
-          for (const b of bio) {
-            try {
-              const res = await runBio(
-                b.type as "blast" | "pdb" | "pubmed" | "uniprot",
-                b as Record<string, unknown>,
-              );
-              const summary = res.hits
-                .map((h) => `- ${h.id}: ${h.title}`)
-                .join("\n");
-              toolCalls.push({
-                kind: "bio",
-                tool: b.type,
-                params: b as Record<string, unknown>,
-                result: summary,
-                status: "completed",
-              });
-              followUps.push(
-                `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,
-              );
-            } catch (e) {
-              toolCalls.push({
-                kind: "bio",
-                tool: b.type,
-                params: b as Record<string, unknown>,
-                result: `Error: ${(e as Error).message}`,
-                status: "failed",
-              });
-              followUps.push(
-                `[Bio tool ${b.type} failed: ${(e as Error).message}]`,
-              );
-            }
-          }
-          if (comp.length > 0) {
-            // Comp tools (real engines) can run for minutes — they are NOT
-            // executed inline in the streaming lane. Tell the model honestly
-            // so its revised answer points the user at the right surface.
-            followUps.push(
-              `[Note: ${comp.length} computational tool request(s) cannot be executed in the streaming chat lane — ` +
-                "tell the user to run them via the workflow canvas or the Tools panel.]",
-            );
+          for (const call of calls) {
+            const def = getSkill(call.skillId);
+            // Fast skills (bio/web) run inline through the full pipeline;
+            // slow skills (comp engines) are declined by lane policy and
+            // AUDITED as "skipped"; unknown ids flow through runSkill and
+            // get honest "invalid" envelopes (hallucinations become visible).
+            const res =
+              !def || def.latency === "fast"
+                ? await runSkill(call.skillId, call.params, {
+                    source: "chat-stream",
+                    agent: agentDTO,
+                  })
+                : await skipSkill(
+                    call.skillId,
+                    "Slow engine skills are not executed in the streaming chat " +
+                      "lane — tell the user to run them via the workflow canvas " +
+                      "or the Tools panel.",
+                    { source: "chat-stream", agent: agentDTO },
+                  );
+            toolCalls.push(skillCallToToolCall(call, res));
+            followUps.push(skillFeedback(res));
           }
 
           // ONE follow-up streamed completion with the tool results appended.

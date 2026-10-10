@@ -91,6 +91,13 @@ python3 .zscripts/daemon-run.py /home/z/my-project <日志文件> \
   `src/app/api/workflow/nodes/[id]/stop/route.ts`（用户中止）的注释 ——
   **执行通道任何新增写点必须条件化**（`where status="running"`）：
   Stop/看门狗落定的行不可被迟到引擎结果复活（不变量，见 ROADMAP 验收标准）。
+- **新增智能体操作（工具调用/画布变更/外部查询）必须走 skill 层**（J 线后）：
+  在 `src/lib/skills/catalog.ts` 声明 `SkillDefinition`（参数 schema + `requires`
+  + handler），不要手写旁路执行器；专门执行器（集群/ToolJob 队列）保留自己的基底但
+  必须调 `recordSkillInvocation` 落统一审计表。**服务端消费方一律从
+  `@/lib/skills` barrel 导入**（直连子模块会绕过 catalog 副作用注册 → 注册表空、
+  零报错静默失效）；客户端只能直连 `skills/prompt.ts` / `skills/types.ts`
+  （零服务端依赖的客户端安全子集）。
 
 ## 集群通道 e2e（G 线，可复现）
 
