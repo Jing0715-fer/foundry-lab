@@ -3966,3 +3966,42 @@ Work Log:
 
 Stage Summary:
 - H 线完成"开发（37）→ QA 审查（38-a）→ 修复（38-b）→ 浏览器级 e2e 含真实引擎与真实键盘（39）→ 按测试结果重写 roadmap"全闭环；9 项新测试结论（3 个修复模式 + 3 条 e2e 工程经验 + 2 个语义取舍 + 1 个预存发现）固化；下一阶段（I 线 RMSD 轴打磨 + 遗留收口）以 39 项测试结论为据。
+
+---
+Task ID: J6-a
+Agent: full-stack-developer (subagent)
+Task: Skills observability panel UI (registry browser + audit log)
+
+Work Log:
+- 前置：读 worklog 尾部（Task 36–40 H 线收口；J 线 skill 层后端已交付）+ research-panel/agents-panel/empty-state/sidebar/page/store 既有模式；curl 实证两条 J 线 API（/api/skills 18 技能 4 族；/api/skills/invocations 有 Gate Test 审计行）。
+- 新建 src/components/panels/skills-panel.tsx（"use client"，Card/Badge/Button/Input/Tabs shadcn，EmptyState + PanelSkeleton，本地 timeAgo；本地 wire DTO 镜像——不 import 服务端 src/lib/skills/*，Prisma 模块零客户端 bundle 泄漏）：
+  - Tabs "Registry" | "Activity"。
+  - Registry：mount 拉 /api/skills，PanelSkeleton 加载态、EmptyState 错误态 + Retry；客户端搜索（id/label/description）；按族分组 comp/bio/web/canvas（teal/amber/violet/pink 药丸头 + 计数）；技能行 font-mono id + label + latency 徽章（fast=emerald/slow=amber）+ requires 徽章 + 防御性 eligible 徽章（仅字段在场时渲染）；点击展开 aliases + 参数文档（key:type 等宽 + required 标记 + default + min/max + 描述）+ example JSON。零 indigo/blue。
+  - Activity：mount 拉 /api/skills/invocations?limit=50 + Refresh 按钮；行 = font-mono skillId + 状态药丸（ok=emerald/error=rose/denied=amber/invalid=slate/skipped=slate 虚线边）+ 大写 source 徽章 + agentTitle 徽章 + durationMs（503ms/1.2s 格式）+ timeAgo + 截断可展开 resultSummary/error（error 走 rose）+ 可折叠 params JSON 视图；长列表模式 max-h-[calc(100vh-220px)] overflow-y-auto（细滚动条走全局 CSS）；空态文案说明所有 agent 操作（chat 工具调用/工作流节点/PI 画布编辑/REST 运行）都被审计 + 建议跑一次带 bio 查询的 agent chat。
+- 接线三处：store.ts activePanel 联合类型 + "skills"；sidebar.tsx NAV_ITEMS 在 research 后插 `{ key: "skills", label: "Skills", icon: Zap }`（lucide 导入 Zap）；page.tsx 在 research 行旁加渲染条件 + import。
+- 验证：GET / 200（编译干净）、两条 API 200、dev.log 无编译错误；浏览器级（agent-browser，精确点 "Skip tour" 关闭导览避免污染）：导航 Skills 位于 Research 与 AlphaFold 之间；Registry 18/18（comp=11 计数）、搜索 "blast" → 1 of 18、展开 bio.blast 出 4 条参数行（sequence:string required）；Activity 4 条调用（invalid/denied/ok 状态、CHAT/API 来源、503ms 时长、6m ago、params JSON 展开 {"query":"lysozyme","maxResults":5}）；console 零警告零 page error；移动端 375×812 侧栏折叠为图标且 Skills 可见；bun run lint 零告警；bunx tsc --noEmit src/ 零错误（仅 examples/ + skills/ 4 条预存）。
+- 附 agent-ctx/J6-a-full-stack-developer.md 工作记录。
+
+Stage Summary:
+- Skills 可观测面板双 Tab（Registry 目录浏览器 + Activity 审计日志）端到端跑通真实 J 线后端；三处接线（store/sidebar/page）零回归（lint + tsc + dev.log + console 全绿）。
+
+---
+Task ID: 41 (J lane: J1–J5, J7, J8, J9 — main-orchestrator)
+Agent: main-orchestrator (Z.ai Code)
+Task: 用户提问"agent 层是否有 skill 机制、应将所有 agent 操作 skill 标准化" → 摸底（8 条并行协议、3 个结构性缺陷）→ 设计并实现统一 Skill 标准化层 → 全链路集成 → 浏览器级 e2e → 基线纪律
+
+Work Log:
+- **摸底结论（回答用户问题）**：agent 层原无任何 skill 机制（src/ 全仓 grep "skill" 零命中）。8 条互不复用的操作协议：① ```tool fence→runAgentTurn→executeCompToolReal（验证仅 getCompTool 存在性，审计仅 ChatMessage.toolCalls JSON）；② ```bio fence→runBio（无参数验证）；③ chat-stream 复制了一份执行循环；④ REST /api/tools/run（ToolJob 表，最完备）；⑤ workflow-engine 直接调 executeCompToolReal/runBio；⑥ PI ```actions fence（零审计）；⑦ **webSearchEnabled 在 prompt 里被宣传但完全没有执行路径（假能力）**；⑧ meeting/research 复用 runAgentTurn。三个结构性缺陷：能力门控只在 prompt 文案层、执行层不强制（关掉 bioTools 后模型发 fence 照样执行）；prompt 文案与执行层手工双维护会漂移；无统一 invocation 审计。
+- **J1 核心层**：`src/lib/skills/`（types/registry/runner/catalog/prompt/fences/index）——SkillDefinition（id/family/params schema/requires/handler/latency）+ runSkill 单一执行管道（resolve→validate（类型强转+min/max 钳制+必填/默认）→gate（执行层强制 bioToolsEnabled/webSearchEnabled，ctx.agent 存在时）→execute（异常归一化）→audit（best-effort，DB 故障不断操作））+ skipSkill（泳道策略拒绝，status "skipped"）+ recordSkillInvocation（专门执行器审计钩子）。Prisma 新增 SkillInvocation 表（skillId/source/agentId+agentTitle 冗余/workflowId/nodeId/status(ok|error|denied|invalid|skipped)/params/resultSummary/error/durationMs + 双索引），db:push。
+- **J1 目录**：18 内置技能 4 族——comp.*（11 个，参数 schema 从 COMP_TOOLS.paramFields 派生 = 与工具表单同源永不漂移）、bio.*（4）、web.search（z-ai-web-dev-sdk functions.invoke("web_search")，llm.ts 导出 getZaiClient 共享实例）、canvas.create_node/create_edge（nodeSpec 校验+agent refId 解析+网格定位+重名幂等 no-op / 重边+环检查+live 边表，extras 携带 nodeNameToId Map+liveEdges 可变共享态）。
+- **J2 统一协议**：```skill {"skill":"…","params":{…}} 新协议 + ```tool/```bio/```web 旧围栏全部归一（fences.ts 上下文感知解析：bio 围栏→bio.* 前缀、tool→comp.*、未知名不静默丢弃而是走 runSkill 得 invalid 信封→幻觉可见）。extractSkillCalls + skillFeedback（ok/error/denied/invalid/skipped 五态全反馈，denied 文案指导模型告知用户去设置里开权限）。runAgentTurn 重写工具循环（每 call 走 runSkill，AgentRunOptions.source/skillCtx 归因）；chat-stream 泳道重写（fast 内联执行/slow skipSkill 审计）；agents.ts generateAgentSystemPrompt 删除手写 fence 文档（persona-only 化）→ buildAgentSystemPrompt（run-utils，导出共享）注入 renderSkillManifest（registry 实时渲染，与执行门控同规则）；ToolCall 扩展 kind "web"+skillId；chat 抽屉 ToolCallCard Globe 图标+skillId 优先显示 + **修复：done 事件此前丢弃 toolCalls（流式执行卡片要 refetch 才可见）→ 补 merge**。
+- **J3 全链路集成**：workflow-engine agent 节点（source "workflow"+node/workflow 归因）、biotool 节点走 runSkill（保持失败即红节点语义）、comp 节点保持专门执行器（集群路由+auto-wire+##OUTPUTS##）但 recordSkillInvocation 统一审计（__inputs 剥离防超大行）；pi/orchestrate create_node/create_edge 改走 canvas.* 技能（预校验 400 事务性保留，执行去技能化=同验证同不变量同审计，PI DTO 归因）；/api/bio-tools/:type 走 runSkill（legacy BioResult 响应形不变，invalid→400/denied→403/error→502）；/api/tools/run ToolJob 泳道加 recordSkillInvocation（agent 归因最小 {id,title} 投影）；tasks/meetings/research 源归因。
+- **J5 观测 API**：GET /api/skills（SkillCatalogEntry[] 序列化投影，?agentId= 附 eligible——与执行门控同规则）+ GET /api/skills/invocations（limit/skillId/agentId/source/status 过滤，新→旧）。
+- **关键坑（工程经验）**：① 侧栏导入 vs barrel 导入——路由直接 import "@/lib/skills/registry" 绕过 catalog 副作用注册 → registry 空（/api/skills 返回 []）；修复：所有服务端消费方统一 barrel "@/lib/skills"（package.json 无 sideEffects 声明，webpack 保留副作用导入）；客户端安全子集（prompt.ts/types.ts 零服务端依赖）仍直接导入防 Prisma 进 client bundle。② prisma db push 后运行中的 dev server 持旧 client → db.skillInvocation undefined 500：必须 daemon-run.py 重启（既定纪律 #20 的又一实例）。
+- **J6-a（子代理 full-stack-developer）**：skills-panel.tsx（Registry/Activity 双 Tab、族分组+计数、latency/requires 徽章、可展开参数文档、搜索过滤、调用行含状态/源/agent/时长/时间戳/可展开 params）+ store activePanel union + sidebar NAV_ITEMS（Zap 图标，Research 后）+ page.tsx 渲染条件；DTO 本地镜像防服务端模块进 client 包；其自验含浏览器级（18/18、搜索 1/18、展开 4 参数行、mobile 375 折叠）。
+- **J7 基线纪律**：停服 → 字段级核对（My First 14/12 + Antibody 5/3 + toolJobs 16 + 3 screening 86 候选 + rmsdRefId 全 None + chatMessages 12）→ 4 条冒烟测试 SkillInvocation 清零 → demo:snapshot 重冻（基线=纯净演示数据+新空表）→ daemon 重启。
+- **J8 浏览器级 e2e（agent-browser）**：Skip tour 精确点击（#35-37 教训遵守）→ Skills 导航（Research 与 AlphaFold 之间）→ Registry 18/18 四族渲染（COMP 11/BIO 4/WEB 1/CANVAS 2）+ 搜索 "web"→1 of 18 → **金路径：Bioinformatician 聊天 → 真模型发出新协议 ```skill {"skill":"bio.pdb","params":{"query":"lysozyme","maxResults":10}} → 真 RCSB 10 hits → 结果折叠进回复 → ToolCallCard DOM 实证 bio|bio.pdb|completed**；第二条消息 → **web.search 首次真实执行（ZAI SDK→5 results→折叠进回复）且 done.toolCalls 修复实证（卡片即时出现无需 refetch）** → Activity Tab 两行调用（web.search ok 1.3s / bio.pdb ok 489ms，CHAT-STREAM 源+Bioinformatician 归因+可展开摘要/参数）→ API 侧审计行核对一致 → mobile 375×812（nav 56px 折叠、15 按钮可见）→ footer 贴底 → console/errors 零告警 → 截图 docs/images/28-skills-panel.png + 29-skills-activity-mobile.png → **e2e 后基线恢复（demo:fresh+重启）字段级复核全一致 + invocations 0**。
+- **管道级单测（throwaway 脚本，不入库）**：denied（bioToolsEnabled=false 仍发 fence → 执行层拒绝+审计）/ invalid（pubmed 缺 query → "missing required param"）/ unknown（bio.weirdtool → 诚实 invalid）/ 旧围栏归一（```tool→comp.rfdiffusion、```bio→bio.blast）/ 新围栏+裸键解析全通过。
+
+Stage Summary:
+- 用户问题的答案从"没有"变为"有"：18 技能 4 族单一注册表 + 单一执行管道 + 单一审计表 + 单一 prompt 清单，8 条历史协议全部收敛（旧围栏向后兼容），web.search 假能力补真。三门控语义全部执行层强制；流式泳道策略拒绝可见化（skipped 状态）；幻觉技能名进审计。浏览器级金路径（真模型+真 API+真审计+真 UI 卡片）+ 移动端 + console 零告警全过；基线纪律遵守（重冻+恢复+字段级核对）。新工程教训 2 条（barrel 副作用注册、db push 后必须重启）固化于本条目。

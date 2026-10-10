@@ -89,7 +89,7 @@ export async function POST(
       const { text } = await runAgentTurn(
         agent,
         [{ role: "user", content: task.prompt }],
-        { temperature: 0.7, maxRounds: 2 },
+        { temperature: 0.7, maxRounds: 2, source: "task" },
       );
       responses.push({ name: agent.title, text });
     }

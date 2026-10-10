@@ -17,6 +17,7 @@ import { AgentsPanel } from "@/components/panels/agents-panel";
 import { TasksPanel } from "@/components/panels/tasks-panel";
 import { MeetingsPanel } from "@/components/panels/meetings-panel";
 import { ResearchPanel } from "@/components/panels/research-panel";
+import { SkillsPanel } from "@/components/panels/skills-panel";
 import AlphaFoldPanel from "@/components/panels/alphafold-panel";
 import { ScreeningPanel } from "@/components/panels/screening-panel";
 import { ToolsPanel } from "@/components/panels/tools-panel";
@@ -361,6 +362,7 @@ export default function Home() {
           {activePanel === "tasks" && <div className="min-h-0 flex-1 overflow-y-auto"><TasksPanel /></div>}
           {activePanel === "meetings" && <div className="min-h-0 flex-1 overflow-y-auto"><MeetingsPanel /></div>}
           {activePanel === "research" && <div className="min-h-0 flex-1 overflow-y-auto"><ResearchPanel /></div>}
+          {activePanel === "skills" && <div className="min-h-0 flex-1 overflow-y-auto"><SkillsPanel /></div>}
           {activePanel === "alphafold" && <div className="min-h-0 flex-1 overflow-y-auto"><AlphaFoldPanel /></div>}
           {activePanel === "screening" && <div className="min-h-0 flex-1 overflow-y-auto"><ScreeningPanel /></div>}
         </main>

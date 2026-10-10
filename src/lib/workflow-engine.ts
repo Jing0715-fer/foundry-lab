@@ -11,7 +11,7 @@ import {
   executeCompTool,
   extractClusterTarget,
 } from "@/lib/run-utils";
-import { runBio } from "@/lib/bio-tools";
+import { runSkill, recordSkillInvocation } from "@/lib/skills";
 import { parseFastaInput } from "@/lib/tools";
 import type {
   NodeDTO,
@@ -421,7 +421,12 @@ export async function executeNode(
           : [{ role: "user" as const, content: fallbackPrompt }];
         // No explicit temperature — the agent's saved runtime config
         // (fine-tune dialog) supplies the default inside runAgentTurn.
-        const { text, toolCalls } = await runAgentTurn(agent, history, {});
+        // J lane: workflow attribution — skill invocations from this turn
+        // land in the audit log with source "workflow" + node/workflow ids.
+        const { text, toolCalls } = await runAgentTurn(agent, history, {
+          source: "workflow",
+          skillCtx: { workflowId, nodeId: node.id },
+        });
         const verbose = agent.runtime?.verbose;
         const logs = toolCalls.length > 0
           ? (verbose
@@ -530,12 +535,31 @@ export async function executeNode(
           workflowId,
           filtered,
         );
+        const t0 = Date.now();
         const { summary, stdout, files, exitCode, pollCeiling } =
           await executeCompTool(
             toolKey,
             filtered,
             clusterTarget ? { cluster: clusterTarget } : {},
           );
+        // J lane: unified audit — comp nodes keep their specialized executor
+        // (cluster routing + auto-wiring + ##OUTPUTS## protocol) but every
+        // run lands in the SAME SkillInvocation table as chat-lane calls.
+        // __inputs is stripped from the audited params (can be huge).
+        const { __inputs: _ai, ...auditParams } = filtered;
+        await recordSkillInvocation({
+          skillId: `comp.${toolKey}`,
+          source: "workflow",
+          status: pollCeiling ? "ok" : exitCode !== 0 ? "error" : "ok",
+          params: auditParams,
+          summary: pollCeiling ? `${summary} (remote job still running)` : summary,
+          ...(exitCode !== 0 && !pollCeiling
+            ? { error: `Tool failed (exit ${exitCode})` }
+            : {}),
+          durationMs: Date.now() - t0,
+          workflowId,
+          nodeId: node.id,
+        });
         // ##OUTPUTS## trailer: the built-in engines print it themselves, native
         // upstream tools do not — append it from the executor's file list so
         // the inspector's Outputs button works for BOTH executors.
@@ -597,12 +621,28 @@ export async function executeNode(
           workflowId,
           filtered,
         );
+        const t0 = Date.now();
         const { summary, stdout, files, exitCode, pollCeiling } =
           await executeCompTool(
             toolKey,
             filtered,
             clusterTarget ? { cluster: clusterTarget } : {},
           );
+        // J lane: unified audit — same rule as the alphafold branch above.
+        const { __inputs: _ai, ...auditParams } = filtered;
+        await recordSkillInvocation({
+          skillId: `comp.${toolKey}`,
+          source: "workflow",
+          status: pollCeiling ? "ok" : exitCode !== 0 ? "error" : "ok",
+          params: auditParams,
+          summary: pollCeiling ? `${summary} (remote job still running)` : summary,
+          ...(exitCode !== 0 && !pollCeiling
+            ? { error: `Tool failed (exit ${exitCode})` }
+            : {}),
+          durationMs: Date.now() - t0,
+          workflowId,
+          nodeId: node.id,
+        });
         // Same ##OUTPUTS## trailer + honest status as the alphafold branch above.
         const body = files.length
           ? `${stdout}\n##OUTPUTS## ${JSON.stringify(files)}\n`
@@ -634,18 +674,25 @@ export async function executeNode(
         const query =
           (node.params.query as string | undefined) || inputs || "";
         const maxResults = Number(node.params.maxResults ?? 5);
-        const res = await runBio(bioKey, { query, maxResults });
-        const summary =
-          `${res.count} hits from ${bioKey.toUpperCase()}` +
-          `${res.error ? ` — ${res.error}` : ""}:\n` +
-          res.hits.map((h) => `- ${h.id}: ${h.title}`).join("\n");
+        // J lane: biotool nodes execute through the skill pipeline — same
+        // validation + audit as every other skill invocation in the system.
+        const skillRes = await runSkill(`bio.${bioKey}`, { query, maxResults }, {
+          source: "workflow",
+          workflowId,
+          nodeId: node.id,
+        });
+        const summary = skillRes.status === "ok" ? skillRes.summary : (skillRes.error ?? skillRes.summary);
         return {
-          result: JSON.stringify(res.hits, null, 2),
+          result: JSON.stringify(
+            skillRes.status === "ok" ? (skillRes.data as { hits: unknown[] }).hits : [],
+            null,
+            2,
+          ),
           // Keep the error text in logs, but don't paint the node green —
           // an API failure is a failed node (the NodeStatus union's error
           // state is "failed"), not a completed one.
           logs: summary,
-          status: res.error ? "failed" : "completed",
+          status: skillRes.status === "ok" ? "completed" : "failed",
         };
       }
 

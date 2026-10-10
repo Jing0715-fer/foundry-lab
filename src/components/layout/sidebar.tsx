@@ -17,6 +17,7 @@ import {
   TerminalSquare,
   Users,
   X,
+  Zap,
   type LucideIcon,
 } from "lucide-react";
 
@@ -54,6 +55,7 @@ const NAV_ITEMS: NavItem[] = [
   { key: "tasks", label: "Tasks", icon: SquarePen },
   { key: "meetings", label: "Meetings", icon: Users },
   { key: "research", label: "Research", icon: BookOpen },
+  { key: "skills", label: "Skills", icon: Zap },
   { key: "alphafold", label: "AlphaFold", icon: Boxes },
   { key: "screening", label: "Screening", icon: BarChart3 },
 ];

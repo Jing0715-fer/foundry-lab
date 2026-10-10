@@ -8,7 +8,7 @@ import {
   roundPrompt,
   summaryPrompt,
 } from "./agents";
-import { getCompTool, buildCommand, extractToolCalls, type CompToolDef } from "./tools";
+import { getCompTool, buildCommand, type CompToolDef } from "./tools";
 import { materializeSequence } from "./alphafold";
 import { executeCompToolReal } from "./real-executor";
 import { db } from "@/lib/db";
@@ -16,7 +16,19 @@ import { startClusterToolRun, reconcileClusterJobs, getRun } from "./cluster/clu
 import type { ClusterRunTarget } from "./cluster/types";
 import { resolve } from "path";
 import { mkdirSync } from "fs";
-import { runBio } from "./bio-tools";
+// Barrel import — self-registers the built-in skill catalog (side effect) so
+// getSkill/catalogEntries/extractSkillCalls all see a populated registry.
+import {
+  getSkill,
+  catalogEntries,
+  renderSkillManifest,
+  extractSkillCalls,
+  runSkill,
+  skillFeedback,
+  type SkillRunResult,
+  type SkillSource,
+  type SkillCall,
+} from "./skills";
 import type {
   AgentDTO,
   AgentRuntimeConfig,
@@ -42,6 +54,12 @@ export interface AgentRunOptions {
    * The reflected text becomes the returned `text`. Default `false` (backward-compat).
    */
   reflect?: boolean;
+  /** Audit attribution for skill invocations from this turn (default "chat").
+   *  Meetings pass "meeting", research "research", tasks "task", the workflow
+   *  engine "workflow" (+ node/workflow ids via skillCtx). */
+  source?: SkillSource;
+  /** Extra attribution for workflow-driven agent turns. */
+  skillCtx?: { workflowId?: string; nodeId?: string };
 }
 
 /** Parse an Agent row's knowledge JSON into the typed shape. */
@@ -146,12 +164,19 @@ function resolveAgentLLMOptions(
 }
 
 /** Build the agent's system prompt, appending the fine-tune dialog's
- *  systemPromptSuffix when the agent has one saved. */
-function buildAgentSystemPrompt(agent: AgentDTO): string {
+ *  systemPromptSuffix when the agent has one saved.
+ *
+ *  J lane: the skill manifest is rendered from the LIVE registry and gated on
+ *  the agent's own knowledge flags — the exact same rules runSkill enforces
+ *  at execution time. Prompt and executor can no longer disagree. Shared by
+ *  the stream + non-stream chat lanes (single source of truth). */
+export function buildAgentSystemPrompt(agent: AgentDTO): string {
   const base = generateAgentSystemPrompt(agent);
+  const manifest = renderSkillManifest(catalogEntries(), agent.knowledge);
+  const withManifest = manifest ? `${base}\n\n${manifest}` : base;
   const suffix = agent.runtime?.systemPromptSuffix?.trim();
-  if (!suffix) return base;
-  return `${base}\n\n--- Additional operator instructions ---\n${suffix}`;
+  if (!suffix) return withManifest;
+  return `${withManifest}\n\n--- Additional operator instructions ---\n${suffix}`;
 }
 
 /**
@@ -185,70 +210,31 @@ export async function runAgentTurn(
   for (let round = 0; round < maxRounds; round++) {
     const reply = await chat(convo, llmOpts);
     lastText = reply;
-    const { comp, bio } = extractToolCalls(reply);
-    if (comp.length === 0 && bio.length === 0) break;
+    // Unified protocol: ```skill fences AND legacy ```tool / ```bio fences
+    // (the parser normalizes both — stored prompts and old habits keep
+    // working, and every call gains validation + gating + audit).
+    const calls = extractSkillCalls(reply);
+    if (calls.length === 0) break;
 
     // Push the assistant reply ONCE per round (not once per tool call — the
     // old duplicated pushes made the in-convo history grow N copies of the
     // same reply whenever several fences appeared in one round).
     convo.push({ role: "assistant", content: reply });
 
-    // Execute comp tool calls (real algorithms via the execution engine).
-    for (const c of comp) {
-      const def = getCompTool(c.tool);
-      if (!def) continue;
-      const workDir = resolve(process.cwd(), "outputs", c.tool, `agent-${Date.now()}`);
-      let resultText = "";
-      let status: ToolCall["status"] = "completed";
-      try {
-        const res = await executeCompToolReal(c.tool, c.params, workDir);
-        resultText = res.stdout || res.stderr;
-        status = res.exitCode === 0 ? "completed" : "failed";
-      } catch (e) {
-        resultText = `Error: ${(e as Error).message}`;
-        status = "failed";
-      }
-      const tc: ToolCall = {
-        kind: "comp",
-        tool: c.tool,
-        params: c.params,
-        result: resultText,
-        status,
-      };
-      toolCalls.push(tc);
-      convo.push({
-        role: "user",
-        content: `[Tool result for ${c.tool}]\n${resultText}\n\nRevise your answer using these results.`,
+    // J lane: EVERY call — comp, bio, web, any family — flows through the
+    // single skill pipeline (resolve → validate → gate → execute → audit).
+    // Unknown ids, invalid params, and permission denials return honest
+    // envelopes to the model instead of being silently dropped (or, worse,
+    // executing despite the agent's knowledge flags being off).
+    for (const call of calls) {
+      const res = await runSkill(call.skillId, call.params, {
+        source: opts.source ?? "chat",
+        agent,
+        workflowId: opts.skillCtx?.workflowId,
+        nodeId: opts.skillCtx?.nodeId,
       });
-    }
-    // Execute bio tool calls.
-    for (const b of bio) {
-      try {
-        const res = await runBio(b.type as "blast" | "pdb" | "pubmed" | "uniprot", b as Record<string, unknown>);
-        const summary = res.hits
-          .map((h) => `- ${h.id}: ${h.title}`)
-          .join("\n");
-        const tc: ToolCall = {
-          kind: "bio",
-          tool: b.type,
-          params: b as Record<string, unknown>,
-          result: summary,
-          status: "completed",
-        };
-        toolCalls.push(tc);
-        convo.push({
-          role: "user",
-          content: `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,
-        });
-      } catch (e) {
-        toolCalls.push({
-          kind: "bio",
-          tool: b.type,
-          params: b as Record<string, unknown>,
-          result: `Error: ${(e as Error).message}`,
-          status: "failed",
-        });
-      }
+      toolCalls.push(skillCallToToolCall(call, res));
+      convo.push({ role: "user", content: skillFeedback(res) });
     }
   }
 
@@ -273,6 +259,24 @@ export async function runAgentTurn(
   }
 
   return { text: lastText, toolCalls };
+}
+
+/** Map a skill invocation result onto the legacy ToolCall shape the chat UI
+ *  renders (kind/tool stay compatible; skillId carries the canonical id).
+ *  Shared by the non-stream and stream chat lanes. */
+export function skillCallToToolCall(call: SkillCall, res: SkillRunResult): ToolCall {
+  const def = getSkill(call.skillId);
+  const kind: ToolCall["kind"] =
+    def?.family === "bio" ? "bio" : def?.family === "web" ? "web" : "comp";
+  const tool = def ? def.id.split(".")[1] : call.rawId;
+  return {
+    kind,
+    tool,
+    skillId: res.skillId,
+    params: call.params,
+    result: res.status === "ok" ? res.summary : (res.error ?? res.summary),
+    status: res.status === "ok" ? "completed" : "failed",
+  };
 }
 
 export interface MeetingRunResult {
@@ -304,7 +308,11 @@ export async function runTeamMeeting(
           content: `${m.agentName}: ${m.message}`,
         })),
       ];
-      const { text, toolCalls } = await runAgentTurn(agent, history, { temperature, maxRounds: 1 });
+      const { text, toolCalls } = await runAgentTurn(agent, history, {
+        temperature,
+        maxRounds: 1,
+        source: "meeting",
+      });
       messages.push({
         agentName: agent.title,
         agentColor: agent.color,
@@ -361,7 +369,11 @@ export async function runIndividualMeeting(
         content: `${m.agentName}: ${m.message}`,
       })),
     ];
-    const { text } = await runAgentTurn(agent, agentHistory, { temperature, maxRounds: 1 });
+    const { text } = await runAgentTurn(agent, agentHistory, {
+      temperature,
+      maxRounds: 1,
+      source: "meeting",
+    });
     messages.push({ agentName: agent.title, agentColor: agent.color, message: text, roundIndex: r });
 
     const criticPrompt =
@@ -418,7 +430,7 @@ export async function runResearch(
       [
         { role: "user", content: `[Planning phase] Propose a research plan for: ${topic}. ${description ?? ""} (≤200 words)` },
       ],
-      { temperature, maxRounds: 1 },
+      { temperature, maxRounds: 1, source: "research" },
     );
     messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: 0, phase: "planning" });
   }
@@ -433,7 +445,11 @@ export async function runResearch(
           content: `${m.agentName}: ${m.message}`,
         })),
       ];
-      const { text } = await runAgentTurn(a, history, { temperature, maxRounds: 1 });
+      const { text } = await runAgentTurn(a, history, {
+        temperature,
+        maxRounds: 1,
+        source: "research",
+      });
       messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: r, phase: "researching" });
     }
   }

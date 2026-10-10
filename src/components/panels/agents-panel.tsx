@@ -65,6 +65,9 @@ import {
   DEFAULT_KNOWLEDGE,
   generateAgentSystemPrompt,
 } from "@/lib/agents";
+// Client-safe skill-layer subset (imports only types — never the catalog).
+import { renderSkillManifest } from "@/lib/skills/prompt";
+import type { SkillCatalogEntry } from "@/lib/skills/types";
 import type { AgentDTO, AgentKnowledgeConfig } from "@/lib/types";
 import { useChatStore } from "@/lib/chat-store";
 import { AgentChatDrawer } from "./agent-chat-drawer";
@@ -699,12 +702,44 @@ function AgentEditorDialog({
   const set = <K extends keyof AgentFormState>(k: K, v: AgentFormState[K]) =>
     setForm((f) => ({ ...f, [k]: v }));
 
+  // Skill registry (client-safe projection from /api/skills) — fetched once
+  // per dialog open so the preview can render the same registry-driven
+  // manifest the server-side executor enforces (J lane).
+  const [skillEntries, setSkillEntries] = React.useState<
+    SkillCatalogEntry[] | null
+  >(null);
+  React.useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    fetch("/api/skills")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data: { skills?: SkillCatalogEntry[] } | null) => {
+        if (!cancelled && data?.skills) setSkillEntries(data.skills);
+      })
+      .catch(() => {
+        // Registry unreachable — the persona-only preview still renders.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
   // Live system prompt preview — regenerated whenever the form changes so
-  // the user sees exactly what will be sent to the LLM at run time.
-  const systemPrompt = React.useMemo(
-    () => generateAgentSystemPrompt(formToAgentDTO(form, editing?.id ?? "")),
-    [form, editing?.id],
-  );
+  // the user sees exactly what will be sent to the LLM at run time. Includes
+  // the registry-rendered skill manifest (identical rules to the executor).
+  const systemPrompt = React.useMemo(() => {
+    const persona = generateAgentSystemPrompt(
+      formToAgentDTO(form, editing?.id ?? ""),
+    );
+    const knowledge = formToKnowledge(form);
+    const manifest = skillEntries
+      ? renderSkillManifest(skillEntries, {
+          webSearchEnabled: knowledge.webSearchEnabled,
+          bioToolsEnabled: knowledge.bioToolsEnabled,
+        })
+      : "";
+    return manifest ? `${persona}\n\n${manifest}` : persona;
+  }, [form, editing?.id, skillEntries]);
 
   const handleTest = () => {
     if (!editing) return;

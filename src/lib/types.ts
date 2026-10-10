@@ -61,8 +61,10 @@ export interface ChatMessageDTO {
 }
 
 export interface ToolCall {
-  kind: "comp" | "bio";
-  tool: string; // rfdiffusion | proteinmpnn | alphafold | blast | pdb | ...
+  kind: "comp" | "bio" | "web";
+  tool: string; // rfdiffusion | proteinmpnn | alphafold | blast | pdb | search | ...
+  /** Canonical skill id when the call flowed through the skill layer (J lane). */
+  skillId?: string;
   params: Record<string, unknown>;
   result?: string;
   status?: "pending" | "running" | "completed" | "failed";
