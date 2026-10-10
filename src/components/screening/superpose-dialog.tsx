@@ -20,7 +20,7 @@
 
 import * as React from "react";
 import { useAnimationFrame } from "framer-motion";
-import { Box, Loader2, RotateCw, Pause, ZoomIn, ZoomOut } from "lucide-react";
+import { ArrowLeftRight, Box, Loader2, RotateCw, Pause, ZoomIn, ZoomOut } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -74,6 +74,23 @@ export function SuperposeDialog({
   const [loading, setLoading] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
+  // H1b: local reference/mobile flip. The parent's entries stay canonical
+  // ([reference, mobile]); the swap button exchanges the roles and the fetch
+  // effect below re-runs against the flipped pair. Reset on dialog close —
+  // a fresh open always starts unswapped (while the dialog is open, Radix
+  // modality blocks the parent from supplying new entries, so [open] covers
+  // every reachable path).
+  const [swapped, setSwapped] = React.useState(false);
+  const effectiveEntries = React.useMemo<
+    [SuperposeEntry, SuperposeEntry] | null
+  >(() => {
+    if (!entries) return null;
+    return swapped ? [entries[1], entries[0]] : entries;
+  }, [entries, swapped]);
+  React.useEffect(() => {
+    if (!open) setSwapped(false);
+  }, [open, entries]);
+
   // Viewer state.
   const [spin, setSpin] = React.useState(false);
   const [zoom, setZoom] = React.useState(1);
@@ -86,9 +103,12 @@ export function SuperposeDialog({
     setAngle(angleRef.current);
   });
 
-  // Fetch + compute whenever the dialog (re)opens with new entries.
+  // Fetch + compute whenever the dialog (re)opens with new entries (or the
+  // pair is swapped — H1b: swapping re-fetches and re-aligns with the roles
+  // exchanged, which is NOT symmetric: the reference stays put and the mobile
+  // structure carries the per-residue deviation colors).
   React.useEffect(() => {
-    if (!open || !entries) {
+    if (!open || !effectiveEntries) {
       setComparison(null);
       setError(null);
       setLoading(false);
@@ -96,7 +116,7 @@ export function SuperposeDialog({
       setSpin(false);
       return;
     }
-    const [ref, mobile] = entries;
+    const [ref, mobile] = effectiveEntries;
     // Missing file guard — inline error, no fetch. (Capture into consts so
     // the narrowing survives the async closure below.)
     const refPath = ref.pdbPath;
@@ -162,7 +182,7 @@ export function SuperposeDialog({
       cancelled = true;
       controller.abort();
     };
-  }, [open, entries]);
+  }, [open, effectiveEntries]);
 
   // --- Viewer projection ----------------------------------------------------
 
@@ -257,10 +277,26 @@ export function SuperposeDialog({
           <DialogTitle className="flex items-center gap-2">
             <Box className="size-5" />
             Structural superposition
+            {/* H1b swap: reference stays put / mobile is fitted — flip which
+                structure plays which role. Only meaningful with a pair. */}
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              className="ml-auto h-7 gap-1 px-2 text-xs"
+              disabled={!entries || loading}
+              onClick={() => setSwapped((s) => !s)}
+              aria-label="Swap reference and mobile structures"
+              title="Swap which structure stays put (reference) and which is rigid-fitted onto it"
+              data-testid="superpose-swap"
+            >
+              <ArrowLeftRight className="size-3.5" />
+              Swap
+            </Button>
           </DialogTitle>
           <DialogDescription>
-            {entries
-              ? `${entries[1].name} (mobile) is rigid-fitted onto ${entries[0].name} (reference) — sequence alignment, then optimal superposition.`
+            {effectiveEntries
+              ? `${effectiveEntries[1].name} (mobile) is rigid-fitted onto ${effectiveEntries[0].name} (reference) — sequence alignment, then optimal superposition.`
               : "Align two structures and inspect where they diverge."}
           </DialogDescription>
         </DialogHeader>

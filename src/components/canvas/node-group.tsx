@@ -4,6 +4,7 @@ import * as React from "react";
 import { create } from "zustand";
 import { Pencil } from "lucide-react";
 import { useAppStore } from "@/lib/store";
+import { subscribeLiveDrag } from "@/lib/canvas-utils";
 import { CARD_W, CARD_H } from "@/lib/workflow-catalog";
 import { cn } from "@/lib/utils";
 import type { CanvasGroupDTO, NodeDTO } from "@/lib/types";
@@ -178,6 +179,25 @@ interface GroupBox extends Omit<Group, "color"> {
  * inline rename/recolor editor (G2a); a group whose every member is folded
  * into a sweep aggregate card renders as a faded GHOST frame at the
  * aggregate's position instead of vanishing silently (G2b, roadmap #22).
+ *
+ * H2 (keyboard): frames are focusable (tabIndex 0, role="group") — Enter/Space
+ * toggle selection, Escape deselects; once selected, the edit/delete buttons
+ * are real <button>s reachable with Tab. Handled keys stopPropagation() so the
+ * window-level global handlers (the Escape clear-selection lane) don't also
+ * fire; modifier combos pass through (see the render-site comment for the
+ * full matrix). Labeled-group conventions follow the sweep-group-card.
+ *
+ * H3a (ghost geometry): ghost frames bound the UNION of the aggregate boxes
+ * the folded members actually render at (per-sweep origins — min over ALL of
+ * each sweep's members, mirroring deriveSweepGroups), so a group spanning two
+ * sweeps covers exactly the ground its aggregates occupy, and a partial group
+ * hugs its sweep's aggregate card instead of floating at its own member min.
+ *
+ * H3b (ghost drag follow): while an aggregate card is being dragged, the
+ * affected ghosts translate along live (DOM transform through the
+ * subscribeLiveDrag subscription — no React re-render per frame, the same
+ * cost class as the live edge patches; cleared on drop before the position
+ * commit re-renders).
  */
 export function NodeGroupLayer() {
   const workflow = useAppStore((s) => s.workflow);
@@ -251,6 +271,16 @@ export function NodeGroupLayer() {
     }
     const folded = (n: NodeDTO): boolean =>
       !!n.sweepGroup && collapsed.has(n.sweepGroup) && (sweepCount.get(n.sweepGroup) ?? 0) >= 2;
+    // H3a: aggregate origin per sweep = min over ALL of that sweep's member
+    // nodes (deriveSweepGroups semantics) — the ghost bounds what the
+    // aggregates ACTUALLY render at, not the group's own member subset.
+    const sweepOrigin = new Map<string, { x: number; y: number }>();
+    for (const n of nodes) {
+      if (!n.sweepGroup) continue;
+      const cur = sweepOrigin.get(n.sweepGroup);
+      if (!cur) sweepOrigin.set(n.sweepGroup, { x: n.x, y: n.y });
+      else sweepOrigin.set(n.sweepGroup, { x: Math.min(cur.x, n.x), y: Math.min(cur.y, n.y) });
+    }
     const visible = nodes.filter((n) => !folded(n));
     const out: GroupBox[] = [];
     for (const g of groups) {
@@ -264,7 +294,7 @@ export function NodeGroupLayer() {
         // G2b ghost lane (roadmap #22): a group whose every member was
         // folded into a sweep aggregate card used to VANISH silently —
         // nothing on the canvas hinted that the group still exists. Render
-        // a faded frame hugging the aggregate card so the group stays
+        // a faded frame hugging the aggregate card(s) so the group stays
         // visible AND selectable (edit/delete work on the ghost too).
         //
         // Stale node ids (deleted after the group was saved) keep the old
@@ -276,21 +306,24 @@ export function NodeGroupLayer() {
           storedMembers.length === g.nodeIds.length &&
           storedMembers.every(folded);
         if (!allFolded) continue;
-        // The aggregate card renders at the member bounding-box top-left
-        // (deriveSweepGroups) and is CARD_W × ~AGGREGATE_CARD_H; reuse the
-        // normal frame's -24/-40 padding convention so the ghost hugs the
-        // aggregate the way a live frame hugs its member cards.
-        const minX = Math.min(...storedMembers.map((n) => n.x));
-        const minY = Math.min(...storedMembers.map((n) => n.y));
+        // H3a: bound the UNION of the per-sweep aggregate boxes (each sweep's
+        // aggregate is CARD_W × AGGREGATE_CARD_H at its own origin), with the
+        // same -24/-40 padding convention the live frames use. A group whose
+        // members span TWO sweeps covers the middle ground because the
+        // aggregates really are there; a partial group (members ⊂ sweep)
+        // hugs its sweep's aggregate card exactly.
+        const origins = storedMembers
+          .map((m) => sweepOrigin.get(m.sweepGroup!))
+          .filter((b): b is { x: number; y: number } => !!b);
+        if (origins.length === 0) continue; // defensive — folded implies sweepGroup
+        const x0 = Math.min(...origins.map((b) => b.x)) - 24;
+        const y0 = Math.min(...origins.map((b) => b.y)) - 40;
+        const x1 = Math.max(...origins.map((b) => b.x + CARD_W)) + 24;
+        const y1 = Math.max(...origins.map((b) => b.y + AGGREGATE_CARD_H)) + 24;
         out.push({
           ...g,
           nodeIds: storedMembers.map((m) => m.id),
-          box: {
-            x: minX - 24,
-            y: minY - 40,
-            w: CARD_W + 48,
-            h: AGGREGATE_CARD_H + 64,
-          },
+          box: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 },
           color,
           ghost: true,
         });
@@ -317,6 +350,41 @@ export function NodeGroupLayer() {
     return out;
   }, [groups, nodes, collapsedSweepGroups]);
 
+  // ── H3b: ghost frames follow an in-progress aggregate drag live ──────
+  // DOM transforms through the subscribeLiveDrag subscription (no React
+  // re-render per frame — same cost class as the live edge patches). The
+  // subscription is registered once; the ghost membership snapshot is kept
+  // in refs and refreshed whenever groupBoxes recomputes (which also clears
+  // stale transforms — a re-render means positions were committed).
+  const ghostRefs = React.useRef<Map<string, HTMLDivElement | null>>(new Map());
+  const ghostMembersRef = React.useRef<Map<string, Set<string>>>(new Map());
+  React.useEffect(() => {
+    const ghosts = groupBoxes.filter((gb) => gb.ghost);
+    ghostMembersRef.current = new Map(ghosts.map((gb) => [gb.id, new Set(gb.nodeIds)]));
+    // Drop refs for boxes that are no longer ghosts (e.g. the sweep was
+    // expanded) and clear leftover transforms — the fresh render recomputed
+    // every box position.
+    for (const id of [...ghostRefs.current.keys()]) {
+      if (!ghostMembersRef.current.has(id)) ghostRefs.current.delete(id);
+    }
+    for (const el of ghostRefs.current.values()) {
+      if (el) el.style.transform = "";
+    }
+  }, [groupBoxes]);
+  React.useEffect(() => {
+    return subscribeLiveDrag((drag) => {
+      for (const [id, el] of ghostRefs.current) {
+        if (!el) continue;
+        const members = ghostMembersRef.current.get(id);
+        if (drag && members && drag.ids.some((mid) => members.has(mid))) {
+          el.style.transform = `translate(${drag.dx}px, ${drag.dy}px)`;
+        } else {
+          el.style.transform = "";
+        }
+      }
+    });
+  }, []);
+
   if (groupBoxes.length === 0) return null;
 
   return (
@@ -327,7 +395,32 @@ export function NodeGroupLayer() {
           <div
             key={gb.id}
             data-testid={gb.ghost ? "group-ghost" : undefined}
-            className="absolute cursor-pointer transition-shadow"
+            // H2: keyboard path — the frame itself is focusable (role=group,
+            // following the sweep aggregate card's labeled-group pattern) and
+            // Enter/Space toggle selection; once selected the edit/delete
+            // buttons are real <button>s that Tab reaches. Escape deselects.
+            // stopPropagation on the HANDLED keys keeps them from the
+            // window-level listeners (the global Escape clears node
+            // selection / cancels a live wire — focus is on the frame, so
+            // the frame's own deselect is the right response). Modifier
+            // combos (Ctrl+F/G) aren't handled here and pass through —
+            // canvas shortcuts keep working while a frame is focused.
+            // Note: this is the canvas's FIRST keyboard-operable surface
+            // (node cards and sweep cards are pointer-only; role/aria-label
+            // conventions come from the sweep-group-card).
+            role="group"
+            tabIndex={0}
+            aria-label={
+              `Group "${gb.label}", ${gb.nodeIds.length} member${gb.nodeIds.length === 1 ? "" : "s"}` +
+              (gb.ghost
+                ? ", all folded into sweep aggregate cards"
+                : "") +
+              ". Press Enter to " + (isActive ? "deselect" : "select") + "."
+            }
+            className={cn(
+              "absolute cursor-pointer transition-shadow",
+              "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-400",
+            )}
             style={{
               left: gb.box.x,
               top: gb.box.y,
@@ -339,6 +432,16 @@ export function NodeGroupLayer() {
               boxShadow: isActive
                 ? `0 0 0 1px ${gb.color.border}`
                 : undefined,
+            }}
+            // H3b: register ghost frames for the live-drag transform follow.
+            // (Block body — callback refs returning a Map would be treated as
+            // a cleanup function by React.)
+            ref={(el) => {
+              if (gb.ghost) {
+                ghostRefs.current.set(gb.id, el);
+              } else {
+                ghostRefs.current.delete(gb.id);
+              }
             }}
             // G-lane fix (real-pointer e2e, Task 33-a): the canvas's
             // background pointerdown handler calls setPointerCapture on the
@@ -358,6 +461,29 @@ export function NodeGroupLayer() {
             onClick={(e) => {
               e.stopPropagation();
               setActiveGroup(isActive ? null : gb.id);
+            }}
+            onKeyDown={(e) => {
+              // P1-1 fix (QA 38-a): interactive descendants own their keys.
+              // Without this guard the frame's preventDefault() on Enter/Space
+              // cancels a focused ✎/× button's native activation (keyboard
+              // dead keys — reachable but unactivatable), and the rename
+              // input's Enter commit bubbles into an accidental deselect.
+              if (
+                (e.target as HTMLElement).closest(
+                  "button, input, [contenteditable='true'], [role='button']",
+                )
+              ) {
+                return;
+              }
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                setActiveGroup(isActive ? null : gb.id);
+              } else if (e.key === "Escape" && isActive) {
+                e.preventDefault();
+                e.stopPropagation();
+                setActiveGroup(null);
+              }
             }}
           >
             {/* Label */}

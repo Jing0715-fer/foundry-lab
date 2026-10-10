@@ -247,6 +247,9 @@ export function ScreeningPanel() {
   }, [currentId, detailToken, toast]);
 
   // Reset view state when switching screenings.
+  // P2-1 fix (QA 38-a): rmsdRefPick must reset too — a stale pick from the
+  // previous campaign would leave Compute enabled against a foreign ref id
+  // (server honestly 404s, but the UX shouldn't walk into it).
   React.useEffect(() => {
     setQuery("");
     setStatusFilter("all");
@@ -256,6 +259,7 @@ export function ScreeningPanel() {
     setSortKey("score");
     setSortDir("desc");
     setPage(1);
+    setRmsdRefPick("");
   }, [currentId]);
 
   // --- Controls state -----------------------------------------------------
@@ -725,6 +729,99 @@ export function ScreeningPanel() {
     [],
   );
 
+  // H1a: launch the overlay from the DETAIL drawer — the open candidate is
+  // the reference (stays put), the picked partner is rigid-fitted onto it;
+  // the dialog's Swap button flips the roles afterwards.
+  const superposeOptions = React.useMemo(
+    () =>
+      candidates
+        .filter((c) => c.id !== detailId && !!c.pdbPath)
+        .map((c) => ({ id: c.id, name: c.name })),
+    [candidates, detailId],
+  );
+  const superposeWith = React.useCallback(
+    (otherId: string) => {
+      const current = candidates.find((c) => c.id === detailId);
+      const other = candidates.find((c) => c.id === otherId);
+      if (!current || !other) return;
+      setSuperposeEntries([
+        { name: current.name, pdbPath: current.pdbPath ?? null },
+        { name: other.name, pdbPath: other.pdbPath ?? null },
+      ]);
+      setSuperposeOpen(true);
+    },
+    [candidates, detailId],
+  );
+
+  // H1c: compute the structural-RMSD metric axis against one reference
+  // candidate (server-side superposition). One round trip returns the full
+  // detail (candidates with the new rmsd metric + refreshed metricDefs and
+  // weights), so the table/score/filters all pick it up at once.
+  const [rmsdBusy, setRmsdBusy] = React.useState(false);
+  const [rmsdRefPick, setRmsdRefPick] = React.useState("");
+  const computeRmsd = React.useCallback(
+    async (refId: string) => {
+      if (!currentId || !refId) return;
+      setRmsdBusy(true);
+      try {
+        const res = await fetch(`/api/screening/${currentId}/rmsd`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ refId }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error(data?.error ?? `HTTP ${res.status}`);
+        }
+        setScreening(data?.screening ?? null);
+        setCandidates(
+          Array.isArray(data?.candidates)
+            ? (data.candidates as ScreeningCandidateDTO[])
+            : [],
+        );
+        // P2-2 fix (QA 38-a): merge instead of clobber — keep the user's
+        // LOCAL (possibly unsaved) weight edits, only seeding server
+        // defaults for keys they never touched (e.g. the new rmsd key).
+        const fresh = initWeights(data?.screening ?? null);
+        const defs = (data?.screening?.metricDefs ?? []) as { key: string }[];
+        setWeights((prev) => {
+          const merged: Record<string, number> = {};
+          for (const d of defs) {
+            merged[d.key] =
+              prev[d.key] !== undefined ? prev[d.key] : (fresh[d.key] ?? 1);
+          }
+          return merged;
+        });
+        toast({
+          title: "RMSD axis computed",
+          description: `${data?.scored ?? 0} candidate(s) scored against ${
+            data?.screening?.rmsdRef?.name ?? "the reference"
+          }${data?.skipped ? ` · ${data.skipped} skipped (no PDB / alignment failed)` : ""}`,
+          variant: "success",
+        });
+      } catch (e) {
+        toast({
+          title: "RMSD computation failed",
+          description: e instanceof Error ? e.message : String(e),
+          variant: "destructive",
+        });
+      } finally {
+        setRmsdBusy(false);
+      }
+    },
+    [currentId, toast],
+  );
+
+  // H1c: candidates eligible as the RMSD reference (linked PDB only —
+  // computeRmsdAxis 400s otherwise).
+  const rmsdCandidates = React.useMemo(
+    () =>
+      candidates
+        .filter((c) => !!c.pdbPath)
+        .map((c) => ({ id: c.id, name: c.name })),
+    [candidates],
+  );
+
   /** D3: export the Markdown screening report (same row semantics as the CSV). */
   function exportReport() {
     if (!screening) return;
@@ -779,6 +876,13 @@ export function ScreeningPanel() {
     onSaveWeights: saveWeights,
     weightsDirtyFlag: dirty,
     savingWeights,
+    // H1c: structural-RMSD axis (compute + current reference).
+    rmsdCandidates,
+    rmsdRef: screening?.rmsdRef ?? null,
+    rmsdBusy,
+    rmsdRefPick,
+    onRmsdRefPick: setRmsdRefPick,
+    onComputeRmsd: (refId: string) => void computeRmsd(refId),
   };
 
   return (
@@ -1102,6 +1206,8 @@ export function ScreeningPanel() {
         score={detailRow?.score ?? null}
         rank={detailRow?.rank ?? null}
         onPatch={(ids, patch) => void patchCandidates(ids, patch)}
+        superposeOptions={superposeOptions}
+        onSuperposeWith={superposeWith}
       />
       <CompareDialog
         open={compareOpen}

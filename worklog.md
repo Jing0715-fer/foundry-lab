@@ -3861,3 +3861,108 @@ Work Log:
 
 Stage Summary:
 - G 线完成"开发（33-a/33-b）→ QA 审查（34-a）→ 修复（34-b）→ 三模式集群 e2e + 浏览器级 e2e（35）→ 按测试结果重写 roadmap"全闭环；8 项新测试结论与 4 条新工程教训固化；下一阶段（H 线科研深度 + D 线叠合提级）以 30 项测试结论为据。
+
+---
+Task ID: 37 (in progress)
+Agent: main-orchestrator (Z.ai Code)
+Task: H 线开发（科研深度与可及性收口）：H1a 候选详情单卡发起叠合 / H1b swap 按钮 / H1c RMSD 可加权筛选指标（写入 campaign 指标体系）/ H2 组层键盘可达 / H3 ghost 视觉边界（跨 sweep 联合几何 + 拖拽实时跟随）
+
+Work Log:
+- 摸底：screening-panel（openSuperpose 现状：仅 Compare 双选入口）、superpose-dialog（fetch effect 无 swap）、scoring.ts（纯函数）、candidate-detail（无叠合入口）、node-group（frame onClick 无键盘路径、ghost 单聚合几何）、canvas-utils（liveDrag write-only）、screening.ts（METRIC_REGISTRY/toScreeningDTO/getScreeningDetail/refreshScreeningMetrics/rescan 只增不删）。
+- 方案定稿：H1c 走服务端计算——screening.ts 仅被 API route 引用（客户端零 bundle 影响），compareStructures 纯模块服务端可用；RMSD 落库为候选 metrics.rmsd 真指标 → metricDefs/排序/筛选/权重/CSV/报告全套免费复用；Screening 加 rmsdRefId 列（schema 变更 + 基线重冻同 commit 纪律）。
+
+---
+Task ID: 37
+Agent: main-orchestrator (Z.ai Code)
+Task: H 线开发（科研深度与可及性收口）：H1a 候选详情单卡发起叠合 / H1b swap 按钮 / H1c RMSD 可加权筛选指标 / H2 组层键盘可达 / H3a+H3b ghost 视觉边界
+
+Work Log:
+- Prisma：Screening 加 rmsdRefId String?（plain string 无 FK，同 sourceRef 模式）→ db:push → 停 dev server → 基线核对（14/12+5/3+60/20/6+16 与冻结基线一致）→ demo:snapshot 重冻（schema 变更与基线同 commit 纪律）→ 孤儿化重启 dev server（陈旧 Prisma client 纪律）。
+- screening.ts：METRIC_REGISTRY/REGISTRY_ORDER 加 rmsd（label "RMSD"、unit Å、lowerIsBetter、good 1/warn 2.5、hint）；CandidateLite 加宽 id+name；toScreeningDTO 防御式解析 rmsdRef（引用被删→null，DTO 不撒谎）；listScreenings/create/rescan/patchScreening 四处 select 补 id+name；新 computeRmsdAxis（服务端 compareStructures——纯模块、仅 API route 引用、零客户端 bundle 影响）：参考自身 rmsd=0 留在排名内、失败/无 PDB 删除键（重算不留陈旧值）、rmsdRefId 持久化 + refreshScreeningMetrics 收口（metricDefs 域重算 + 默认权重播种）。
+- 新路由 POST /api/screening/[id]/rmsd {refId}：400 空 body/缺 PDB/读失败、404 screening/引用不存在；返回完整 detail（screening+candidates+scored+skipped）单次往返。
+- superpose-dialog.tsx（H1b）：swapped 本地翻转 state + effectiveEntries memo + effect 依赖切换（swap 重拉取重对齐——叠合不对称：参考定住、移动结构带残基偏差着色）；Swap 按钮（ArrowLeftRight、data-testid=superpose-swap、loading/disabled 守卫）；对话关闭/entries 更换时复位。
+- candidate-detail.tsx（H1a）：新可选 props superposeOptions+onSuperposeWith；"Structural comparison" 区块（Select 选伙伴 + Superpose 3D 启动钮 data-testid=detail-superpose-launch；无 PDB 伙伴空态文案；本候选=参考、Swap 可翻转——title 提示披露）。
+- screening-panel.tsx：superposeOptions memo（同 campaign 有 PDB 候选）+ superposeWith 回调（当前=参考）+ rmsdCandidates/rmsdBusy/rmsdRefPick state + computeRmsd 回调（POST→全量 detail 刷新→toast scored/skipped 计数）→ ControlsColumn/CandidateDetail 接线。
+- controls-column.tsx（H1c UI）：新 "Structural RMSD" 卡片——当前参考 chip（data-testid=rmsd-ref-chip）、参考候选 Select、Compute/Recompute 按钮（data-testid=rmsd-compute）、语义说明文案；无 PDB 候选空态。
+- node-group.tsx：H2 键盘路径（role=group+tabIndex=0+aria-label 动态+Enter/Space 切换选择+Escape 取消选择+focus-visible outline；stopPropagation 阻断 window 级 Ctrl+F/G——React 根容器传播路径）；H3a ghost 几何改 per-sweep 聚合原点联合包围盒（sweepOrigin=min over 该 sweep 全部成员，镜像 deriveSweepGroups——跨 sweep 组只覆盖聚合真实所在、部分组精确贴合聚合卡）；H3b ghostRefs/ghostMembersRef 双 ref + subscribeLiveDrag 订阅（聚合卡拖拽中 ghost DOM transform 实时跟随、无 React 帧渲染、groupBoxes 重算时清 transform+清陈旧 ref）。
+- canvas-utils.ts：setLiveDrag 加订阅者注册表（同步通知、try/catch 防坏订阅者破坏拖拽循环）；文档从 write-only 改为 writers/consumers 双向语义。
+- API 冒烟（/home/z/h-lane/h1c-smoke.ts，真实引擎链路）：26/26 全过——3 designs 真实 rfdiffusion 引擎 → screening → RMSD 计算 309ms（design_1=14.85 Å / design_2=17.44 Å 真实差值）→ 重算换参考语义（新参考 0、旧参考变真值、无陈旧残留）→ 400/404/404 错误路径 → 清理（冒烟残留 outputs 目录与首轮崩溃残留工作流均清干净）。
+- 浏览器健全性检查：RMSD 卡片渲染 ✓、详情抽屉 Structural comparison 区块 ✓、单卡发起叠合（悬空文件→File not found 错误路径 ✓ 基线本就悬空——F4 预存行为）、Swap 点击后描述角色互换实证 ✓。
+- tsc src/scripts/mini-services 零新增错误、lint 零告警。
+
+Stage Summary:
+- H1a/H1b/H1c/H2/H3a/H3b 六项全部落地；H1c 拿到真实引擎+真实 RMSD 值+重算语义的 API 级 26/26 实证；H4（NextAuth）与 H5（叠合 worker 对称性）本轮降级缓议（依赖面大/P2），理由将在 ROADMAP 记录。待 QA 审查 + 浏览器级 e2e（H2 键盘/H3 ghost 需真实指针+CDP 拖拽验证）。
+
+---
+Task ID: 38-a
+Agent: qa-code-reviewer (Z.ai Code)
+Task: QA 深度审查 H 线未提交改动（H1a/H1b/H1c/H2/H3a/H3b + rmsd route + schema；纯审查不改码、不运行写 DB 脚本）
+
+Work Log:
+- 前置：读 worklog Task 37 尾部 + git diff 全量（11 改 + 1 新路由）逐文件精读；对照四不变量（执行通道条件写/Stop 不可复活/组 persist 禁改/demo 基线同 commit 重冻）逐一核验。
+- P0 候选三降一收：①「computeRmsd 与 patchCandidates 丢更新」证伪（metrics 列唯一写者是 computeRmsdAxis；star/tags/notes/promote 写其他列，Prisma 按列写）→ 收敛为 P1（非事务读-改-写 + rmsdRefId 后置持久化：并发双算混值/中断后 chip 撒谎/删除竞态 500 而非注释宣称的 404）；②H1b swap entries 身份稳定（state 存储）无循环；③H2 stopPropagation 断言成立（React 18/19 root 容器委托，synthetic 桥接 native，bubble 相 window 监听收不到；唯一例外 capture 相 SequenceBar 不在画布）。
+- 三个 P1：H2 frame onKeyDown 劫持子交互元素 Enter/Space（✎/× 键盘死键 + 重命名 Enter 意外反选——preventDefault 杀 button 原生激活）；H3b 无边聚合卡拖拽 ghost 不跟随（setLiveDrag 被 edgeDomRef 门控，collectEdgeGroups 无边时返回 null）；H1c 事务性（见上）。九个 P2：rmsdRefPick 不随切库重置（跨库 404）、computeRmsd 覆盖未保存权重、Escape 与 live-wire 两段取消、三处注释失实（Ctrl+F/G 拦截说法反了/sweep-group-card 键盘先例不存在/swap 重置注释与代码不符）、rmsd 参考域锚定语义记录、rescan 混合提示、P2025→500 映射、AGGREGATE_CARD_H 近似、悬空 PDB options 不校验。
+- H3a 数学核验：sweepOrigin 与 deriveSweepGroups/layoutNodes 完全同源（每 sweep 全员 x/y 独立 min，聚合渲染原点一致）；联合包围盒 padding 约定一致。H3b 细节核验：callback ref 块体 React 19 安全；drop 时序 setLiveDrag(null) 先于 mergeNodes 同 task（无双偏移帧）；非 ghost ref 剔除→订阅 no-op；try/catch 隔离坏订阅者。
+- Tailwind v4 focus ring 编译产物实证（outline-style: var(--tw-outline-style) + 全局 solid 回退 → 可见 2px slate 环）；toast success variant 存在。
+- 只读探针：GET / 与 /api/screening 200；POST rmsd 404（screening 不存在）与 400（坏 JSON）live 实证零 DB 写；db/demo-baseline.db 只读验证 rmsdRefId 列在场 + 行数 2/19/16/15/3/86（schema+基线同变更集，重冻纪律 ✓）；db/custom.db rmsdRefId 列在场全 null；list/detail DTO rmsdRef:null 流通。
+- 工具链：bunx tsc --noEmit 全仓仅 4 条预存（examples/skills，src/ 零错误、mini-services 零新增）；bun run lint 零告警。
+- 产出：qa-review-h-lane.md（P0 无/P1×3/P2×9 + 已验证无问题清单 12 条 + Task 39 e2e 建议：真实键盘抓 P1-1、无边聚合真实指针抓 P1-2、真实引擎 H1c 链路、并发双算可选用例）。未改任何源代码。
+
+Stage Summary:
+- H 线改动质量整体扎实（H1b swap 守卫完备、H3a 数学同源、路由契约诚实、不变量零触碰、工具链全绿）；但 H2 的子元素键盘劫持与 H3b 的无边聚合盲区是两个「自宣称能力在自己场景即失效」的 P1，应在 e2e 前修复；H1c 事务性收敛为 P1（无单用户可达丢失路径）。修复均为小手术（closest 排除一行 / setLiveDrag 移出 guard / 两阶段事务），Task 39 e2e 清单已按「必须真实指针/键盘/引擎」分级给出。
+
+---
+Task ID: 38-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P1×3 全闭环 + P2 精修 5 条（基于 38-a 审查报告 qa-review-h-lane.md）
+
+Work Log:
+- P1-1（H2 键盘劫持子元素）：frame onKeyDown 首行加 closest("button, input, [contenteditable='true'], [role='button']") 早退——✎/× 按钮的 Enter/Space 原生激活不再被父层 preventDefault 取消（修复前键盘可达但死键），重命名 input 的 Enter commit 不再冒泡成反选。
+- P1-2（无边聚合 ghost 盲区）：sweep-group-card rAF 回调中 setLiveDrag 移出 if (edgeDomRef.current) 守卫——liveDrag 是共享拖拽状态唯一写者，不应以"有边可补"为前提；无边聚合卡拖拽时 ghost 现在跟随（修复前恰是 H3b 要修的 bug 在该场景原样存在）。patchEdgeGroups 保留 guard 内。
+- P1-3（H1c 事务性）：computeRmsdAxis 改两阶段——Phase1 纯计算零写（updates 数组），Phase2 单 $transaction 内批量 update + rmsdRefId 同事务原子提交（值与参考标签永不分离：中途崩溃/并发双算 → 整体一个赢家，不再混值）；P2025 catch → ScreeningError 404（删除竞态不再裸 500）；注释宣称的 404 语义现在真实成立。文档块补 Atomicity 段。
+- P2-1：切库重置 effect 补 setRmsdRefPick("")（跨库陈旧选择不再让 Compute 可用后 404）。
+- P2-2：computeRmsd 成功后权重改合并式（保留本地未保存编辑、只为新键播种服务端默认）——不再静默丢弃用户滑杆调整。
+- P2-4（三处注释失实）：H2 注释的威胁模型改正（handled keys 才 stopPropagation、mod 组合穿透是期望行为、"sweep-group-card 先例"改为"画布首个键盘可操作面 + role/aria-label 约定沿用"）；superpose-dialog swap 复位注释改诚实（仅 [open] 覆盖可达路径，Radix 模态保证）。
+- P2-6：rmsd route 头注释记录运行时前提（自托管无 serverless 超时、~100ms/候选、60 候选 ≈6s、客户端 busy spinner）。
+- 复验：tsc 零新增、lint 零告警、H1c API 冒烟 26/26 复跑全过（事务化无回归）、演示 DB 零污染（wf 2、toolJobs 16、screening rmsdRefId 全 None）。
+
+Stage Summary:
+- 38-a 的 P1×3 全部闭环（子元素键盘所有权 / liveDrag 写者独立 / RMSD 轴原子提交）+ P2 修 5 条；P2-3（Escape 分层语义）、P2-5（参考 rmsd=0 锚定域设计取舍）、P2-7/8/9 记入 ROADMAP 备注。H 线达到 e2e 就绪状态。
+
+---
+Task ID: 39
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 测试：H 线全功能浏览器级验证（H2 键盘链路含 P1-1 回归 / H3a 跨 sweep 几何 / H3b 无边+有边聚合拖拽实时跟随含 P1-2 回归 / H1c UI 真实引擎链路 / H1a/H1b 真实文件叠合与 swap）+ 回归 + 演示 DB 零污染
+
+Work Log:
+- **备料**（API + 真实引擎）：一次性工作流（input + 3-design rfdiffusion 真跑 + sweep A 两变体带继承边 + sweep B 两变体无边 + 三组 canvas groups 走 PATCH 持久层契约 + 从源节点建 screening 3 真实候选）。
+- **H2 键盘（真实键盘事件）**：真实指针点组框 → focus+选择+✎/× 出现 → Escape 反选 → Enter 再选 → Tab 到 ✎ → **Enter 打开编辑器且 frame 不被反选（P1-1 回归通过——修复前 Enter 会取消按钮原生激活并反选）** → 键盘改名 Enter 提交 → 600ms 防抖后 Prisma 直查落库 "Sweep A Renamed" → frame 聚焦时 Ctrl+F 仍开 NodeSearch（mod 组合穿透）。
+- **H3a**：折叠两 sweep 后三 ghost 全渲染，几何逐像素核对——Cross-Sweep ghost (396,270,296×574) = 两聚合卡 (420,310)/(420,670) 的精确联合包围盒（旧代码固定 CARD_W+48×AGGREGATE_CARD_H+64=296×214 只盖住一个聚合，会漏掉第二个 sweep 的视觉边界）；单 sweep ghost 296×214 精确贴合。
+- **H3b 无边聚合（P1-2 回归）**：CDP 真实拖拽 sweep B 聚合卡（无边变体）→ mid-drag 卡 transform translate(185.19,185.19) 与 Sweep B ghost + Cross ghost 的 translate(185.185,185.185) **三者实时同步**、Sweep A ghost 正确不动 → 释放后 transform 全清 + DB 两变体坐标精确 +185/+185（605/855、905/855）。
+- **H3b 有边聚合**：拖拽 sweep A 聚合卡（input→变体边存在）→ 卡+Sweep A ghost+Cross ghost 同步 translate(154.76,114.29)、B ghost 不动 → 释放全清 + DB +155/+114 提交。
+- **H1c UI（真实引擎链路）**：真实指针点 Compute RMSD（参考 run1/design_1）→ toast + chip "Axis reference: run1/design_1 (rmsd 0 Å)" + 表头出现 RMSD 列 + 权重滑杆 "RMSD weight 1"（默认权播种）+ 表格值与 API 逐行一致（design_2=13.6 / design_0=16.37 / design_1=0）。
+- **H1a（真实文件）**：详情抽屉选 run1/design_0 → Superpose 3D → SVG 画布 + **真实 RMSD 15.14 Å + 44 aligned pairs** + 描述 "design_0 (mobile) onto design_2 (reference)"（当前卡=参考）。
+- **H1b**：Swap 真实点击 → 描述角色互换 "design_2 (mobile) onto design_0 (reference)" + 重算（RMSD 15.14 对称值）→ 关闭重开 → swapped 复位回规范序。
+- **e2e 中发现并修复**：两个新 Select（RMSD 参考 + 抽屉叠合伙伴）触发 React "uncontrolled to controlled" 警告——改 "" 哨兵（Radix 明确把 "" 定义为清空显示 placeholder，value prop 全程为 string）；修复后 console 零警告。
+- **回归**：移动端 375×812 main 宽 319 / docScroll 相等 / footer 780 贴底；page errors 0；dev.log 零运行时错误；VLM 复核两截图（screening 面板 + 画布）全 PASS。
+- **清理**：E2E screening + 工作流删除、5 个 engine outputs 目录清理、**误点 onboarding tour 调色板按钮产生的 stray Input 节点删除**（基线曾漂到 15 节点）；终态字段级核对：My First 14/12 + Antibody 5/3 + toolJobs 16 + 3 screening 60/20/6 + rmsdRefId 全 None。
+- **e2e 工程经验（新增）**：① 开着的 Radix dropdown menu 会让 elementFromPoint 全域返回 HTML（hit-test 断言前置必须先关菜单/按 Escape）；② 拖拽失败会引发画布 pan 副作用使后续坐标全漂——每次拖拽前重新测量 + "Fit to content" 恢复视图，坐标经文件中转防转录错误；③ onboarding tour 的调色板按钮点击会真实建节点——"dismiss" 用正则匹配按钮文本时误中节点描述按钮（本轮污染源），必须精确匹配 "Skip"。
+
+Stage Summary:
+- H 线六项（H1a/H1b/H1c/H2/H3a/H3b）全部浏览器级或 DB 级实证通过：P1-1（✎ 按钮 Enter 死键）与 P1-2（无边聚合 ghost 静止）两条修复的回归用例双双通过；H1c 拿到 UI+API 双侧一致的引擎级真实 RMSD 值；H3a 几何逐像素核对；e2e 过程产出 1 个 console 警告修复 + 3 条新工程教训；演示 DB 零污染（含一处自我污染的发现与清理）。
+
+---
+Task ID: 40
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：基于 QA+E2E 测试结果重写 ROADMAP（I 线规划）+ README 更新 + git 提交推送
+
+Work Log:
+- docs/ROADMAP.md 重写：本阶段成果（H 线六项 + QA 闭环 + E2E 证据）+ 测试结论表 30→39 项（新增 #31 键盘所有权模式 / #32 共享状态写者独立性 / #33 RMW 循环原子性 / #34 Radix "" 哨兵 / #35-37 三条 e2e 工程经验（tour 调色板真实建节点、Radix menu 阻断 hit-test、拖拽 pan 副作用坐标漂移）/ #38 基线悬空 PDB 与 RMSD 轴 / #39 参考 rmsd=0 域锚定取舍）+ 下一阶段 **I 线（RMSD 轴打磨与遗留收口）**：RMSD 轴打磨三项（悬空预检/rescan 提示/参考域锚定选项）、Escape 分层语义成文、叠合深化遗留（多链选择/per-region RMSD/worker 对称性）、NextAuth 独立分支推进、真实 SSH 集群通道。
+- 验收标准扩充五条：父容器 onKeyDown 必须排除子交互元素（#31）；共享状态唯一写者不得以消费者存在为前提（#32）；RMW 循环类写点两阶段+单事务（#33）；Select 受控值全程同类型（#34）；e2e 收尾字段级核对节点计数 + console 零警告。
+- README.md：手绘分组条目补键盘可达 + ghost 联合几何 + 实时跟随；Superpose 条目补单卡直达 + Swap 语义；新增"结构 RMSD 筛选指标"条目；API 表新增 POST /api/screening/:id/rmsd。
+- 提交纪律：prisma schema（rmsdRefId）+ 重冻 demo-baseline.db + CONTRIBUTING 同 commit（#20/既定纪律）。
+- 最终检查：lint 零告警、tsc 全仓仅 4 条预存（examples/skills，src/scripts/mini-services 零新增）、GET / 200、dev.log 零运行时错误（仅调度器 prisma 查询日志）、演示 DB 基线字段级核对（My First 14/12 + Antibody 5/3 + toolJobs 16 + 3 screening 60/20/6 + rmsdRefId 全 None）。
+- git 提交推送。
+
+Stage Summary:
+- H 线完成"开发（37）→ QA 审查（38-a）→ 修复（38-b）→ 浏览器级 e2e 含真实引擎与真实键盘（39）→ 按测试结果重写 roadmap"全闭环；9 项新测试结论（3 个修复模式 + 3 条 e2e 工程经验 + 2 个语义取舍 + 1 个预存发现）固化；下一阶段（I 线 RMSD 轴打磨 + 遗留收口）以 39 项测试结论为据。

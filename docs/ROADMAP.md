@@ -2,85 +2,91 @@
 
 > 下一阶段开发方向。基于 2026-10-05（Sweep）、10-06（A 线 Campaign 体验）、10-07（B 线画布与
 > 执行引擎）、10-09（C+E 线数据可信度与执行健壮性）、10-10（D+F 线科研深度与可读性）、
-> 10-11（F 线 P1 打磨与运维）、10-12（G 线验证通道与生产化，QA 审查闭环 + 集群 e2e 通道 +
-> 浏览器级 e2e）八轮测试结论滚动更新，随每个阶段交付后重写。
+> 10-11（F 线 P1 打磨与运维）、10-12（G 线验证通道与生产化）、10-13（H 线科研深度与可及性
+> 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）九轮测试结论滚动更新，随每个
+> 阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
-- **Sweep 系统 + A/B/C/E/D/F 线**（详见 git 历史与 README）：参数扫描、对比视图、一键 campaign、
-  组卡、DAG 并行执行、看门狗/中止/重试、undo 状态、溯源深链、演示数据治理、Superpose 3D、
-  cdr_h3_length 亲和力成熟、报告/CSV 导出、失败三车道 pill、模板加载确认、多工作流一致性、
-  手绘组持久化、liveDrag 渲染空间锚定、竞态守卫（F 线七项）。
-- **G 线 · 验证通道与生产化（本轮交付，四项）**：
-  - **G1 集群 e2e 通道**（`bun run e2e:cluster`，`scripts/e2e/cluster-lane.ts`）：把集群执行
-    通道的全部关键承诺搬进**一条可复现的命令行验收**——直连模式真实远程执行（真 ssh2 SSH 到
-    mock-cluster → 真实 numpy 引擎 → 对账 sweep → 输出同步回本地 outputs/ → 节点 completed 带
-    ##OUTPUTS##）；节点 Stop → `stopClusterJob` 单点写入（cancelled 行 + `[stop] cancelled via
-    node stop` 徽标）+ **远端进程真死**（/proc + starttime 比对）+ **sweep 终态守卫**（两轮
-    sweep 不复活）；Slurm 模式（sbatch → squeue/sacct 判定 → 同步回收）；poll-ceiling 交接 →
-    SSE 流 reconcile 落定（completed/cancelled 双映射）+ **co-driver 真阳性**（无 jobs-list
-    轮询器时仅靠流式 sweep 落定）。测试自带 P6 清理 + 基线恢复 + **P0 自愈**（冻结基线参照：
-    崩溃残留的工作流/ToolJob 行/连接/记录/目录重跑收敛）。全模式 **77/77 PASS**、基础模式
-    **51/51 PASS**、`--keep` 现场保留跑（供徽标浏览器复核）+ 复跑收敛全绿。
-  - **G1 配套生产加固**：① `FOUNDRY_CLUSTER_POLL_CEILING_MS` env（按次读取，仅正有限值生效）
-    使 poll-ceiling 交接可复现测试；② **SSE 流 sweep co-driver**——节点带集群标记运行时，流
-    自身每 ~3s 驱动一次（re-entrant 守卫 + fire-and-forget），关闭"只有 cluster 面板轮询才推进
-    ToolJob 行"的缺口（e2e P5c 唯一断言实证）；③ **sacct 分隔符 bug 修复**（e2e 发现：真
-    `sacct -P` 与 mock 均以 `|` 分隔，旧的逗号 split 把整行当 state——slurmState 存整行、
-    sacct 判定全落到 vanished；现 `split(/[,|]/)` + `CANCELLED by <uid>` 前缀匹配）；④
-    **applySweepBlock 快照竞态修复**（QA P1-1：stop 在 sweepInFlight 之外运行，进行中的 sweep
-    读到旧快照会用无条件写把刚取消的行覆盖回 running——现 live 重读 + 所有 sweep 行写
-    条件化 `updateJobRowIfSweepable` + syncBack 出口 phase 复核，stop-vs-sweep 压力实证）。
-  - **G1 mock-cluster 补全**：新增 loopback 调度器端点（127.0.0.1:3023/sched）+
-    `fs/opt/bin/{squeue,sacct,sinfo,scancel,sbatch}` 文件 shim（`shims/sched-client.ts`）——
-    sweep 把调度器调用嵌在命令替换 `$(squeue …)` 里，真 bash 走 PATH 解析，而 mock 只拦截
-    顶层独立段；shim 进程经 loopback 读同一内存态调度器（一态两门），兑现 mock README 的
-    既承诺（"嵌套调用由文件 shim 覆盖"）。EADDRINUSE 降级不崩溃。
-  - **G2 组层 UI 完善**（#22）：组框可选中（✎/× 按钮——**pointerdown stopPropagation 修复**：
-    QA 实证画布背景 setPointerCapture 会吞掉组框 onClick，修复前组选择在真实浏览器里是死
-    代码）；✎ 打开内联**重命名/换色编辑器**（maxLength 64 对齐服务端校验、Enter 提交/Esc
-    取消/blur 条件提交、色点即时提交保持编辑器开启、双击防穿透）；成员全部折叠时组框淡化为
-    **ghost 幽灵框**（贴聚合卡、`N folded` + 展开提示、可选中可编辑、折叠判定对齐
-    deriveSweepGroups 的 ≥2 成员规则）。浏览器级实测：建组 → 真实指针选中 → 编辑器 → 重命名
-    换色 → DB PATCH 落库 → reload+切回 hydrate 恢复；ghost 渲染/选中/编辑全过。
-  - **G3 P3 备忘清理**：`getLiveDrag` 零消费删除（write-only 语义成文）；NodeSearch 双 rAF
-    加隐藏标签页兜底（document.hidden → 宏任务，注释披露浏览器 clamp）；Marketplace 订阅
-    收窄（三个原始值 selector 替代整 workflow 对象——3s 轮询不再重渲染整个模态）。
-- **QA 闭环（34-a 审查 → 34-b 修复）**：P0×1（**`.env` 是入库文件**——测试 env 必须走
-  .gitignored 的 `.env.local`，否则 8s ceiling 变仓库默认；CONTRIBUTING 运行手册已改）+
-  P1×2 全修（快照竞态 + tsc 门禁 4→7 回归——Bun ambient 声明 + `export {}`）+ P2 精修 8 条
-  （编辑器双击穿透、ghost 折叠语义、mock 端口降级、e2e 自愈/诊断/清理收窄、sacct
-  CANCELLED by、pidDead starttime、shim 权限）。审查报告：`qa-review-g-lane.md`。
-- **E2E（Task 35，浏览器级 + DB 级）**：G1 三种 e2e 模式全绿；G2 真实指针全链路（含修复的
-  实证）；G3 NodeSearch 精确居中（delta 0,0，Inspector 开启后 800 宽画布正中心）；Cluster
-  面板 `via node stop` 徽标（真实 cancelled 行：`rfdiffusion · cancelled · via node stop ·
-  foundry@localhost · direct`）；移动端 375 零溢出 + footer 780/812 贴底；console/page/
-  dev.log 零错误；演示 DB 基线字段级核对零污染（2/19/16/0）。
+- **Sweep → A/B/C/E/D/F/G 线**（详见 git 历史与 README）：参数扫描、对比视图、一键 campaign、
+  组卡、DAG 并行执行、看门狗/中止/重试、undo 状态、溯源深链、Superpose 3D、cdr_h3_length
+  亲和力成熟、报告/CSV 导出、失败三车道 pill、模板加载确认、多工作流一致性、手绘组持久化、
+  liveDrag 渲染空间锚定、集群 e2e 通道（77/77）、组编辑器 + ghost 框。
+- **H 线 · 科研深度与可及性收口（本轮交付，六项）**：
+  - **H1a 单卡发起叠合**：候选详情抽屉新增 "Structural comparison" 区块——Select 选同
+    campaign 另一个带 PDB 的候选 + 一键 Superpose 3D（当前候选 = 参考，抽屉直达，不再必经
+    表格双选 + Compare 对话框）。无伙伴/无 PDB 双空态；title 提示披露参考语义。
+  - **H1b 叠合 Swap**：SuperposeDialog 头部 Swap 按钮（ArrowLeftRight）——参考/移动角色互换
+    并重拉取重对齐（叠合不对称：参考定住、移动结构带残基偏差着色，所以互换是真实重算而非
+    视觉翻转）；对话关闭复位 swapped（Radix 模态保证 [open] 覆盖全部可达路径）。
+  - **H1c RMSD 可加权筛选指标**（写入 campaign 指标体系）：`POST /api/screening/[id]/rmsd
+    {refId}` → 服务端 compareStructures（纯模块、仅 API route 引用、零客户端 bundle）为每个
+    带 PDB 候选计算对参考的全局 Cα RMSD → **落库为候选 metrics.rmsd 真指标** →
+    metricDefs 域重算 + 默认权重播种 → 排序/区间筛选/权重滑杆/CSV/Markdown 报告/Compare 行
+    全套免费复用。语义：参考自身 rmsd=0 留在排名内（chip 明示）；失败/无 PDB 删键（重算不留
+    陈旧值）；`Screening.rmsdRefId` 持久化（DTO 防御式解析——引用被删 → null，标签永不撒谎）。
+    **原子性（QA 38-a P1-3 修复）**：两阶段——纯计算零写 + 单 `$transaction` 内批量写
+    metrics + rmsdRefId（值与参考标签永不分离；并发双算/中途崩溃 → 整体一个赢家）；
+    P2025 → 404。ControlsColumn 新增 "Structural RMSD" 卡片（参考 Select + Compute/Recompute
+    + 参考 chip + 语义说明）。
+  - **H2 组层键盘可达**：组框 focusable（role=group + tabIndex=0 + 动态 aria-label + Enter/Space
+    切换选择 + Escape 取消 + focus-visible 外环）——**画布首个键盘可操作面**（node 卡与
+    sweep 卡均为纯指针）。handled keys stopPropagation 阻断 window 级全局 Escape 分层；
+    mod 组合（Ctrl+F/G）穿透（画布快捷键在 frame 聚焦时照常工作）。**P1-1 修复**：frame
+    onKeyDown 首行 closest("button, input, [contenteditable], [role=button]") 早退——父层
+    preventDefault 不再取消 ✎/× 子按钮的原生键盘激活（修复前可达但死键），重命名 input 的
+    Enter commit 不再冒泡成反选。
+  - **H3a ghost 联合几何**：ghost 从"组员原始坐标 min + 固定单卡尺寸"改为**per-sweep 聚合
+    原点（该 sweep 全部成员的 x/y 独立 min，镜像 deriveSweepGroups）的联合包围盒**——跨两
+    sweep 的组精确覆盖两聚合卡真实所在（e2e 逐像素核对：296×574 vs 旧代码 296×214 漏掉整个
+    第二 sweep）；部分组（组员 ⊂ sweep）精确贴合其 sweep 的聚合卡。
+  - **H3b ghost 拖拽实时跟随**：`subscribeLiveDrag` 订阅（canvas-utils 加订阅者注册表——
+    同步通知 + try/catch 防坏订阅者破坏拖拽循环；liveDrag 文档从 write-only 改为
+    writers/consumers 双向语义）+ ghostRefs/ghostMembersRef 双 ref——聚合卡拖拽中 ghost 经
+    DOM transform 实时跟随（无 React 帧渲染，与边补丁同成本级），groupBoxes 重算时清
+    transform + 清陈旧 ref。**P1-2 修复**：setLiveDrag 移出 `if (edgeDomRef.current)` 守卫
+    ——共享拖拽状态的唯一写者不以"有边可补"为前提（修复前无边聚合卡拖拽时 ghost 原地不动，
+    恰是 H3b 要修的 bug）。
+- **QA 闭环（38-a 审查 → 38-b 修复）**：P0×0（三个 P0 候选全降级或证伪——"computeRmsd 与
+  patchCandidates 丢更新"证伪：metrics 列唯一写者即本函数）；P1×3 全修（子元素键盘所有权 /
+  liveDrag 写者独立 / RMSD 轴原子提交）+ P2 精修 5 条（切库重置 rmsdRefPick、权重合并式
+  保留本地编辑、三处注释失实、route 耗时前提成文）。审查报告：`qa-review-h-lane.md`。
+- **E2E（Task 39，浏览器级 + DB 级 + 真实引擎）**：真实键盘链路（Tab→✎→Enter 开编辑器且
+  frame 不反选 = P1-1 回归通过；键盘改名 Enter 提交 → 防抖落库）；H3a 几何逐像素核对；
+  H3b 无边 + 有边双场景 mid-drag 卡/ghost 同步 transform + 释放全清 + DB 精确提交（P1-2
+  回归通过）；H1c UI 全链路（真实引擎 3 designs → 真实指针 Compute → 表格值与 API 逐行一致
+  13.6/16.37/0 + 权重播种 + chip）；H1a 真实文件叠合（RMSD 15.14 Å + 44 对齐残基）+ H1b
+  swap 角色互换重算 + 复位。移动端 375 零溢出 + footer 贴底；page/console/dev.log 零错误；
+  VLM 复核两截图 PASS；演示 DB 零污染（含一处自我污染的发现与清理——tour 调色板按钮误点
+  产生的 stray Input 节点）。
 
 ## 测试结论（驱动后续优先级）
 
 | # | 发现 | 影响 | 对应方向 |
 |---|------|------|----------|
-| 1-22 | （承上轮：Sweep/A/B/C/E/D/F 线结论与 e2e 工程标准——见 git 历史版本） | — | 已交付 |
-| 23 | **G1 集群 e2e 通道全绿**：四承诺（派发/sweep/同步回收、Stop 单点写+远端杀+终态守卫、slurm 判定链、poll-ceiling 交接+co-driver）全部拿到引擎/文件/DB/流式事件级证据；一条命令可复现，P6 自清理 + P0 自愈（冻结基线参照）使崩溃重跑收敛 | #21 闭环 | 已交付 G1 |
-| 24 | **sacct 分隔符 bug**（e2e 发现）：真 sacct -P 与 mock 均以 `|` 分隔，逗号 split 把整行当 state——正常完成全靠 .cf-exit 阶梯兜底，sacct 判定链从未真正工作 | 集群诚实性 | 已修复（e2e 断言 slurmState=COMPLETED） |
-| 25 | **mock 顶层拦截盲区**：调度器调用嵌在命令替换/脚本内时走真 bash PATH——需 loopback + 文件 shim（一态两门）补全；mock README 的"嵌套由 shim 覆盖"承诺此前未兑现 | 测试装置保真 | 已交付（P4 断言链） |
-| 26 | **P1-1 stop 与 in-flight sweep 竞态**：`run` 是 sweep 开始时的快照，`updateRun` 换对象；stop 在 sweepInFlight 之外——进行中 sweep 的 ALIVE 分支会用无条件写覆盖刚取消的行（僵尸 running 行 + 徽标丢失）。**执行通道不变量（条件写）必须覆盖 ToolJob 行写，不只是 Node** | 集群数据可信 | 已修复（live 重读 + 条件化 + 压力实证） |
-| 27 | **P0：`.env` 是入库文件**——测试 env 写进去会变成仓库默认（8s ceiling 即"每次真实集群跑都 8 秒交棒"）。测试 env 一律 `.env.local`（gitignored + 优先级更高） | 运维/提交卫生 | 已闭环（CONTRIBUTING 成文） |
-| 28 | **e2e 选择器同名陷阱**：调色板搜索框 placeholder 就是 "Search nodes…"（NodeSearch 是 "Search nodes by name, type, or status..."）——`includes('Search nodes')` 两个都命中，本会话 NodeSearch 断言一度误打到调色板 | e2e 工程标准 | 验收参考（用完整 placeholder 区分） |
-| 29 | **Radix footer 坐标点击静默落空再现**（分组提示框 Create 按钮）+ **"N selected" 浮条会遮挡其锚点区域的目标**（sweep 徽标点击被吞）——副作用断言不可省；DOM click 兜底 + 先清浮条 | e2e 工程标准 | 验收参考 |
-| 30 | **组框 stopPropagation 的交互代价**：从组框上起步的平移/框选不再生效（点击优先于拖拽面）；e2e 拖拽必须从"真背景点"起步（需 elementFromPoint 验证不在 frame/card 上） | e2e 工程标准 | 验收参考 |
+| 1-30 | （承上轮：Sweep/A/B/C/E/D/F/G 线结论与 e2e 工程标准——见 git 历史版本） | — | 已交付 |
+| 31 | **P1-1 键盘所有权模式**：父容器 onKeyDown 的 preventDefault 会取消子交互元素（button/input）的原生激活——可达但死键。修复模式 = 处理器首行 `closest("button, input, [contenteditable], [role='button']")` 早退（与 pointerdown 排除清单同构，键盘侧同样需要） | 可及性 | 已修复（e2e 回归实证） |
+| 32 | **P1-2 共享状态写者独立性**：liveDrag 被边存在性门控（`if (edgeDomRef.current)`）——唯一写者不应以特定消费者的存在为前提。教训泛化：**共享状态的写者与消费者解耦，写者无条件写** | 架构 | 已修复（无边场景回归实证） |
+| 33 | **RMW 循环原子性模式**：逐行读-改-写 + 后置元数据 = 竞态/中断下"数据与标签分离"。修复模式 = 两阶段（纯计算零写）+ 单 `$transaction` 原子提交 + P2025→404 | 数据可信 | 已修复 |
+| 34 | **Radix Select 的 "" 哨兵**：`value={x || undefined}` 的 undefined→string 切换触发 React uncontrolled→controlled 警告；Radix 明确把 "" 定义为"清空显示 placeholder"——value 全程为 string 即根除 | 代码卫生 | 已修复（console 零警告） |
+| 35 | **onboarding tour 调色板按钮会真实建节点**：用正则匹配按钮文本做"dismiss"可能误中节点描述按钮（本轮自我污染源）——e2e 必须精确匹配 "Skip" 并核对节点计数 | e2e 工程标准 | 验收参考 |
+| 36 | **开着的 Radix menu 全域阻断 elementFromPoint**：hit-test 断言返回 HTML——断言前必须先关菜单/Escape 清场 | e2e 工程标准 | 验收参考 |
+| 37 | **拖拽失败的 pan 副作用使坐标全漂**：失败拖拽 = 背景按下 → 画布平移 → 后续测量全部过期——每次拖拽前重新测量 + "Fit to content" 恢复；坐标经文件中转防转录错误 | e2e 工程标准 | 验收参考 |
+| 38 | **基线 demo screening 的 PDB 引用悬空**（预存 F4）：RMSD 轴需真实产出——服务端 400 "needs a linked PDB file on disk" 诚实报错；参考选择器只查 pdbPath 不查磁盘存在（P2-8） | UX | I 线 |
+| 39 | **参考 rmsd=0 锚定域**（设计取舍）：参考参与 metricDefs 域计算（min=0 恒定）→ 其余候选归一化区间被压扁 + 参考 rmsd 轴恒满分。chip 明示 + "与参考相似度"排序语义下可辩，但可考虑把参考排除出域计算 | 科研语义 | I 线（可选项） |
 
-## H 线 — 科研深度与可及性收口（P1，下一阶段建议）
+## I 线 — RMSD 轴打磨与遗留收口（P1，下一阶段建议）
 
-1. **叠合深化**（D 线 P2 提级）：候选详情单卡直接发起叠合（当前需经 Compare）；叠合
-   swap 按钮（参考/移动互换）；叠合 RMSD 作为可加权筛选指标（写入 campaign 指标体系）。
-2. **键盘可达组层**（QA 34-a P2-4）：组选择/编辑目前仅鼠标可达（frame onClick）；沿用
-   sweep-group-card 先例（role=group + 真按钮）给组框键盘路径。
-3. **ghost 视觉边界**（QA 34-a P2-3a/b）：成员跨两个 sweep 聚合的组 ghost 会横跨中间地带；
-   E3 拖拽中 ghost 静止到落点（视觉滞后）——均为纯视觉项，按需打磨。
-4. **认证与团队协作**（NextAuth）：工作流 / campaign 共享与操作审计（依赖面大，视进度弹性）。
-5. **叠合的集群/本地引擎对称性**：叠合当前纯客户端；大结构（>5K 残基）考虑 worker 线程。
+1. **RMSD 轴打磨**（#38/#39）：参考候选选择器预检磁盘存在（标记/过滤悬空 PDB）；
+   rescan 后新候选无 rmsd 键的 UI 提示（"N 个新候选尚无 RMSD，请重算"）；参考排除出域
+   计算的可选项（或排序时参考行加视觉标记）。
+2. **Escape 分层语义成文**（QA 38-a P2-3）：pending 连线 + frame 激活时 Escape 需两次（先
+   反选组再取消连线）——已知矩阵，CONTRIBUTING/验收参考记录或改为单次冒泡到全局。
+3. **叠合深化遗留**（D 线延续）：多链叠合选择（当前自动取对齐链）；per-region RMSD
+   （CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）。
+4. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
+   建议独立分支推进。
+5. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
 
 ## 验收标准（延续并扩充）
 
@@ -88,17 +94,19 @@
   文件/DB 级证据）+ undo/redo DB 一致性检查。
 - **集群通道任何改动必须跑 `bun run e2e:cluster`（基础）+ 完整模式（ceiling，见
   CONTRIBUTING 集群 e2e 节）**——sweep/stop/同步/交接的语义回归由这条通道守门（#23）。
-- **执行通道任何新增写点必须条件化**——本阶段已扩展到 **ToolJob 行写**（`where status
-  notIn terminal`，sweep 所有出口；Stop/看门狗落定不可复活是既定不变量，第六/七轮实证）；
-  集群 sweep 的行写同样不得覆盖终态（applySweepBlock 入口 + 出口双守卫）。
-- **卡内交互元素（button/链接）必须用真实指针事件实测点击**（setPointerCapture 会吞掉派生
-  click，JS click() 测不出——B 线教训；对话框内 shadcn 按钮可用 JS click，节点卡选择必须
-  物理指针；**Radix footer 坐标点击必须验证副作用**——本会话 Create 按钮再次落空）。
-- **e2e 选择器用完整 placeholder/测试钩子区分同类元素**（"Search nodes…" vs "Search nodes
-  by…"——#28）；**浮动 UI（选中条/toast）可能遮挡锚点区域目标**，交互前先清场（#29）。
-- **拖拽/点击 e2e 前必须 elementFromPoint 断言落点在目标上且不在拦截层上**（组框
-  stopPropagation 会吃掉从组框起步的平移——#30；React 18+ 批处理吞同 eval 事件序列——
-  setTimeout 间隔派发）。
+- **执行通道任何新增写点必须条件化**——已覆盖 Node.status 与 ToolJob 行写（sweep 全出口）；
+  **RMW 循环类写点（逐行改 JSON 列）必须两阶段 + 单事务原子提交**（#33：值与元数据标签
+  永不分离）。
+- **卡内交互元素（button/链接）必须用真实指针事件实测点击**；**父容器 onKeyDown 处理
+  Enter/Space/Escape 时首行必须排除子交互元素**（#31：closest 早退，否则子按钮键盘死键）；
+  键盘链路 e2e 必须真实键盘事件（Tab 序 + Enter 激活 + 副作用断言）。
+- **共享拖拽/订阅状态的唯一写者不得以消费者存在为前提**（#32）；订阅回调逐消费者
+  try/catch。
+- **e2e 选择器用完整 placeholder/测试钩子区分同类元素**；**浮动 UI（选中条/toast/menu）
+  会遮挡锚点区域或全域阻断 hit-test——交互与断言前先清场**（#29/#36）；**拖拽前重新测量
+  坐标（pan 副作用使旧测量过期）+ 失败后 Fit to content 恢复**（#37）。
+- **Select 受控值全程同类型**（Radix "" 哨兵，#34）；**e2e 收尾必须字段级核对节点计数**
+  （tour 调色板按钮会真实建节点——#35）。
 - **客户端终态仲裁镜像**：晚到的 SSE/POST 快照不得把本地终态打回非终态（updatedAt/
   rowUpdatedAt 水位 + upsertNode/setNodeStatus 守卫）。
 - **demo:reset / db 变更后必须重启 dev server**（守护器）——陈旧 Prisma client 之外还有
@@ -110,4 +118,5 @@
 - 演示 DB 卫生：e2e 后字段级核对（节点/边计数、screening 权重、ToolJob 行数、连接注册表
   ——集群 e2e 的 P6 已内建该核对并自愈收敛）。
 - 收尾必查：`bun run lint` 零告警、`tsc --noEmit`（src/ + scripts/ + mini-services）零新增、
-  dev.log 无运行时错误、e2e 截图 VLM 复核（截图前断言目标 UI 在 DOM）。
+  dev.log 无运行时错误、**console 无警告（含 React 受控切换类）**、e2e 截图 VLM 复核
+  （截图前断言目标 UI 在 DOM）。

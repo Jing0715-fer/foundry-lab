@@ -23,17 +23,18 @@ export interface EdgeGeom {
  * Module-level live-drag state.
  *
  * Holds the in-progress card drag offset (affected node IDS + dx/dy in WORLD
- * coordinates). This state is WRITE-ONLY for the drag loops: node-card.tsx
- * (single card) and sweep-group-card.tsx (aggregate group — F-lane liveDrag
- * extension: one drag, many member nodes shifted together) write to it every
- * rAF frame and clear it on pointerup, so any future consumer that DOES need
- * the live offset knows the shape it will find here.
+ * coordinates). The drag loops are the WRITERS: node-card.tsx (single card)
+ * and sweep-group-card.tsx (aggregate group — F-lane liveDrag extension: one
+ * drag, many member nodes shifted together) write to it every rAF frame and
+ * clear it on pointerup. Consumers can either receive the offset explicitly
+ * (computeEdgeGeom/computeAllEdgeGeoms's optional `drag` param — the
+ * render-space callers pass it, see the P1-1 fix in sweep-group-card.tsx) or
+ * subscribe via subscribeLiveDrag (H3b: visual layers that follow the drag
+ * without a React re-render per frame, e.g. the ghost group frames).
  *
  * This is the cryoflow pattern: edges are patched directly via DOM setAttribute
- * (no React re-render per frame); the shared geometry helpers receive the
- * live offset through computeEdgeGeom/computeAllEdgeGeoms's optional `drag`
- * param (a pure-function signature — the render-space callers pass it
- * explicitly, see the P1-1 render-space fix in sweep-group-card.tsx).
+ * (no React re-render per frame); ghost frames now do the same through the
+ * subscription above.
  */
 export interface LiveDrag {
   ids: string[];
@@ -43,8 +44,35 @@ export interface LiveDrag {
 
 let liveDrag: LiveDrag | null = null;
 
+// H3b: lightweight subscription so purely-visual layers (the ghost frames of
+// node-group.tsx) can follow an in-progress drag WITHOUT a React re-render
+// per frame — the callbacks are invoked synchronously by setLiveDrag, same
+// cost class as the DOM edge patches. Drag loops stay the only writers.
+const liveDragSubs = new Set<(drag: LiveDrag | null) => void>();
+
 export function setLiveDrag(o: LiveDrag | null): void {
   liveDrag = o;
+  for (const fn of liveDragSubs) {
+    try {
+      fn(o);
+    } catch {
+      // a broken subscriber must never break the drag loop
+    }
+  }
+}
+
+/**
+ * Subscribe to live-drag updates (H3b). Returns an unsubscribe function.
+ * The callback fires synchronously on every setLiveDrag (rAF-cadence during
+ * a drag; once with null when the drag ends/cancels).
+ */
+export function subscribeLiveDrag(
+  fn: (drag: LiveDrag | null) => void,
+): () => void {
+  liveDragSubs.add(fn);
+  return () => {
+    liveDragSubs.delete(fn);
+  };
 }
 
 /** Anchor point of a port on a card. dir = "out" (right edge) | "in" (left edge). */

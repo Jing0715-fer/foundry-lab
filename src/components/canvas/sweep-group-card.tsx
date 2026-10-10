@@ -175,9 +175,18 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
       if (cardRef.current) {
         cardRef.current.style.transform = `translate(${cdx.toFixed(2)}px, ${cdy.toFixed(2)}px)`;
       }
+      // P1-2 fix (QA 38-a): setLiveDrag is the SOLE writer of the shared
+      // drag state — the ghost-frame follow (H3b) must not depend on "this
+      // aggregate has edges to patch". An edgeless aggregate previously
+      // skipped setLiveDrag entirely, leaving its ghosts standing still
+      // while the card slid away (the exact bug H3b set out to fix).
+      setLiveDrag({
+        ids: members.map((m) => m.id),
+        dx: cdx,
+        dy: cdy,
+      });
       // LIVE edge follow (F-lane): patch every connected edge's geometry for
-      // the whole-group offset — the shared liveDrag state (ids = members)
-      // also informs any defensive geometry consumer mid-drag.
+      // the whole-group offset.
       if (edgeDomRef.current) {
         // P1-1 fix: geometry must run in RENDER space. Collapsed members
         // render at the AGGREGATE's top-left (workflow-canvas layoutNodes) —
@@ -194,11 +203,6 @@ export function SweepGroupCard({ group }: { group: SweepGroupCardData }) {
           cdy,
           renderNodes,
         );
-        setLiveDrag({
-          ids: members.map((m) => m.id),
-          dx: cdx,
-          dy: cdy,
-        });
       }
     });
   };

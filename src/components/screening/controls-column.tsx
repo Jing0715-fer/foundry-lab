@@ -8,13 +8,20 @@
  */
 
 import * as React from "react";
-import { Loader2, RotateCcw, Save, Search } from "lucide-react";
+import { Box, Loader2, RotateCcw, Save, Search } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
 import type { ScreeningMetricDef } from "@/lib/types";
 import { PRESETS, formatMetric, type WeightPreset } from "./scoring";
@@ -56,6 +63,16 @@ export interface ControlsColumnProps {
   onSaveWeights: () => void;
   weightsDirtyFlag: boolean;
   savingWeights: boolean;
+  /** H1c: candidates eligible as the RMSD reference (linked PDB only). */
+  rmsdCandidates: { id: string; name: string }[];
+  /** H1c: the reference the axis was last computed against (null = never). */
+  rmsdRef: { id: string; name: string } | null;
+  rmsdBusy: boolean;
+  /** Local select value — the parent owns it so it survives re-renders. */
+  rmsdRefPick: string;
+  onRmsdRefPick: (id: string) => void;
+  /** Compute (or recompute against a new reference) — fires the POST. */
+  onComputeRmsd: (refId: string) => void;
 }
 
 export function ControlsColumn({
@@ -78,6 +95,12 @@ export function ControlsColumn({
   onSaveWeights,
   weightsDirtyFlag,
   savingWeights,
+  rmsdCandidates,
+  rmsdRef,
+  rmsdBusy,
+  rmsdRefPick,
+  onRmsdRefPick,
+  onComputeRmsd,
 }: ControlsColumnProps) {
   return (
     <Card className="shadow-sm">
@@ -291,6 +314,82 @@ export function ControlsColumn({
               Save
             </Button>
           </div>
+        </div>
+        {/* H1c: structural-RMSD axis — compute a real "rmsd" metric for every
+            candidate against one reference (server-side superposition). The
+            values land in candidate metrics, so sorting / range filters /
+            weights / CSV / report all treat it like any engine metric. */}
+        <div className="space-y-2 border-t pt-3">
+          <Label className="flex items-center gap-1.5">
+            <Box className="size-3.5" />
+            Structural RMSD
+          </Label>
+          {rmsdCandidates.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No candidates with a linked PDB file yet.
+            </p>
+          ) : (
+            <>
+              {rmsdRef && (
+                <p
+                  className="rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground"
+                  data-testid="rmsd-ref-chip"
+                >
+                  Axis reference: <span className="font-medium text-foreground">{rmsdRef.name}</span>
+                  <span className="text-muted-foreground"> (rmsd 0 Å)</span>
+                </p>
+              )}
+              <Select
+                // "" (not undefined): Radix treats it as cleared → placeholder,
+                // and the value prop stays a STRING from the first render —
+                // switching undefined→string mid-lifetime is the React
+                // "uncontrolled to controlled" warning.
+                value={rmsdRefPick || rmsdRef?.id || ""}
+                onValueChange={onRmsdRefPick}
+              >
+                <SelectTrigger
+                  className="h-11 md:h-9"
+                  aria-label="RMSD reference candidate"
+                >
+                  <SelectValue placeholder="Reference candidate…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {rmsdCandidates.map((c) => (
+                    <SelectItem key={c.id} value={c.id}>
+                      <span className="truncate">{c.name}</span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                size="sm"
+                className="h-11 w-full gap-1.5 md:h-9"
+                disabled={rmsdBusy || !rmsdRefPick}
+                onClick={() => {
+                  if (rmsdRefPick) onComputeRmsd(rmsdRefPick);
+                }}
+                data-testid="rmsd-compute"
+                title="Compute the global Cα RMSD of every PDB candidate against the reference (optimal rigid superposition)"
+              >
+                {rmsdBusy ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin" />
+                    Computing…
+                  </>
+                ) : (
+                  <>
+                    <Box className="size-3.5" />
+                    {rmsdRef ? "Recompute RMSD" : "Compute RMSD"}
+                  </>
+                )}
+              </Button>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                Adds a weightable <span className="font-medium">rmsd</span> metric (Å, lower
+                is more similar) to every candidate with a PDB file — computed
+                via sequence alignment + optimal rigid superposition.
+              </p>
+            </>
+          )}
         </div>
       </CardContent>
     </Card>

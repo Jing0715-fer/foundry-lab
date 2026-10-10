@@ -17,6 +17,7 @@ import {
   BookmarkCheck,
   Box,
   Check,
+  Layers,
   Loader2,
   Plus,
   RotateCcw,
@@ -84,6 +85,14 @@ interface CandidateDetailProps {
   score: number | null;
   rank: number | null;
   onPatch: (ids: string[], patch: CandidatePatch) => void;
+  /**
+   * H1a: same-screening candidates (with a linked PDB) this candidate can be
+   * superposed against — rendered as the "Structural comparison" picker.
+   * Omitted/undefined keeps the section hidden (older call sites).
+   */
+  superposeOptions?: { id: string; name: string }[];
+  /** H1a: launch the 3D superposition overlay (this candidate = reference). */
+  onSuperposeWith?: (otherId: string) => void;
 }
 
 const STATUSES: ScreeningCandidateStatus[] = [
@@ -116,6 +125,8 @@ export function CandidateDetail({
   score,
   rank,
   onPatch,
+  superposeOptions,
+  onSuperposeWith,
 }: CandidateDetailProps) {
   const id = candidate?.id ?? null;
 
@@ -127,10 +138,14 @@ export function CandidateDetail({
   // Tags editor state.
   const [tagInput, setTagInput] = React.useState("");
 
+  // H1a: picked superposition partner (reset when the candidate changes).
+  const [superposeTarget, setSuperposeTarget] = React.useState("");
+
   React.useEffect(() => {
     setNotesDraft(candidate?.notes ?? "");
     setNotesDirty(false);
     setTagInput("");
+    setSuperposeTarget("");
   }, [id, candidate?.notes]);
 
   if (!candidate) {
@@ -496,6 +511,70 @@ export function CandidateDetail({
               </p>
             )}
           </section>
+
+          {/* Structural comparison (H1a) — superpose this candidate directly
+              against another one from the same campaign, without going through
+              the table selection + Compare dialog round trip. This candidate
+              is the REFERENCE (stays put); the picked one is rigid-fitted onto
+              it — the dialog's Swap button flips the roles. */}
+          {superposeOptions !== undefined && onSuperposeWith && (
+            <section className="space-y-2">
+              <h4 className="flex items-center gap-1.5 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                <Layers className="size-3.5" />
+                Structural comparison
+              </h4>
+              {superposeOptions.length === 0 ? (
+                <p className="rounded-lg border border-dashed p-3 text-center text-xs text-muted-foreground">
+                  No other candidates with a PDB file to superpose against.
+                </p>
+              ) : (
+                <div className="flex gap-2">
+                  <Select
+                    // "" (not undefined): Radix shows the placeholder for an
+                    // empty-string value, and the prop stays a STRING across
+                    // the component's lifetime (undefined→string switching is
+                    // the React "uncontrolled to controlled" warning).
+                    value={superposeTarget}
+                    onValueChange={setSuperposeTarget}
+                  >
+                    <SelectTrigger
+                      className="h-11 min-w-0 flex-1 md:h-9"
+                      aria-label="Superpose against"
+                    >
+                      <SelectValue placeholder="Superpose against…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {superposeOptions.map((o) => (
+                        <SelectItem key={o.id} value={o.id}>
+                          <span className="truncate">{o.name}</span>
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-11 shrink-0 gap-1.5 md:h-9"
+                    disabled={!superposeTarget || !candidate.pdbPath}
+                    title={
+                      !candidate.pdbPath
+                        ? "This candidate has no linked PDB file"
+                        : superposeTarget
+                          ? "Open the 3D superposition overlay (this candidate is the reference)"
+                          : "Pick a candidate to superpose against"
+                    }
+                    data-testid="detail-superpose-launch"
+                    onClick={() => {
+                      if (superposeTarget) onSuperposeWith(superposeTarget);
+                    }}
+                  >
+                    <Box className="size-4" />
+                    Superpose 3D
+                  </Button>
+                </div>
+              )}
+            </section>
+          )}
 
           {/* Provenance footer */}
           <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">

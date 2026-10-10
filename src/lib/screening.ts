@@ -26,6 +26,10 @@ import { toNodeDTO } from "./workflow-engine";
 // the scan route — see fix for the review's "private python candidate list
 // drifts from the platform layer" finding).
 import { resolveEnginePython } from "./real-executor";
+// H1c: server-side structural comparison (pure module — no React/DOM; the
+// screening lib is imported by API routes only, so the molecular parser
+// never lands in a client bundle).
+import { compareStructures } from "./superpose-compare";
 import type {
   NodeDTO,
   PromoteResultDTO,
@@ -132,6 +136,17 @@ const METRIC_REGISTRY: Record<string, MetricDefSeed> = {
     higherIsBetter: true,
     hint: "Buried SASA across the VH/VL interface — more burial = more stable pairing",
   },
+  // H1c: structural-RMSD axis (computed server-side via compareStructures
+  // against the campaign's chosen reference candidate — see computeRmsdAxis).
+  rmsd: {
+    key: "rmsd",
+    label: "RMSD",
+    unit: "Å",
+    higherIsBetter: false,
+    good: 1,
+    warn: 2.5,
+    hint: "Global Cα RMSD vs the reference candidate (optimal rigid superposition — lower is more similar)",
+  },
 };
 
 /** Stable display order: registry keys first, then auto keys alphabetically. */
@@ -148,6 +163,7 @@ const REGISTRY_ORDER = [
   "h3_len",
   "energy_kt",
   "interface_sasa",
+  "rmsd",
 ];
 
 /** Primary metrics default to weight 2; every other observed metric → 1. */
@@ -381,6 +397,8 @@ interface ScreeningRow {
   sourceLabel: string | null;
   weights: string;
   metricDefs: string;
+  /** H1c: candidate id the rmsd axis was computed against (plain string). */
+  rmsdRefId: string | null;
   status: string;
   createdAt: Date | string;
   updatedAt: Date | string;
@@ -408,6 +426,8 @@ interface CandidateRow {
 
 /** Candidate projection needed for screening counts + domain recomputation. */
 interface CandidateLite {
+  id: string;
+  name: string;
   metrics: string;
   starred: boolean;
   status: string;
@@ -440,6 +460,14 @@ function toCandidateDTO(c: CandidateRow): ScreeningCandidateDTO {
 /** Serialize a screening row + its candidates → DTO (domains recomputed NOW). */
 function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): ScreeningDTO {
   const metricValues = candidates.map((c) => parseJson<Record<string, number>>(c.metrics, {}));
+  // H1c: resolve the RMSD-axis reference candidate. A DELETED reference (or
+  // a bare column) resolves to null — the DTO never lies about which
+  // structure the rmsd metric was computed against.
+  let rmsdRef: ScreeningDTO["rmsdRef"] = null;
+  if (row.rmsdRefId) {
+    const ref = candidates.find((c) => c.id === row.rmsdRefId);
+    if (ref) rmsdRef = { id: ref.id, name: ref.name };
+  }
   return {
     id: row.id,
     name: row.name,
@@ -449,6 +477,7 @@ function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): Screeni
     sourceLabel: row.sourceLabel,
     weights: parseJson<Record<string, number>>(row.weights, {}),
     metricDefs: computeMetricDefs(metricValues),
+    rmsdRef,
     status: row.status,
     candidateCount: candidates.length,
     starredCount: candidates.filter((c) => c.starred).length,
@@ -1142,7 +1171,9 @@ export interface CreateScreeningInput {
 export async function listScreenings(): Promise<ScreeningDTO[]> {
   const rows = await db.screening.findMany({
     orderBy: { createdAt: "desc" },
-    include: { candidates: { select: { metrics: true, starred: true, status: true } } },
+    include: {
+      candidates: { select: { id: true, name: true, metrics: true, starred: true, status: true } },
+    },
   });
   return rows.map((r) => toScreeningDTO(r, r.candidates));
 }
@@ -1157,6 +1188,143 @@ export async function getScreeningDetail(
   if (!row) return null;
   const candidates = sortCandidates(row.candidates as CandidateRow[]);
   return { screening: toScreeningDTO(row, candidates), candidates: candidates.map(toCandidateDTO) };
+}
+
+// ── H1c: structural RMSD axis ───────────────────────────────────────────────
+
+/**
+ * Compute the structural-RMSD metric for every candidate in a screening
+ * against ONE reference candidate (H1c: RMSD as a weightable ranking axis).
+ *
+ * Semantics:
+ *  - the reference candidate itself gets rmsd = 0 (identical structure — it
+ *    stays IN the ranking rather than silently dropping the best row);
+ *  - every candidate with a linked PDB gets the global Cα RMSD of the optimal
+ *    rigid superposition onto the reference (compareStructures, server-side);
+ *  - candidates WITHOUT a PDB (or whose PDB fails to read/parse/align) get
+ *    the key REMOVED — a recompute against a different reference must never
+ *    leave stale values behind (missing metrics are skipped by the frozen
+ *    scoring contract; weights renormalize over the present metrics);
+ *  - rmsdRefId is persisted on the screening row so the UI can label the
+ *    axis ("RMSD vs <name>"); the DTO resolves it defensively to null once
+ *    the reference candidate is deleted.
+ *
+ * After writing the metrics, refreshScreeningMetrics() recomputes metricDefs
+ * (domains over the new values) and seeds the default weight — the rmsd
+ * column then flows through EVERYTHING a normal metric does: sorting, range
+ * filters, weightable ranking, CSV + Markdown report, Compare rows.
+ *
+ * Atomicity: computation is write-free; candidate metrics + rmsdRefId commit
+ * in a single $transaction, so the values and the reference label can never
+ * disagree (crash mid-run or concurrent double-compute → one whole winner).
+ */
+export async function computeRmsdAxis(
+  id: string,
+  refId: string,
+): Promise<{
+  screening: ScreeningDTO;
+  candidates: ScreeningCandidateDTO[];
+  scored: number;
+  skipped: number;
+} | null> {
+  if (typeof refId !== "string" || refId.length === 0) {
+    throw new ScreeningError("refId is required (candidate id to superpose against)", 400);
+  }
+  const row = await db.screening.findUnique({ where: { id } });
+  if (!row) return null;
+
+  const candidates = await db.screeningCandidate.findMany({
+    where: { screeningId: id },
+    orderBy: { name: "asc" },
+  });
+  const ref = candidates.find((c) => c.id === refId);
+  if (!ref) {
+    throw new ScreeningError("Reference candidate not found in this screening", 404);
+  }
+  if (!ref.pdbPath || !existsSync(ref.pdbPath)) {
+    throw new ScreeningError("Reference candidate needs a linked PDB file on disk", 400);
+  }
+
+  let refText: string;
+  try {
+    refText = await fsp.readFile(ref.pdbPath, "utf-8");
+  } catch (e) {
+    throw new ScreeningError(
+      `Failed to read reference PDB (${ref.pdbPath}): ${(e as Error).message}`,
+      400,
+    );
+  }
+
+  // ── Phase 1: pure computation (NO writes) ─────────────────────────────────
+  // P1-3 fix (QA 38-a): the old loop updated candidate rows one by one and
+  // persisted rmsdRefId only at the END — a crash mid-loop (or two concurrent
+  // computes interleaving) could leave rows mixed across two references while
+  // the chip pointed at the old one, breaking the DTO's "never lies about
+  // which structure" contract. Computing everything first and committing in
+  // ONE transaction makes values+reference flip atomically; whichever
+  // concurrent transaction commits last wins WHOLE (never mixed).
+  interface RmsdUpdate { id: string; metrics: string; }
+  const updates: RmsdUpdate[] = [];
+  let scored = 0;
+  let skipped = 0;
+  for (const c of candidates) {
+    const metrics = parseJson<Record<string, number>>(c.metrics, {});
+    if (c.id === refId) {
+      // Reference itself: identical structure → 0 Å.
+      metrics.rmsd = 0;
+      scored++;
+    } else {
+      // Compute against the reference; ANY failure (no PDB, read error,
+      // parse error, low similarity) removes the key — never stale or NaN.
+      let rmsd: number | null = null;
+      if (c.pdbPath && existsSync(c.pdbPath)) {
+        try {
+          const text = await fsp.readFile(c.pdbPath, "utf-8");
+          const result = compareStructures(refText, text, ref.name, c.name);
+          if (result.ok && Number.isFinite(result.rmsd)) {
+            rmsd = Math.round(result.rmsd * 100) / 100;
+          }
+        } catch {
+          rmsd = null;
+        }
+      }
+      if (rmsd !== null) {
+        metrics.rmsd = rmsd;
+        scored++;
+      } else {
+        delete metrics.rmsd;
+        skipped++;
+      }
+    }
+    updates.push({ id: c.id, metrics: JSON.stringify(metrics) });
+  }
+
+  // ── Phase 2: atomic commit ────────────────────────────────────────────────
+  try {
+    await db.$transaction(async (tx) => {
+      for (const u of updates) {
+        await tx.screeningCandidate.update({
+          where: { id: u.id },
+          data: { metrics: u.metrics },
+        });
+      }
+      await tx.screening.update({ where: { id }, data: { rmsdRefId: refId } });
+    });
+  } catch (e) {
+    // P2025 = a row vanished mid-compute (the screening cascaded its
+    // candidates away) → honest 404, not a raw Prisma 500.
+    if ((e as { code?: string }).code === "P2025") {
+      throw new ScreeningError("Screening not found", 404);
+    }
+    throw e;
+  }
+  // Persisted defs/weights refresh (rmsd domain + default weight seeding).
+  await refreshScreeningMetrics(id);
+
+  const detail = await getScreeningDetail(id);
+  // Screening deleted between the transaction and this read → route 404s.
+  if (!detail) return null;
+  return { ...detail, scored, skipped };
 }
 
 // ── Sweep source resolution (shared by create + rescan) ──────────────────────
@@ -1383,7 +1551,7 @@ export async function createScreening(input: CreateScreeningInput): Promise<Scre
     });
     const candidates = await db.screeningCandidate.findMany({
       where: { screeningId: screening.id },
-      select: { metrics: true, starred: true, status: true },
+      select: { id: true, name: true, metrics: true, starred: true, status: true },
     });
     return toScreeningDTO(updated, candidates);
   } catch (err) {
@@ -1495,7 +1663,7 @@ export async function patchScreening(
   const row = await db.screening.update({ where: { id }, data });
   const candidates = await db.screeningCandidate.findMany({
     where: { screeningId: id },
-    select: { metrics: true, starred: true, status: true },
+    select: { id: true, name: true, metrics: true, starred: true, status: true },
   });
   return toScreeningDTO(row, candidates);
 }

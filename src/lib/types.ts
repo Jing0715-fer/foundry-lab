@@ -440,6 +440,11 @@ export interface ScreeningDTO {
   /** metricKey → weight (0–5). Composite = 100 · Σ(w·norm)/Σw. */
   weights: Record<string, number>;
   metricDefs: ScreeningMetricDef[];
+  /**
+   * H1c: the candidate the structural-RMSD axis was computed against
+   * (null when never computed, or the reference was deleted since).
+   */
+  rmsdRef: { id: string; name: string } | null;
   status: string;
   candidateCount: number;
   starredCount: number;

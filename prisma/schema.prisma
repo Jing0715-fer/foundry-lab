@@ -257,6 +257,10 @@ model Screening {
   weights     String   @default("{}")
   // JSON: ScreeningMetricDef[] — derived at harvest time from real metrics
   metricDefs  String   @default("[]")
+  // H1c: candidate id the structural-RMSD axis was computed against (plain
+  // string, no FK — defensively resolved to null in the DTO when the
+  // candidate was deleted; same pattern as sourceRef).
+  rmsdRefId   String?
   status      String   @default("ready") // ready | harvesting | failed
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
