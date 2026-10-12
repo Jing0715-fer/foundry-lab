@@ -143,7 +143,7 @@ export async function GET(
        * synced artifacts). Returns the fresh node row when it changed.
        */
       const reconcileClusterOutcome = async (
-        nodeRow: { id: string; status: string; logs: string | null },
+        nodeRow: { id: string; status: string; logs: string | null; runToken: string | null },
       ): Promise<{ status: string; progress: number; logs: string; result: string | null; writtenAt: Date } | null> => {
         if (nodeRow.status !== "running") return null;
         const jobId = clusterJobIdFromLogs(nodeRow.logs ?? "");
@@ -183,10 +183,14 @@ export async function GET(
         // takes the cluster outcome — a user Stop (or the local watchdog)
         // may have settled this node between the poll's read and this write,
         // and a late cluster completion must never resurrect that verdict.
+        // I-6 (#47): the token fence also protects a row that a stop→retry
+        // RE-CLAIMED between the read and this write — the reconcile only
+        // settles the exact run it observed (rows carry their token from
+        // the claim on; pre-token rows match on null == null).
         const writeMark = new Date();
         const settled = await db.node
           .updateMany({
-            where: { id: nodeRow.id, status: "running" },
+            where: { id: nodeRow.id, status: "running", runToken: nodeRow.runToken },
             data: {
               status: nodeStatus,
               result,

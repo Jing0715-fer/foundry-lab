@@ -23,6 +23,12 @@
 //          row the cluster sweep updates).
 //   5. Return { started, completed, error? } when the pool drains.
 //
+// I-6 execution token (#47): the claim mints a runToken lane-side and
+// writes it ATOMICALLY with status=running; both conditional persists and
+// the lane-local crash net add it to their `where`. A lane that resolves
+// late (unkillable LLM call) after a stop→retry cycle holds a STALE token —
+// its write matches zero rows and the new run's row is never overwritten.
+//
 // A node that ends the loop in "running" state does NOT count as completed
 // — that's the poll-ceiling honesty rule (unchanged from the sequential
 // runner). Failure does NOT prune downstream: the sequential runner let a
@@ -155,63 +161,83 @@ export async function runWorkflowById(
     // ATOMIC claim pending/idle → running: only a row still in pending/idle
     // flips; a concurrent lane (double-clicked Run, single-node run, the
     // scheduler) that raced us to this node sees count 0 and skips it
-    // instead of double-executing.
+    // instead of double-executing. The claim ALSO stamps this lane's
+    // runToken (I-6) — minted here so the lane owns it from the flip on.
+    const runToken = crypto.randomUUID();
     const claimed = await db.node.updateMany({
       where: { id: nodeId, status: { in: ["pending", "idle"] } },
       data: {
         status: "running",
         progress: 10,
         startedAt: nodeRow.startedAt ?? new Date(),
+        runToken,
       },
     });
     if (claimed.count === 0) return;
 
-    // Gather inputs from the latest snapshot (parallel siblings may have
-    // written results while we waited for the claim).
-    const freshWf = await db.workflow.findUnique({
-      where: { id: workflowId },
-      include: { nodes: true, edges: true },
-    });
-    const freshNodes = (freshWf?.nodes ?? []).map(toNodeDTO);
-    const freshEdges = (freshWf?.edges ?? []).map(toEdgeDTO);
-    const currentNode = freshNodes.find((n) => n.id === nodeId);
-    if (!currentNode) return;
-    const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
-
-    // E1 watchdog: a wedged engine fails the node after NODE_TIMEOUT_MS and
-    // frees this lane instead of wedging the whole pool.
-    const { result, logs, status } = await executeNodeGuarded(
-      currentNode,
-      inputs,
-      workflowId,
-    );
-
-    // E4 conditional persist: only a node STILL "running" takes the final
-    // state. A user Stop (or the watchdog path racing a late engine result)
-    // settles the row first — the in-flight execution's eventual outcome must
-    // not resurrect it.
-    if (status === "running") {
-      // Poll-ceiling outcome (cluster job still running remotely): persist
-      // the honest in-progress result/logs but NO completedAt and NO
-      // progress-100 — the node legitimately stays running.
-      await db.node.updateMany({
-        where: { id: nodeId, status: "running" },
-        data: { status, result, logs, progress: 90 },
+    // Everything below owns THIS run's row only — failures persist failed
+    // with the token fence so a lane that dies after a stop→retry can never
+    // stamp the new run's row (the old pool-level net wrote `where status
+    // running` WITHOUT a token — exactly the #47 window; it is gone now).
+    try {
+      // Gather inputs from the latest snapshot (parallel siblings may have
+      // written results while we waited for the claim).
+      const freshWf = await db.workflow.findUnique({
+        where: { id: workflowId },
+        include: { nodes: true, edges: true },
       });
-      return;
-    }
+      const freshNodes = (freshWf?.nodes ?? []).map(toNodeDTO);
+      const freshEdges = (freshWf?.edges ?? []).map(toEdgeDTO);
+      const currentNode = freshNodes.find((n) => n.id === nodeId);
+      if (!currentNode) return;
+      const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
 
-    const persisted = await db.node.updateMany({
-      where: { id: nodeId, status: "running" },
-      data: {
-        status,
-        result,
-        logs,
-        progress: 100,
-        completedAt: new Date(),
-      },
-    });
-    if (persisted.count > 0 && status === "completed") completedCount++;
+      // E1 watchdog: a wedged engine fails the node after NODE_TIMEOUT_MS and
+      // frees this lane instead of wedging the whole pool.
+      const { result, logs, status } = await executeNodeGuarded(
+        currentNode,
+        inputs,
+        workflowId,
+      );
+
+      // E4 conditional persist: only a node STILL "running" takes the final
+      // state. A user Stop (or the watchdog path racing a late engine result)
+      // settles the row first — the in-flight execution's eventual outcome
+      // must not resurrect it. I-6: the token fence also protects a
+      // stop→retry's freshly re-claimed row from THIS lane's late outcome.
+      if (status === "running") {
+        // Poll-ceiling outcome (cluster job still running remotely): persist
+        // the honest in-progress result/logs but NO completedAt and NO
+        // progress-100 — the node legitimately stays running.
+        await db.node.updateMany({
+          where: { id: nodeId, status: "running", runToken },
+          data: { status, result, logs, progress: 90 },
+        });
+        return;
+      }
+
+      const persisted = await db.node.updateMany({
+        where: { id: nodeId, status: "running", runToken },
+        data: {
+          status,
+          result,
+          logs,
+          progress: 100,
+          completedAt: new Date(),
+        },
+      });
+      if (persisted.count > 0 && status === "completed") completedCount++;
+    } catch {
+      // Lane-local crash net (token-fenced): runNode's own failures mark
+      // THIS run failed so the pool never wedges — without touching a row
+      // a stop→retry already re-claimed (I-6).
+      await db.node
+        .updateMany({
+          where: { id: nodeId, status: "running", runToken },
+          data: { status: "failed", completedAt: new Date() },
+        })
+        .catch(() => {});
+    }
   }
 
   // ── Bounded worker pool (event-driven pump) ────────────────────────────
@@ -227,17 +253,12 @@ export async function runWorkflowById(
         peakConcurrency = Math.max(peakConcurrency, inFlight);
         void runNode(nodeId)
           .catch(() => {
-            // runNode's own failure paths persist a failed status; a
-            // thrown exception (DB hiccup) marks the node failed so the
-            // pool never wedges on a phantom "running" lane. Conditional on
-            // still-running: a user Stop that already landed `cancelled`
-            // must not be resurrected as failed by this safety net.
-            void db.node
-              .updateMany({
-                where: { id: nodeId, status: "running" },
-                data: { status: "failed", completedAt: new Date() },
-              })
-              .catch(() => {});
+            // Pre-claim throws only (runNode absorbs everything after its
+            // claim via the token-fenced net inside it — I-6). A pre-claim
+            // throw means the row was never ours: there is nothing to
+            // unwedge, and the OLD blanket `where status running` failed-
+            // write could stomp a row another lane legitimately owned —
+            // removed on purpose.
           })
           .finally(() => {
             inFlight--;

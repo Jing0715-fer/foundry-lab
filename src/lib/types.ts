@@ -420,6 +420,13 @@ export interface ScreeningCandidateDTO {
   fastaPath: string | null;
   sequence: string | null;
   length: number | null;
+  /**
+   * I-1 (#38): pdbPath is set AND the file exists on disk (checked at
+   * DTO-serialization time on the server). The demo baseline carries
+   * dangling PDB references — this flag lets the RMSD reference selector
+   * DISABLE those candidates up front instead of letting Compute 400.
+   */
+  pdbExists: boolean;
   /** Raw metric values keyed by canonical metric key. */
   metrics: Record<string, number>;
   starred: boolean;
@@ -447,6 +454,13 @@ export interface ScreeningDTO {
    * (null when never computed, or the reference was deleted since).
    */
   rmsdRef: { id: string; name: string } | null;
+  /**
+   * I-1c (#39): when true, the reference candidate's rmsd=0 anchor is
+   * EXCLUDED from the rmsd metric-domain computation (persisted per
+   * screening; the reference row still SHOWS rmsd 0 in the table — only
+   * the domain/normalization calc ignores it).
+   */
+  rmsdExcludeRef: boolean;
   status: string;
   candidateCount: number;
   starredCount: number;

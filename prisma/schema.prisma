@@ -213,6 +213,12 @@ model Node {
   // this id (the source node itself is NOT part of the group). Drives the
   // sweep compare view and the sweep→screening one-click campaign.
   sweepGroup  String?
+  // I-6 execution token (#47): written ATOMICALLY with every claim
+  // (idle/pending/terminal → running). Persist lanes add it to their
+  // conditional-write `where` — a late lane (unkillable LLM call) that
+  // resolves after a stop→retry cycle holds a STALE token and its write
+  // matches zero rows, so it can never overwrite the new run's row.
+  runToken    String?
   startedAt   DateTime?
   completedAt DateTime?
   createdAt   DateTime @default(now())
@@ -292,6 +298,10 @@ model Screening {
   // string, no FK — defensively resolved to null in the DTO when the
   // candidate was deleted; same pattern as sourceRef).
   rmsdRefId   String?
+  // I-1c (#39): when true, the reference candidate's rmsd=0 anchor is
+  // EXCLUDED from the rmsd metric-domain computation, so the other
+  // candidates' normalized spread isn't squashed by a constant 0 min.
+  rmsdExcludeRef Boolean @default(false)
   status      String   @default("ready") // ready | harvesting | failed
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

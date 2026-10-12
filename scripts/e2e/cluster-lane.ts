@@ -430,7 +430,11 @@ async function main(): Promise<void> {
     ok((record?.syncedBytes ?? 0) > 0, "run record syncedBytes > 0");
 
     // File-level evidence: the synced PDB exists locally with real ATOM records.
-    const first = files[0];
+    // The sync-back list order follows `find` (readdir order — NOT alphabetical,
+    // NOT deterministic), so pick a .pdb file explicitly instead of files[0]
+    // (a design_0.fasta can legitimately be listed first).
+    const pdb = files.find((f) => f.endsWith(".pdb"));
+    const first = pdb ?? files[0];
     ok(existsSync(first), `synced file exists (${first.replace(REPO, "")})`);
     if (existsSync(first)) {
       const head = readFileSync(first, "utf-8").slice(0, 2000);
@@ -517,12 +521,15 @@ async function main(): Promise<void> {
     ok(stopStress >= 5, `sweep-stress ran alongside the stop (${stopStress} polls)`);
 
     const node = await getNode(nodeId);
-    ok(node.status === "failed", "node failed after stop", `status=${String(node.status)}`);
-    const nlogs = String(node.logs ?? "");
-    ok(nlogs.includes("[stop] Stopped by user"), "node logs carry the stop note");
+    // L-lane semantics (Task 42): a user Stop settles the node as CANCELLED
+    // (first-flip in stopNodeRun) with result "Stopped by user before
+    // completion." — no longer the G-era "failed" + log-note shape. The
+    // ToolJob row + stderr keep the remote-cancellation evidence.
+    ok(node.status === "cancelled", "node cancelled after stop", `status=${String(node.status)}`);
     ok(
-      nlogs.includes(`[stop] cluster job ${jobId} cancelled on the remote host`),
-      "node logs disclose the remote cancellation",
+      String(node.result ?? "").includes("Stopped by user"),
+      "node result carries the stop note",
+      `result=${String(node.result ?? "").slice(0, 60)}`,
     );
 
     const job = await getJob(jobId);
@@ -567,7 +574,7 @@ async function main(): Promise<void> {
       "via-node-stop marker survived the sweeps");
     ok(readRuns()[jobId]?.phase === "cancelled", "sweep did NOT resurrect the run record");
     const node2 = await getNode(nodeId);
-    ok(node2.status === "failed", "sweep did NOT resurrect the node");
+    ok(node2.status === "cancelled", "sweep did NOT resurrect the node", `status=${String(node2.status)}`);
   });
 
   await phase("P4 happy path — slurm mode (sbatch → squeue/sacct → sync-back)", async () => {
@@ -718,16 +725,16 @@ async function main(): Promise<void> {
     ok(nodeARow.status === "completed" && nodeARow.progress === 100,
       "DB node settled completed/100 by the stream reconcile");
 
-    // (b) cancelled job → node settles failed (cancelled jobs map onto node
-    // "failed" with an honest result line — they are NOT successes).
+    // (b) cancelled job → node settles CANCELLED (L lane: job cancelled maps
+    // onto node cancelled — honest, and distinct from an engine failure).
     if (ctx.stoppedJobId) {
       const nodeB = await mkWaitingNode("Ceiling Handoff (cancelled)", ctx.stoppedJobId);
       const b = await readStreamUntilTerminal(nodeB, 30_000);
-      ok(b.doneStatus === "failed", "stream emitted done: failed", `done=${b.doneStatus}`);
+      ok(b.doneStatus === "cancelled", "stream emitted done: cancelled", `done=${b.doneStatus}`);
       ok(b.logs.includes(`[cluster reconcile] job ${ctx.stoppedJobId} cancelled`),
         "reconcile line discloses the cancelled job");
       const nodeBRow = await getNode(nodeB);
-      ok(nodeBRow.status === "failed", "DB node settled failed for a cancelled job");
+      ok(nodeBRow.status === "cancelled", "DB node settled cancelled for a cancelled job");
     } else {
       console.log(
         CEILING_MS

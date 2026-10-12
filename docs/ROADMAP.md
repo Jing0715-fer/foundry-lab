@@ -5,7 +5,8 @@
 > 10-11（F 线 P1 打磨与运维）、10-12（G 线验证通道与生产化）、10-13（H 线科研深度与可及性
 > 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）、10-14（J 线智能体操作
 > skill 标准化）、10-15（L 线真实中止与 cancelled 语义——S/E 参考分支三块移植 + QA/e2e
-> 全验证）十一轮测试结论滚动更新，随每个阶段交付后重写。
+> 全验证）、10-16（I 线 RMSD 轴打磨 + 执行令牌 #47 封口——含集群 e2e 双模式
+> 51/51 + 76/76 与陈旧断言修复）十二轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -113,6 +114,30 @@
   关；cancelled 徽章/划线/汇总计数 VLM 双截图实证；改轻参数后 UI 重跑 from cancelled
   真实引擎完成）；移动端 375 零溢出 + console 零错误；演示基线字段级恢复（含 16 条
   测试期 SkillInvocation 审计行清理）。
+- **I 线 · RMSD 轴打磨 + 执行令牌（本轮交付，两项）**：
+  - **I-1 RMSD 轴打磨（#38/#39 + rescan 提示）**：候选 DTO 新增服务端
+    `pdbExists`（序列化时 existsSync）——参考选择器按磁盘存在性预检：悬空 PDB
+    候选以**禁用项 + 琥珀 "file missing" 标记**呈现（不再"能选不能算"的 400
+    死路）；当前参考 PDB 丢失时参考 chip 警告；H1a 抽屉叠合伙伴选择器同标准；
+    rescan 新增候选缺 rmsd 键 → **琥珀补算提示**（N 个候选尚无 RMSD）；
+    **域排除开关**（`Screening.rmsdExcludeRef` 持久化，PATCH 校验 boolean）：
+    共享 parseDomainMetrics 把参考的 rmsd=0 锚点移出域计算（DTO 实时域与
+    refreshScreeningMetrics 持久化域同源同值），其余候选归一化区间不再被常数 0
+    压扁；参考行常显 **"REF" 徽标**（桌面表 + 移动卡）+ 报告披露排除状态。
+    QA/浏览器证据：API 冒烟 26/26（域翻转 [0,30]→[11.9,30] / 持久化域==DTO 域 /
+    非法值 400 / 悬空标记）+ 浏览器级（禁用项与标记、toggle 点击与键盘双路径、
+    REF 徽标、rescan 提示、移动端 375、console 零警告）。
+  - **I-6 执行令牌（#47 封口）**：`Node.runToken` 列（领占时原子写入，lane 侧生成
+    ——无回读竞态）；单节点 run 路由 / 工作流 runner / SSE 集群 reconcile 的全部
+    persist 守卫升级 `where status running AND runToken = 本次领占`；runner 泳道级
+    crash 网移入 runNode 内并令牌化（旧的无令牌泳池网恰好是 #47 窗口本身）；
+    停止不改令牌（停止凭状态赢，不凭 epoch）。**QA 证据**：冒烟 29/29——含确定性
+    陈旧令牌落笔零行命中 + 修复前守卫（仅 status）会命中的反差对照、以及真 LLM
+    ALPHA/BETA 双泳道竞态（旧泳道停后重试迟到落笔被隔离，终态恒为新运行的
+    BETA）；集群 e2e 基础 51/51 + ceiling 76/76（含 P3 停止路径与 P5b cancelled
+    映射的**陈旧断言修复**——见测试结论 #48）。浏览器级：停止（真实键盘
+    Enter）→ cancelled 行/徽章/汇总 → inspector 改轻参数重跑 → 真实引擎完成
+    的闭环全链路（领占令牌在 UI 流程后面隔离迟到泳道）。
 
 ## 测试结论（驱动后续优先级）
 
@@ -135,37 +160,51 @@
 | 44 | **“清陈旧”防御与 async claim 的竞态**：executeNodeGuarded 开头 clearStop（清上一轮陈旧停止标志）会把 "claim 后立即 stop" 的新鲜标志一并清掉 → 引擎照常 spawn。修复 = runProcess **pre-spawn 守卫**（runKey 已停止则不 spawn）+ 停止先行翻行 + 迟到结果条件写丢弃三层兑底。教训：**新鲜度类防御需要 epoch/token，否则与异步领占竞态** | 执行语义 | 已修复（A2 用例实证） |
 | 45 | **真实停止三件套模式**：①进程真实击杀（SIGTERM+SIGKILL 升级）；②**行先翻转**（reconciler/轮询只动 running 行——先翻即封死错终态竞态路径）；③条件写守卫（迟到结果永不复活）。停止顺序：register→kill→翻行→取消链接作业（作业发现走 DB triggeredBy 主路径，免日志刮） | 架构 | 已交付（L1-L3） |
 | 46 | **throwaway 脚本的签名对齐**：jfetch 自定义（path, init, timeoutMs?）第 3 参数被两处调用忽略 → 默认 60s abort 误判为“服务端挂起”。教训：一次性脚本也要对齐函数签名，超时语义放 init 对象 | QA 工程 | 已修复 |
-| 47 | **迟到执行 vs 重试覆盖竞态（已知限制）**：stop→retry 后，旧泳道（不可杀的 LLM 长 lane）迟到 persist `where status running` 可能覆盖新运行刚领占的行。本轮未解（需 execution token/epoch 方案）；本地引擎泳道因真实击杀（秒级收敛）实际不可达 | 执行语义 | M 线候选 |
+| 47 | **迟到执行 vs 重试覆盖竞态（已修复）**：stop→retry 后，旧泳道（不可杀的 LLM 长 lane）迟到 persist `where status running` 可能覆盖新运行刚领占的行。I 线修复：**领占时原子写入 lane 侧生成的 runToken，persist 守卫升级 `where status running AND runToken = 本次领占`**（SSE reconcile 同样令牌化）；QA 以确定性陈旧令牌落笔（零行命中）+ 修复前守卫反差对照 + 真 LLM ALPHA/BETA 双泳道竞态实证 | 执行语义 | 已修复（I-6） |
+| 48 | **语义变更必须重跑所有断言该语义的通道（L 线事故复盘）**：L 线把停止/取消语义改为 cancelled，但未重跑集群 e2e 通道——fixture 仍断言 G 时代的 "failed" 期望，本轮跑通道才暴露 6 条陈旧断言。同批发现 sync 文件列表顺序跟随 `find`（readdir 非确定）——`files[0]` 假设是 PDB 属脆弱断言，需显式选 .pdb。教训：**改共享行为语义 → 必须全通道重跑（含测试装置自身的期望值审计）** | QA 工程 | 已修复（本轮通道全绿 51/51 + 76/76） |
+| 49 | **VLM 截图前必须把目标 UI 滚入视口**：视口截图不含折叠下方内容——控件列底部的 RMSD 卡在首屏折叠下方，首轮 VLM 复核假性 FAIL；scrollIntoView 后 4/4。教训：**截图前断言目标 getBoundingClientRect 在视口内**（与 #35/#36 同族的 e2e 工程标准） | e2e 工程标准 | 验收参考 |
+| 50 | **令牌/epoch 类防御的正确生成位**：领占方在写库前自生成 token（与 status=running 同一次原子写），而非写后回读——回读窗口内 stop+retry 可把新 token 读成自己的。**生成位与写入位必须同一次原子操作**（#44 "pre-spawn 守卫"模式的 DB 化） | 架构 | 已交付（I-6） |
 
-## I 线 — RMSD 轴打磨与遗留收口（P1，下一阶段候选）
+## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
-1. **RMSD 轴打磨**（#38/#39）：参考候选选择器预检磁盘存在（标记/过滤悬空 PDB）；
-   rescan 后新候选无 rmsd 键的 UI 提示（"N 个新候选尚无 RMSD，请重算"）；参考排除出域
-   计算的可选项（或排序时参考行加视觉标记）。
-2. **Escape 分层语义成文**（QA 38-a P2-3）：pending 连线 + frame 激活时 Escape 需两次（先
-   反选组再取消连线）——已知矩阵，CONTRIBUTING/验收参考记录或改为单次冒泡到全局。
-3. **叠合深化遗留**（D 线延续）：多链叠合选择（当前自动取对齐链）；per-region RMSD
-   （CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）。
-4. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
-   建议独立分支推进。
-5. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
-6. **execution token（#47）**：节点执行领占时写入 epoch/token，persist 守卫从
-   `where status running` 升级为 `where status running AND runToken = epoch`——彻底封死
-   迟到泳道覆盖新运行的窗口（当前靠真实击杀收敛实际风险）。
+1. ~~**RMSD 轴打磨**（#38/#39）~~ **已交付**（I-1）：选择器磁盘预检（禁用项+标记）/
+   rescan 补算提示 / 域排除开关 + REF 徽标 + 报告披露。余留小项：参考悬空时
+   Compute 按钮的主动禁态提示（当前依赖选择器禁用项 + 服务端 400 兑底）。
+2. ~~**execution token（#47）**~~ **已交付**（I-6）：领占原子写 runToken + 全
+   persist 守卫令牌化 + SSE reconcile 令牌化；#47 窗口封死（QA 三重实证）。
+3. **Escape 分层语义成文**（QA 38-a P2-3，未动）：pending 连线 + frame 激活时
+   Escape 需两次——已知矩阵，CONTRIBUTING/验收参考记录或改为单次冒泡到全局。
+4. **叠合深化遗留**（D 线延续，未动）：多链叠合选择（当前自动取对齐链）；
+   per-region RMSD（CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）。
+5. **认证与团队协作**（NextAuth，H4 延续，未动）：工作流/campaign 共享与操作
+   审计——依赖面大，建议独立分支推进。
+6. **真实 SSH 集群通道**（G 线残留，未动）：F3 徽标的真实集群场景（当前 mock
+   e2e 双模式 127/127 背书）。
 
-## K 线 — Skill 层运营化（P2，J 线后续建议）
+## K 线 — Skill 层运营化（P1，下一阶段主推；测试结果驱动升级）
 
-1. **技能使用分析**：SkillInvocation 聚合视图（按 skill/source/agent 的成功率、P50/P95
-   延迟、denied/invalid 趋势）——面板 Activity Tab 已有原始流，缺聚合统计卡。
-2. **智能体维度资格编辑直达**：Activity 中 denied 行一键跳转该 agent 的编辑对话框
-   （知识开关就在那里）——闭环门控反馈环。
-3. **技能级速率与配额**：runSkill 管道加 per-agent 简单速率限制（技能滥用防护，
-   web.search 尤其）。
-4. **动态技能注册 API**：POST /api/skills 注册自定义技能（handler 白名单模板或外部
-   webhook URL）——当前注册表仅代码内静态注册。
-5. **comp 技能在流式泳道的异步入队**：慢技能当前直接 skip，可改为入 ToolJob 队列后回
-   推卡片（策略泳道统一）。
-6. **审计保留策略**：SkillInvocation 定期归档/清理（SQLite 体积治理）+ 筛选视图分页游标。
+本轮测试依据：J/L/I 三线后执行底座与观测面均已稳定（全部通道绿）；
+SkillInvocation 审计表已有真实流量（本轮 18 条测试期行再次证明每次 comp 运行
+都落表）——但只有原始流，没有运营视角。K 线按价值排序：
+
+1. **技能使用分析**（K1）：SkillInvocation 聚合视图（按 skill/source/agent 的
+   成功率、P50/P95 延迟、denied/invalid 趋势）——面板 Activity Tab 已有原始
+   流，缺聚合统计卡；执行底座令牌化后可加 per-run 维度。
+2. **智能体维度资格编辑直达**（K2）：Activity 中 denied 行一键跳转该 agent 的
+   编辑对话框（知识开关就在那里）——闭环门控反馈环。
+3. **技能级速率与配额**（K3）：runSkill 管道加 per-agent 简单速率限制（技能
+   滥用防护，web.search 尤其）。
+4. **comp 技能在流式泳道的异步入队**（K5）：慢技能当前直接 skip，可改为入
+   ToolJob 队列后回推卡片（策略泳道统一；与执行令牌天然亲和——队列行同样
+   可带 token）。
+5. **动态技能注册 API**（K4）：POST /api/skills 注册自定义技能（handler 白名单
+   模板或外部 webhook URL）。
+6. **审计保留策略**（K6）：SkillInvocation 定期归档/清理（SQLite 体积治理）+
+   筛选视图分页游标。
+
+余留候选小项（本轮新发现，低优先）：Runs sheet cancelled 行无 Retry 按钮
+（重跑走 inspector Run——功能可达，仅少一步直达）；"file missing" 状态可
+进一步进筛选列（当前仅选择器/chip 语境）。
 
 ## 验收标准（延续并扩充）
 
@@ -214,3 +253,14 @@
   kill 静默失败 + 孤儿引擎；重启后 32/32 复跑实证）。
 - **"清陈旧"类防御必须考虑新鲜度**（#44）：先清后用模式（clearStop→执行→post-race 查）
   与异步领占竞态——新鲜停止会被当陈旧清掉；配套 pre-spawn 守卫或 epoch/token。
+- **执行通道写点必须令牌化**（I 线后）：任何新的 Node 行 persist 路径一律
+  `where status running AND runToken = 本次领占`（领占方在 claim 的同一次原子写里
+  生成令牌，#50——写后回读有竞态）；集群 reconcile 类"读行→写行"的裁判同样带
+  它读到的令牌（只落定它观察到的那次运行）。
+- **改共享行为语义（停止/终态/取消类）必须重跑所有断言该语义的通道**（#48）：
+  语义变更的验收清单里显式列出 `bun run e2e:cluster` 双模式与所有受影响
+  fixture 的期望值审计——L 线漏跑导致 6 条陈旧断言潜伏到本轮才暴露；
+  **文件列表顺序类断言不得假设 `files[0]` 的类型**（find/readdir 非确定）。
+- **VLM 截图复核前必须把目标 UI 滚入视口**（#49）：截图前断言目标
+  getBoundingClientRect 在视口内（视口截图不含折叠下方内容，长控件列底部
+  元素首轮必假性 FAIL）。

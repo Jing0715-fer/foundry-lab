@@ -98,6 +98,13 @@ export interface ScreeningTableProps {
   /** Total filtered rows (for the pagination footer). */
   totalRows: number;
   metricDefs: ScreeningMetricDef[];
+  /**
+   * I-1c (#39): candidate id the RMSD axis was computed against — that row
+   * gets a small "REF" badge next to its name (always on, whether or not
+   * the domain-exclusion option is set: the anchor row is worth spotting
+   * while browsing the ranking either way). null = no reference.
+   */
+  rmsdRefId?: string | null;
   sortKey: string;
   sortDir: "asc" | "desc" | null;
   onSort: (key: string) => void;
@@ -231,6 +238,7 @@ export function ScreeningTable(props: ScreeningTableProps) {
                     key={row.candidate.id}
                     row={row}
                     metricDefs={props.metricDefs}
+                    isRmsdRef={props.rmsdRefId === row.candidate.id}
                     selected={props.selectedIds.has(row.candidate.id)}
                     onToggleSelect={props.onToggleSelect}
                     onStar={props.onStar}
@@ -255,6 +263,7 @@ export function ScreeningTable(props: ScreeningTableProps) {
               key={row.candidate.id}
               row={row}
               metricDefs={props.metricDefs}
+              isRmsdRef={props.rmsdRefId === row.candidate.id}
               selected={props.selectedIds.has(row.candidate.id)}
               onToggleSelect={props.onToggleSelect}
               onStar={props.onStar}
@@ -465,6 +474,7 @@ function SortableHead({
 function CandidateRow({
   row,
   metricDefs,
+  isRmsdRef,
   selected,
   onToggleSelect,
   onStar,
@@ -472,6 +482,7 @@ function CandidateRow({
 }: {
   row: ScoredRow;
   metricDefs: ScreeningMetricDef[];
+  isRmsdRef: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
   onStar: (id: string, starred: boolean) => void;
@@ -510,7 +521,21 @@ function CandidateRow({
       </TableCell>
       <TableCell className="max-w-[260px] whitespace-normal">
         <div className="flex flex-col gap-0.5">
-          <span className="truncate text-sm font-medium">{c.name}</span>
+          <span className="flex items-center gap-1">
+            <span className="truncate text-sm font-medium">{c.name}</span>
+            {isRmsdRef && (
+              /* I-1c (#39): always-on marker for the RMSD axis anchor row —
+                 tiny and quiet, but findable while scanning the ranking. */
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[9px] uppercase tracking-wide"
+                data-testid="rmsd-ref-row-badge"
+                title="RMSD axis reference"
+              >
+                REF
+              </Badge>
+            )}
+          </span>
           {c.sourceLabel && (
             <span className="truncate text-[11px] text-muted-foreground">
               {c.sourceLabel}
@@ -640,6 +665,7 @@ export function MetricCell({
 function MobileCandidateCard({
   row,
   metricDefs,
+  isRmsdRef,
   selected,
   onToggleSelect,
   onStar,
@@ -647,6 +673,7 @@ function MobileCandidateCard({
 }: {
   row: ScoredRow;
   metricDefs: ScreeningMetricDef[];
+  isRmsdRef: boolean;
   selected: boolean;
   onToggleSelect: (id: string) => void;
   onStar: (id: string, starred: boolean) => void;
@@ -687,7 +714,19 @@ function MobileCandidateCard({
           className="flex min-h-11 min-w-0 flex-1 flex-col items-start rounded-md px-1 text-left"
           aria-label={`View ${c.name} details`}
         >
-          <span className="w-full truncate text-sm font-medium">{c.name}</span>
+          <span className="flex w-full items-center gap-1">
+            <span className="w-full truncate text-sm font-medium">{c.name}</span>
+            {isRmsdRef && (
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[9px] uppercase tracking-wide"
+                data-testid="rmsd-ref-row-badge"
+                title="RMSD axis reference"
+              >
+                REF
+              </Badge>
+            )}
+          </span>
           <span className="flex w-full items-center gap-1.5 text-[11px] text-muted-foreground">
             <Badge variant="outline" className="text-[9px] lowercase">
               {c.source}

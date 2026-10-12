@@ -732,11 +732,15 @@ export function ScreeningPanel() {
   // H1a: launch the overlay from the DETAIL drawer — the open candidate is
   // the reference (stays put), the picked partner is rigid-fitted onto it;
   // the dialog's Swap button flips the roles afterwards.
+  // I-1 (#38): candidates with a pdbPath but a MISSING FILE are kept (the
+  // drawer renders them as honestly disabled options with a marker), so a
+  // dangling reference from the demo baseline is discoverable, not a
+  // surprise 400 on launch.
   const superposeOptions = React.useMemo(
     () =>
       candidates
         .filter((c) => c.id !== detailId && !!c.pdbPath)
-        .map((c) => ({ id: c.id, name: c.name })),
+        .map((c) => ({ id: c.id, name: c.name, pdbExists: c.pdbExists })),
     [candidates, detailId],
   );
   const superposeWith = React.useCallback(
@@ -812,15 +816,79 @@ export function ScreeningPanel() {
     [currentId, toast],
   );
 
-  // H1c: candidates eligible as the RMSD reference (linked PDB only —
-  // computeRmsdAxis 400s otherwise).
+  // I-1c (#39): flip the persisted rmsdExcludeRef option. The PATCH response
+  // carries the screening DTO with metricDefs recomputed under the new
+  // domain policy — replacing `screening` here reflows scores, ranking and
+  // sorting automatically (candidates' metric VALUES are unchanged, only
+  // the normalization domain moves). rmsdOptBusy guards against double-PATCH
+  // races from double-clicks / Enter key repeats.
+  const [rmsdOptBusy, setRmsdOptBusy] = React.useState(false);
+  const toggleRmsdExcludeRef = React.useCallback(async () => {
+    if (!currentId || rmsdOptBusy) return;
+    const next = !(screening?.rmsdExcludeRef ?? false);
+    setRmsdOptBusy(true);
+    try {
+      const res = await fetch(`/api/screening/${currentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rmsdExcludeRef: next }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
+      // The DTO recomputes metricDefs server-side under the new policy —
+      // one replacement re-scores everything downstream of `screening`.
+      setScreening(data?.screening ?? null);
+      toast({
+        title: "RMSD domain updated",
+        description: next
+          ? "Reference excluded — other candidates' scores spread across the full range."
+          : "Reference re-anchored — rmsd 0 Å pins the domain minimum again.",
+        variant: "success",
+      });
+    } catch (e) {
+      toast({
+        title: "RMSD domain update failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setRmsdOptBusy(false);
+    }
+  }, [currentId, rmsdOptBusy, screening, toast]);
+
+  // H1c: candidates eligible as the RMSD reference (linked PDB — the
+  // computeRmsdAxis contract). I-1 (#38): file-MISSING pdbPath references
+  // are kept too (mapped with pdbExists=false) so the selector can render
+  // them as disabled, marker-carrying items instead of silently hiding the
+  // demo baseline's dangling references behind a Compute that would 400.
   const rmsdCandidates = React.useMemo(
     () =>
       candidates
         .filter((c) => !!c.pdbPath)
-        .map((c) => ({ id: c.id, name: c.name })),
+        .map((c) => ({ id: c.id, name: c.name, pdbExists: c.pdbExists })),
     [candidates],
   );
+
+  // I-1 (rescan hint): candidates whose PDB files exist but which carry no
+  // rmsd key yet — a reference is set and the axis is STALE for them (they
+  // appeared after the last compute, e.g. via rescan). Only meaningful
+  // when a reference exists; the card gates the hint on that.
+  const rmsdStaleCount = React.useMemo(
+    () => candidates.filter((c) => c.pdbExists && c.metrics?.rmsd === undefined).length,
+    [candidates],
+  );
+
+  // I-1 (#38): the CURRENT reference's file is gone on disk — the chip must
+  // warn (recompute will 400 until a rescan relinks it). A deleted
+  // reference resolves to rmsdRef=null server-side, so no warning then.
+  const rmsdRefFileMissing = React.useMemo(() => {
+    const refId = screening?.rmsdRef?.id;
+    if (!refId) return false;
+    const ref = candidates.find((c) => c.id === refId);
+    return !!ref && !ref.pdbExists;
+  }, [screening, candidates]);
 
   /** D3: export the Markdown screening report (same row semantics as the CSV). */
   function exportReport() {
@@ -883,6 +951,13 @@ export function ScreeningPanel() {
     rmsdRefPick,
     onRmsdRefPick: setRmsdRefPick,
     onComputeRmsd: (refId: string) => void computeRmsd(refId),
+    // I lane (#38 / rescan hint / #39): honest file-missing state, stale-axis
+    // count, and the persisted domain-exclusion option.
+    rmsdStaleCount,
+    rmsdRefFileMissing,
+    rmsdExcludeRef: screening?.rmsdExcludeRef ?? false,
+    onToggleRmsdExcludeRef: () => void toggleRmsdExcludeRef(),
+    rmsdOptBusy,
   };
 
   return (
@@ -1165,6 +1240,9 @@ export function ScreeningPanel() {
                   rows={pageRows}
                   totalRows={sortedRows.length}
                   metricDefs={metricDefs}
+                  // I-1c (#39): the table badges the reference row ("REF")
+                  // so the axis anchor is visible while browsing rows.
+                  rmsdRefId={screening?.rmsdRef?.id ?? null}
                   sortKey={sortKey}
                   sortDir={sortDir}
                   onSort={handleSort}

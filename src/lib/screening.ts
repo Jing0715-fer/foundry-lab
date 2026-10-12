@@ -399,6 +399,8 @@ interface ScreeningRow {
   metricDefs: string;
   /** H1c: candidate id the rmsd axis was computed against (plain string). */
   rmsdRefId: string | null;
+  /** I-1c (#39): persisted per-screening domain-exclusion flag (see parseDomainMetrics). */
+  rmsdExcludeRef: boolean | null;
   status: string;
   createdAt: Date | string;
   updatedAt: Date | string;
@@ -446,6 +448,12 @@ function toCandidateDTO(c: CandidateRow): ScreeningCandidateDTO {
     fastaPath: c.fastaPath,
     sequence: c.sequence,
     length: c.length,
+    // I-1 (#38): the demo baseline carries DANGLING pdbPath references —
+    // a pdbPath is only as good as the file behind it. Checked here (server
+    // side, at serialization time) so the reference selector and the detail
+    // drawer can render file-missing candidates as honestly DISABLED
+    // instead of letting Compute 400 after the fact.
+    pdbExists: c.pdbPath ? existsSync(c.pdbPath) : false,
     metrics: parseJson<Record<string, number>>(c.metrics, {}),
     starred: c.starred,
     status: c.status as ScreeningCandidateStatus,
@@ -457,9 +465,37 @@ function toCandidateDTO(c: CandidateRow): ScreeningCandidateDTO {
   };
 }
 
+/**
+ * I-1c (#39): parse candidate metrics for DOMAIN computation, applying the
+ * persisted rmsdExcludeRef option. When the flag is on AND the persisted
+ * reference resolves to a live candidate, that candidate's rmsd key is
+ * OMITTED before feeding computeMetricDefs — the domain min stops being a
+ * constant 0 (which squashed every other candidate's normalized spread to
+ * the top of the range) and the reference stops scoring a perfect rmsd.
+ * Matching by id against the LIVE candidate list means a deleted reference
+ * naturally degrades to a no-op (nothing to exclude). The reference row
+ * itself still SHOWS rmsd 0 in the table — only the domain calc ignores it.
+ * Shared by toScreeningDTO (DTO-time domains) and refreshScreeningMetrics
+ * (persisted metricDefs) so the two can never disagree.
+ */
+function parseDomainMetrics(
+  candidates: { id: string; metrics: string }[],
+  row: { rmsdRefId: string | null; rmsdExcludeRef: boolean | null },
+): Record<string, number>[] {
+  const excludeRef = (row.rmsdExcludeRef ?? false) && row.rmsdRefId !== null;
+  return candidates.map((c) => {
+    const m = parseJson<Record<string, number>>(c.metrics, {});
+    if (excludeRef && c.id === row.rmsdRefId) {
+      const withoutAnchor = { ...m };
+      delete withoutAnchor.rmsd;
+      return withoutAnchor;
+    }
+    return m;
+  });
+}
+
 /** Serialize a screening row + its candidates → DTO (domains recomputed NOW). */
 function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): ScreeningDTO {
-  const metricValues = candidates.map((c) => parseJson<Record<string, number>>(c.metrics, {}));
   // H1c: resolve the RMSD-axis reference candidate. A DELETED reference (or
   // a bare column) resolves to null — the DTO never lies about which
   // structure the rmsd metric was computed against.
@@ -468,6 +504,7 @@ function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): Screeni
     const ref = candidates.find((c) => c.id === row.rmsdRefId);
     if (ref) rmsdRef = { id: ref.id, name: ref.name };
   }
+  const metricValues = parseDomainMetrics(candidates, row);
   return {
     id: row.id,
     name: row.name,
@@ -478,6 +515,9 @@ function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): Screeni
     weights: parseJson<Record<string, number>>(row.weights, {}),
     metricDefs: computeMetricDefs(metricValues),
     rmsdRef,
+    // Defensive ?? false: the column has a schema default, but rows read
+    // through older code paths shouldn't lie about the option either.
+    rmsdExcludeRef: row.rmsdExcludeRef ?? false,
     status: row.status,
     candidateCount: candidates.length,
     starredCount: candidates.filter((c) => c.starred).length,
@@ -931,15 +971,22 @@ async function harvestFromFiles(
   return harvested.length;
 }
 
-/** Refresh metricDefs + fill default weights for newly observed metric keys. */
+/**
+ * Refresh metricDefs + fill default weights for newly observed metric keys.
+ * I-1c (#39): domains are computed through parseDomainMetrics so the
+ * PERSISTED defs agree with the DTO-computed ones when rmsdExcludeRef is on
+ * (otherwise the table's normalize() would use a domain the saved defs
+ * disagree with — same values, two doors, one truth).
+ */
 async function refreshScreeningMetrics(id: string): Promise<void> {
   const row = await db.screening.findUnique({ where: { id } });
   if (!row) return;
+  // id is needed to recognize the reference row for domain exclusion.
   const candidates = await db.screeningCandidate.findMany({
     where: { screeningId: id },
-    select: { metrics: true },
+    select: { id: true, metrics: true },
   });
-  const metricValues = candidates.map((c) => parseJson<Record<string, number>>(c.metrics, {}));
+  const metricValues = parseDomainMetrics(candidates, row);
   const defs = computeMetricDefs(metricValues);
   const weights = parseJson<Record<string, number>>(row.weights, {});
   for (const d of defs) {
@@ -1632,6 +1679,8 @@ export async function patchScreening(
     name?: string;
     description?: string | null;
     weights?: Record<string, number>;
+    /** I-1c (#39): exclude the reference's rmsd=0 from the domain calc. */
+    rmsdExcludeRef?: boolean;
   },
 ): Promise<ScreeningDTO | null> {
   const data: Record<string, unknown> = {};
@@ -1656,6 +1705,14 @@ export async function patchScreening(
       w[k] = Math.min(5, Math.max(0, v));
     }
     data.weights = JSON.stringify(w);
+  }
+  // I-1c (#39): boolean option, validated strictly (a truthy "true" string
+  // from a sloppy client must not silently become an exclusion).
+  if (patch.rmsdExcludeRef !== undefined) {
+    if (typeof patch.rmsdExcludeRef !== "boolean") {
+      throw new ScreeningError("rmsdExcludeRef must be a boolean", 400);
+    }
+    data.rmsdExcludeRef = patch.rmsdExcludeRef;
   }
 
   const existing = await db.screening.findUnique({ where: { id } });

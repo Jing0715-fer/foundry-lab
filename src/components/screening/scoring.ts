@@ -300,6 +300,18 @@ export function buildReportMarkdown(
     })
     .join(" · ");
   lines.push(`- **Ranking weights:** ${weightSummary || "defaults (all 1)"}`);
+  // I-1c (#39): the RMSD axis semantics belong in the report — a reader
+  // must know whether the reference's 0 Å anchored the domain or was
+  // excluded from it (it changes how the other rows' scores read).
+  if (screening.rmsdRef) {
+    lines.push(
+      `- **RMSD reference:** ${screening.rmsdRef.name}${
+        screening.rmsdExcludeRef
+          ? " (excluded from domain)"
+          : " (rmsd 0 Å anchors the domain)"
+      }`,
+    );
+  }
   lines.push(
     `- **Score:** 100 · Σ(wᵢ·normᵢ)/Σwᵢ over present metrics (0–100)`,
   );

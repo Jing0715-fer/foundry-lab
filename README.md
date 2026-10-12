@@ -145,7 +145,13 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   守卫直接不启动引擎）；行立即翻转为 **`cancelled` 终态**（非 failed）
   + 链接的集群/本地 ToolJob 一并取消（`via node stop` 溯源徽标）；
   在途执行的迟到结果被条件写守卫丢弃，永不复活用户的停止裁决；
-  取消的节点可像失败节点一样重跑（领占式 re-claim）。本地执行的每个
+  取消的节点可像失败节点一样重跑（领占式 re-claim）。
+  **执行令牌（I 线 #47）**：每次领占原子地写入全新 `runToken`，所有 persist
+  守卫升级为 `where status running AND runToken = 本次领占`——停止后重试的场景，
+  旧泳道（不可击杀的 LLM 长车道）迟到落笔持有陈旧令牌、匹配零行，**新运行
+  的行永不被旧结果覆盖**（QA 以 ALPHA/BETA 双泳道竞态实证：终态结果恒为新
+  运行的参数产出）；SSE 集群 reconcile 同样令牌化（只落定它读到的那次运行）。
+  本地执行的每个
   节点受 15 分钟**看门狗**保护（集群长任务豁免——集群通道自带
   30/120 分钟诚实轮询天花板），引擎挂死不再楔死并行池。
 
@@ -177,6 +183,12 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   Cα RMSD（序列比对 + 最优刚体拟合）并**写入指标体系**——与 pLDDT/clashes 等引擎
   指标完全同权：可排序、可区间过滤、可加权、随 CSV/报告导出；原子事务提交，
   参考标签与数值永不分离；重算换参考无陈旧残留。
+  I 线打磨（#38/#39）：参考选择器按**磁盘存在性预检**——PDB 悬空的候选以禁用项 +
+  琥珀 "file missing" 标记呈现（不再"能选不能算"）；当前参考的 PDB 丢失时参考
+  chip 诚实警告；rescan 新增候选缺 rmsd 键时显示**补算提示**；**域排除开关**
+  （`rmsdExcludeRef` 持久化）把参考的 rmsd=0 锚点移出指标域——其余候选的归一化
+  区间不再被常数 0 压扁（参考行仍在表内显示 0 + 常显 "REF" 徽标，报告披露
+  排除状态）。
 - **Promote 回画布**：把选中的候选提升为画布输入节点，下游工具节点
   **自动接线** pdb/fasta 文件（已用真实 ProteinMPNN 运行验证闭环）。
 - **导出 CSV / Markdown 报告**：选择子集或全量，报告含权重、全候选表、
@@ -376,7 +388,7 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | POST | `/api/meetings/:id/run` | 多智能体会议 |
 | POST | `/api/research/:id/run` | 研究管线 |
 | GET/POST | `/api/screening` | 筛选 campaign 列表 / 创建 |
-| PATCH | `/api/screening/:id` | 权重持久化 |
+| PATCH | `/api/screening/:id` | 权重持久化 + `rmsdExcludeRef` 域排除开关 |
 | GET | `/api/screening/:id/candidates` | 候选分页 |
 | POST | `/api/screening/:id/rmsd` | 结构 RMSD 指标轴计算（`{refId}`，原子事务） |
 | POST | `/api/screening/:id/promote` | 候选提升回画布 |

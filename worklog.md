@@ -4041,3 +4041,46 @@ Work Log:
 
 Stage Summary:
 - Task 22-merge 决议的三块移植全部落地为 L 线五项（L1 注册表/L2 终态/L3 四步停止/L4 异步/L5 UI 三态），"JS 无法取消"的行级 stop 升级为真实进程击杀 + cancelled 一等终态；QA 32/32 + 浏览器级 e2e（真实键盘/真实击杀/真实引擎重试）全过。QA 过程产出的两个新工程结论（#43 热重载注册表实例错位、#44 清陈旧 vs 异步领占竞态→pre-spawn 守卫）已固化进验收标准。已知限制 #47（迟到泳道覆盖重试行，LLM 泳道不可杀）记录为 I 线 execution token 候选项。后续开发建议：I 线（RMSD 轴打磨 + execution token + 遗留收口）为 P1 候选，K 线（skill 运营化）为 P2。
+
+---
+Task ID: 43-a
+Agent: full-stack-developer (I lane: I-1 RMSD axis polish)
+Task: RMSD 轴打磨三项收口（#38 悬空 PDB 预检诚实化 / rescan 后陈旧轴提示 / #39 参考域锚定排除选项 + REF 徽标）——仅动 8 个自有文件
+
+Work Log:
+- 后端 DTO：types.ts 加 ScreeningCandidateDTO.pdbExists（pdbPath 非空且磁盘存在，序列化时服务端 existsSync 检查）+ ScreeningDTO.rmsdExcludeRef；toCandidateDTO 落 pdbExists（#38 的 demo 基线悬空引用从"字段在场"变为"诚实状态"）。
+- screening.ts：新共享助手 parseDomainMetrics（rmsdExcludeRef 开且 rmsdRefId 解析到活候选 → 该候选 metrics 喂 computeMetricDefs 前 omit rmsd 键；按 id 对活列表匹配 → 引用被删自然 no-op）；toScreeningDTO 与 refreshScreeningMetrics（补选 id 列）共用同一助手 → DTO 域与持久化 metricDefs 永不分裂；patchScreening 接受 rmsdExcludeRef?: boolean（严格 typeof 校验 → ScreeningError 400）。
+- PATCH 路由白名单：body.rmsdExcludeRef HTTP 边界即校验布尔（"true"/1 → 400 清晰报错），透传 lib 双层校验。
+- screening-panel：rmsdCandidates 备忘携带 pdbExists 并保留 file-missing 项（选择器可诚实禁用）；新 rmsdStaleCount（pdbExists 且无 rmsd 键）/ rmsdRefFileMissing 备忘；toggleRmsdExcludeRef 回调（PATCH → setScreening(新 DTO) → metricDefs 域变 → 分数/排名/排序自动 reflow；成功/失败 toast；rmsdOptBusy 防双击双 PATCH）；全部接线 ControlsColumn + rmsdRefId 接线 ScreeningTable + superposeOptions 携带 pdbExists。
+- controls-column（RMSD 卡）：file-missing SelectItem disabled + amber "· file missing" 后缀；ref chip 在文件丢失时追加 amber 警告；rmsd-stale-hint amber 段落（有参考且 N>0 PDB 候选缺 rmsd 键）；新 Switch 行 rmsd-exclude-ref-toggle（"Exclude reference from domain" + muted 解释，busy 时禁用）；chip 后缀在 "(rmsd 0 Å)" ↔ "(rmsd 0 Å · excluded from domain)" 间翻转。
+- screening-table：新 rmsdRefId prop，参考行名字旁常显 REF 徽标（secondary、text-[9px] uppercase、title="RMSD axis reference"，桌面表 + 移动卡双渲染）；candidate-detail：H1a 叠合伙伴 Select 同样禁用 file-missing 项 + 同款标记；scoring.ts 报告在 Ranking weights 行后加 "RMSD reference: <name> (excluded from domain | rmsd 0 Å anchors the domain)"。
+- API 冒烟（/home/z/i-lane-smoke 一次性脚本不入库）：真实引擎 screening 19/19——锚定域 [0,30] → PATCH true → 排除域 [11.9,30]、参考行仍显示 rmsd 0、detail defs == PATCH defs、其他候选值不变 → PATCH false 回锚 [0,30]；持久化路径 7/7（开 flag 后重算 → bun:sqlite 直读 metricDefs 域 [11.9,30] == DTO、flag=1、rmsdRefId 一致）；PATCH 校验 "true"/1 → 400。
+- 浏览器级（agent-browser）：#38——AF2 Model Ranking 参考选择器 20 个悬空 PDB 候选全部 disabled + "· file missing" 标记（详情抽屉伙伴选择器 19 项同款）；#39——toggle 点击与键盘（focus+Space）双路径翻转 chip 后缀、成功 toast、RMSD 范围筛选标签 0–30 ↔ 11.9–30、排除态参考行排名 49（不再恒满分）；REF 徽标在参考行渲染；stale hint——伪造新 run 目录 + rescan → "1 candidate(s) with PDB files have no RMSD value yet…" amber 段落实证；移动端 375×812 docScrollW=375/mainW=319；console 零警告零 page error；截图 docs/images/32 + 33。
+- 基线卫生：两个一次性 screening 删除 + outputs/screening 清空 + 字段级核对（3 screening 且 rmsdRefId 全 None、rmsdExcludeRef 全 0、workflows 2、节点 14/5、toolJobs 16、skillInvocations 0、候选 60/20/6）；lint 零告警；tsc 仅 4 条预存（examples/skills）；dev.log 零编译/运行时错误；prisma/schema.prisma 与 demo-baseline.db 的工作区改动系任务前置（43 准备 + L 线并发 agent）——本轮未触碰。
+- 附 agent-ctx/43-a-full-stack-developer.md 工作记录。
+
+Stage Summary:
+- I 线三项（#38 悬空预检 / rescan 陈旧提示 / #39 域锚定选项）全部落地并双侧实证（API 26/26 + 浏览器级含键盘路径）；域排除走"共享助手 + DTO/持久化同源"设计，PATCH 响应单次往返即 reflow；demo 基线零污染。已知取舍：Compute 按钮未对"当前 pick 文件丢失"加禁用（disabled 选择器使其不可达，残余路径服务端 400 诚实兜底）。
+
+---
+Task ID: 43 (I lane: I-1 + I-6 + QA + E2E + 后续规划 — main-orchestrator)
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（I 线两项：RMSD 轴打磨 + execution token #47 封口）+ QA 测试 + E2E 测试 + 按测试结果规划后续开发
+
+Work Log:
+- **前置**：读 worklog 尾部（Task 42 L 线成果与其遗留建议：I 线 P1 = RMSD 轴打磨 + execution token + 遗留收口）+ ROADMAP I/K 线规划精读 + git 状态核对（main 干净）。
+- **中央 schema 变更**（双 lane 共享，避免并发 db:push 冲突，本 agent 一次完成）：prisma schema 加 `Node.runToken String?`（I-6 领占令牌）+ `Screening.rmsdExcludeRef Boolean @default(false)`（I-1c 域排除开关）→ `bun run db:push` → `demo:snapshot` 重冻基线（schema 与重冻基线同 commit 纪律）→ dev server 重启（#41 陈旧 client 纪律）。
+- **I-1 RMSD 轴打磨（Task ID 43-a 子代理交付）**：候选 DTO `pdbExists`（服务端 existsSync）→ 参考选择器悬空 PDB 禁用项 + "file missing" 标记 + 参考 chip 丢失警告 + H1a 抽屉伙伴选择器同标准；rescan 缺 rmsd 补算提示；域排除开关（共享 parseDomainMetrics：DTO 实时域与持久化域同源）；REF 徽标（桌面表+移动卡）；报告披露排除状态。子代理自验：API 冒烟 26/26 + 浏览器级（点击与键盘双路径）+ 基线恢复。
+- **I-6 execution token（本 agent 亲做，三文件）**：①run 路由——entry claim/re-claim/cascade claim 三点领占原子写 lane 侧生成的 runToken（#50：生成位与写入位同一次原子写，无回读竞态）；runOne 全 persist（poll-ceiling 90% 写 / 终态写 / node-not-found 失败写）+ async crash 网全部 `where status running AND runToken`；claimToken 贯穿 executeAll。②workflow-runner——runNode claim 带令牌 + 两处 persist 带令牌 + 泳道 crash 网移入 runNode 内并令牌化（原泳池级无令牌网恰是 #47 窗口本身，移除时保留行为注释）；③stream 路由——reconcileClusterOutcome 参数带 runToken、写守卫带它读到的令牌（只落定它观察到的那次运行；pre-token 行 null==null 匹配）。停止路由不动令牌（停止凭状态赢，不凭 epoch——A7 用例实证）。
+- **QA 冒烟（/home/z/i-lane-smoke/i6-smoke.ts，throwaway 不入库）29/29**：A 确定性围栏（claim 铸 T1 → 停止不换牌 → 轻参数重试铸 T2≠T1 → **陈旧令牌落笔 changes=0** vs **修复前守卫（仅 status）changes=1 的反差对照** vs 自有令牌 changes=1 → 真引擎完成且终态 result 为引擎自身输出，无注入文本泄漏 → pgrep 归零）；B 真实不可杀 LLM 泳道竞态（700 词长文 ALPHA 泳道起飞 → 停止 mid-flight（200 cancelled）→ PATCH 换 BETA 提示词 → 重试新令牌 → 终态 completed 且 result="BETA"（旧 ALPHA 泳道迟到落笔被围栏隔离）；C 回归（双跑 409 且不换牌 / 完成态停止 409 / completed→重跑闭环）。
+- **QA 过程中修正的两处测试设计自误**（非实现缺陷）：首轮 heavy 参数无法在轮询窗口内完成（A13 超时）→ 重试前 PATCH 轻参数（参数在 claim 时快照读取，正是可测的注入点）；首轮短提示 LLM 2.5s 内完成 → 停止 409（自然结算赢，语义正确）→ 换 700 词长文确保 mid-flight 窗口。
+- **集群 e2e 通道（L 线漏跑的补课，#48 事故复盘）**：`bun run e2e:cluster` 基础 51/51（修 fixture 一处脆弱断言：sync 文件列表顺序跟随 find/readdir 非确定——`files[0]` 假设是 PDB → 显式选 .pdb）；ceiling 模式首跑 71/76 暴露 **6 条陈旧断言**——L 线把停止/取消语义改为 cancelled 但未重跑此通道，fixture 仍断言 G 时代 "failed" 期望 + 旧日志文案 → 按 L 线已交付语义更新 P3/P5b 断言（cancelled + result "Stopped by user" + ToolJob 徽标证据保留）→ ceiling 76/76。`.env.local` 短 ceiling 注入与移除全程遵守（不写入入库 .env）。
+- **E2E（agent-browser 浏览器级）**：I-1——扔掉型 screening（真实引擎 60 候选 + 真实叠合计算）→ 域标签 0–30、REF 徽标（搜索参考行后 2 处渲染）、**域排除 toggle 点击路径**（chip 后缀 "excluded from domain" + Metric ranges 域翻转为 11.9–30 + console 零警告）+ **键盘路径**（focus + Space 回关）；AF2 基线 campaign 20 个悬空 PDB 全部禁用项 + 标记；I-6——画布重节点 Run（同步车道）→ Runs sheet **真实键盘 Stop（focus+Enter）** → 行入 Recent 为 cancelled + "1 cancelled (48h)" 汇总 + sheet 不关 + **pgrep 归零（真实进程击杀）** → inspector 改轻参数（PATCH 落库核对）→ Run from cancelled → 真实引擎完成 "produced 2 scaffolds"（领占令牌在 UI 流程后面隔离迟到泳道）。移动端 375×812：main 319 无溢出 + footer 780–812 贴底（DOM 断言）+ 触控目标核查。console/page errors 零。
+- **VLM 复核（34/35 双截图）**：34 桌面（RMSD 卡芯片+开关+REF 徽标+无缺陷）首轮 2 项假性 FAIL——**目标在折叠下方（视口截图不含）→ scrollIntoView + rect 在视口断言后重拍 4/4**（固化为结论 #49）；35 移动（footer 贴底+无溢出+可读）3/3（footer 首轮 VLM 未识别小条 → DOM rect 断言为准 + 明确措辞重验）。
+- **基线纪律**：QA/e2e 后字段级恢复——扔掉型工作流×2 + screening×3 全删（含 43-a 子代理期间残留 16 条 + 本轮 2 条 SkillInvocation 审计行，最终 demo:reset 清零）+ outputs/rfdiffusion 测试目录清理 + outputs/screening 扔掉型目录清理；终态核对：workflows 2 / nodes 14+5 / toolJobs 16 / **skillInvocations 0** / screenings 3（rmsdRefId 全 None、rmsdExcludeRef 全 0）/ candidates 60+20+6。
+- **收尾**：README（RMSD 段 I 线打磨三件套 + Runs 段执行令牌语义 + API 表 PATCH 行）；ROADMAP（I 线成果段 + 测试结论 #47 改已修复 + 新增 #48 语义变更全通道重跑 / #49 VLM 滚入视口 / #50 令牌生成位 + I 线主体标记已交付 + **K 线升级为 P1 下一阶段主推（测试结果驱动：底座全绿 + 审计表有真实流量缺运营视角）** + 验收标准新增四条）；lint 零告警 + tsc 零新增（仅预存 4 条）+ dev.log 零运行时错误；git 提交推送（含重冻基线同 commit）。
+
+Stage Summary:
+- I 线两项全部落地：I-1 RMSD 轴三件套（磁盘预检/补算提示/域排除+REF 徽标）+ I-6 执行令牌（#47 迟到泳道覆盖窗口封死——确定性围栏 + 反差对照 + 真实 LLM 双泳道竞态三重实证）。QA 29/29（i6 冒烟）+ 26/26（I-1 冒烟）+ 集群 e2e 51/51 基础 + 76/76 ceiling + 浏览器级金路径（真实键盘停止/真实击杀/真实引擎重跑 + RMSD UI 双输入路径 + 移动端 + VLM 双截图）。
+- 最重要的过程发现：**L 线漏跑集群 e2e 导致 6 条陈旧断言潜伏**（#48：改共享语义必须全通道重跑，含 fixture 期望值审计）——已修复并固化进验收标准；另有 VLM 视口折叠假性 FAIL（#49）与令牌生成位模式（#50：生成位与写入位同一次原子写）两条新工程结论。
+- 后续开发计划（基于测试结果）：**K 线 Skill 层运营化升级为 P1 下一阶段主推**（K1 聚合分析 → K2 denied 直达 → K3 速率配额先行；K5 异步入队与执行令牌天然亲和），I 线余项降级（Escape 成文/叠合深化 P2、认证独立分支、真实集群通道待真实环境）；新发现小项（cancelled 行 Retry 直达、file missing 进筛选列）入低优先池。

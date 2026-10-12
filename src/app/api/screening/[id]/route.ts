@@ -43,10 +43,24 @@ export async function PATCH(
     name?: string;
     description?: string | null;
     weights?: Record<string, number>;
+    rmsdExcludeRef?: boolean;
   } = {};
   if (body.name !== undefined) patch.name = body.name as string;
   if (body.description !== undefined) patch.description = body.description as string | null;
   if (body.weights !== undefined) patch.weights = body.weights as Record<string, number>;
+  // I-1c (#39): RMSD domain-exclusion option — strictly typed at the HTTP
+  // boundary (patchScreening re-validates for direct lib callers). A truthy
+  // "true" string from a sloppy client gets an honest 400, not a silent
+  // exclusion flip.
+  if (body.rmsdExcludeRef !== undefined) {
+    if (typeof body.rmsdExcludeRef !== "boolean") {
+      return NextResponse.json(
+        { error: "rmsdExcludeRef must be a boolean (true or false)" },
+        { status: 400 },
+      );
+    }
+    patch.rmsdExcludeRef = body.rmsdExcludeRef;
+  }
 
   try {
     const screening = await patchScreening(id, patch);

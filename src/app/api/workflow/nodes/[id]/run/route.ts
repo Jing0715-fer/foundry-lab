@@ -22,6 +22,15 @@
 //
 // K lane: executeNodeGuarded may report `cancelled` (a user Stop raced this
 // run) — persisted honestly via the same conditional write.
+//
+// I-6 execution token (#47): every claim writes a fresh runToken ATOMICALLY
+// together with status=running (generated lane-side, so the lane KNOWS its
+// own token without a read-back race). Every persist below adds the token to
+// the conditional-write `where` — a late lane that resolves AFTER a
+// stop→retry cycle holds a stale token, matches zero rows, and can never
+// overwrite the new run's freshly claimed row. This closes the #47 window
+// ("late lane overwrites the retry row") that `status: "running"` alone
+// could not: a retried node is running TOO, just under a different epoch.
 
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -52,20 +61,29 @@ export async function POST(
     // ── Atomic claim (double-execution guard) ─────────────────────────────
     // idle/pending → running in ONE updateMany: a concurrent POST/route that
     // already claimed the node sees count 0 → 409 instead of double-run.
+    // The claim also stamps this lane's runToken (I-6) — generated HERE so
+    // the lane owns it from the moment the row flips (no read-back race).
+    const entryToken = crypto.randomUUID();
     const claimed = await db.node.updateMany({
       where: { id, status: { in: ["idle", "pending"] } },
       data: {
         status: "running",
         progress: 10,
         startedAt: startNode.startedAt ?? new Date(),
+        runToken: entryToken,
       },
     });
+    // Which token this lane actually owns (the re-claim below mints its own).
+    let claimToken = entryToken;
     if (claimed.count === 0) {
       // Either someone else is running it right now, or it's terminal.
       // Terminal (completed/failed/cancelled) nodes may be RE-run — claim
       // those too (conditional so a concurrent re-run still can't
       // double-execute). A cancelled row from a user Stop is re-runnable
-      // the same way a failed one is.
+      // the same way a failed one is. The re-claim REPLACES the runToken of
+      // the settled run — any late lane still holding the old token is
+      // thereby fenced off from this row (I-6 #47 fix).
+      const reToken = crypto.randomUUID();
       const reclaimer = await db.node.updateMany({
         where: { id, status: { in: ["completed", "failed", "cancelled"] } },
         data: {
@@ -73,6 +91,7 @@ export async function POST(
           progress: 10,
           startedAt: new Date(),
           completedAt: null,
+          runToken: reToken,
         },
       });
       if (reclaimer.count === 0) {
@@ -85,6 +104,7 @@ export async function POST(
           { status: 409 },
         );
       }
+      claimToken = reToken;
     }
 
     // Helper: load fresh workflow snapshot.
@@ -101,12 +121,18 @@ export async function POST(
 
     // Run one node and persist result. `alreadyClaimed` = the entry point
     // already flipped this node to running (the target node), so the claim
-    // below is skipped. Returns "skipped" when the atomic claim lost a race
-    // (another lane owns the node right now).
+    // below is skipped and `claimedToken` carries the entry claim's token.
+    // Returns "skipped" when the atomic claim lost a race (another lane owns
+    // the node right now).
     async function runOne(
       nodeId: string,
       alreadyClaimed = false,
+      claimedToken?: string,
     ): Promise<"completed" | "failed" | "running" | "cancelled" | "skipped"> {
+      // I-6: the token THIS lane's persists are fenced by. Cascade nodes
+      // mint their own at claim time; the target node inherits the entry
+      // claim's token.
+      const runToken = alreadyClaimed ? claimedToken : crypto.randomUUID();
       if (!alreadyClaimed) {
         const nodeRow = await db.node.findUnique({ where: { id: nodeId } });
         if (!nodeRow) return "failed";
@@ -118,6 +144,7 @@ export async function POST(
             status: "running",
             progress: 10,
             startedAt: nodeRow.startedAt ?? new Date(),
+            runToken,
           },
         });
         if (cascadeClaim.count === 0) return "skipped";
@@ -126,8 +153,10 @@ export async function POST(
       const { nodes, edges } = await loadSnapshot();
       const current = nodes.find((n) => n.id === nodeId);
       if (!current) {
-        await db.node.update({
-          where: { id: nodeId },
+        // I-6: fence this failure write to OUR run too — an unconditional
+        // update could stamp failed onto a row a stop→retry just re-claimed.
+        await db.node.updateMany({
+          where: { id: nodeId, status: "running", runToken },
           data: { status: "failed", completedAt: new Date() },
         });
         return "failed";
@@ -142,17 +171,20 @@ export async function POST(
       if (status === "running") {
         // Poll-ceiling outcome: remote cluster job still running — persist
         // the honest in-progress state, NO completedAt / progress-100.
-        // E4 conditional: never resurrect a row the user stopped.
+        // E4 conditional + I-6 token: never resurrect a row the user
+        // stopped, and never touch a row a retry re-claimed after us.
         await db.node.updateMany({
-          where: { id: nodeId, status: "running" },
+          where: { id: nodeId, status: "running", runToken },
           data: { status, result, logs, progress: 90 },
         });
         return status;
       }
       // E4 conditional persist — only a still-running row takes the outcome
-      // (a user Stop or watchdog settle wins over a late engine result).
+      // (a user Stop or watchdog settle wins over a late engine result);
+      // I-6: …and only OUR run's row — a retry issued after this lane was
+      // stopped has a different token and stays untouched (#47).
       await db.node.updateMany({
-        where: { id: nodeId, status: "running" },
+        where: { id: nodeId, status: "running", runToken },
         data: {
           status,
           result,
@@ -168,7 +200,7 @@ export async function POST(
     //    2) BFS cascade — repeatedly find pending/idle nodes whose ALL
     //    upstream nodes are now completed, and run them.
     const executeAll = async () => {
-      await runOne(id, true);
+      await runOne(id, true, claimToken);
       let guard = 0;
       while (guard++ < 1000) {
         const { nodes, edges } = await loadSnapshot();
@@ -191,11 +223,13 @@ export async function POST(
     if (asyncMode) {
       // K lane: fire-and-forget — respond with the claimed (running) node,
       // let the client's poll cadence own presentation. A background crash
-      // marks the node failed so the row never wedges in "running".
+      // marks the node failed so the row never wedges in "running" — fenced
+      // to THIS run's token (I-6): a crash handler firing after a stop→retry
+      // must not fail the new run's row.
       void executeAll().catch(async (e) => {
         await db.node
           .updateMany({
-            where: { id, status: "running" },
+            where: { id, status: "running", runToken: claimToken },
             data: {
               status: "failed",
               result: `Error: ${e instanceof Error ? e.message : String(e)}`,
