@@ -173,6 +173,8 @@
 | 53 | **Turbopack per-route 模块图 → 同一 lib 模块多实例**：skills 注册表在 DELETE bundle 注销后，GET bundle 的目录仍 Serving 陈旧条目；globalThis once-guard 反而加剧陈旧（A bundle 的已解析 promise 让 B bundle 跳过自己的水合）。修复模式：**DB 为共享真相 + 每 bundle 实例 TTL（≤1s）同步 + 关键路径（目录读/写路由/解析失手）强制同步**——含模块级注册表的 lib 在 Turbopack dev 下不能假设单实例 | 架构 | 已修复（QA D4 实证） |
 | 54 | **Prisma SQLite DateTime 的物理存储是 INTEGER epoch 毫秒**：throwaway 脚本直写 ISO 文本 → 跨类型比较静默失效（SQLite 排序中 TEXT 恒"大于"任何 INTEGER，日期比较全 false-negative 且零报错）。教训：**绕过 ORM 直改库的脚本必须按 ORM 的物理格式写**（先 `typeof(col)` 侦查）；另 bun:sqlite 的 `{readonly:false}` 触发 SQLITE_MISUSE——读写打开用无参构造 | QA 工程 | 已修复（F 相实证） |
 | 55 | **干跑与实施必须共用谓词**：retention 的 estimate 与 delete 走同一 where + 同一排序（estimate 无独立代码路径）；确认对话框引用干跑刚算出的数字。教训：**"预览 N 行将被删除"类 UI 的数字来源必须就是执行路径本身**——否则预览与实施漂移成两套真相 | 架构/UX | 已交付（F6 实证 applied==promised） |
+| 56 | **abort 竞态需要确定性终态判定**：webhook abort 抛错几乎瞬时（fetch reject 在微任务级），可能**跑赢**停止路由自身的 DB 行翻转——若执行器 catch 只写 "failed"，行会停在误导性 failed 而非用户要的 cancelled。修复模式：catch 里 `signal.aborted && isStopRequested(runKey)` 判定 + 执行器自己也写一次幂等 cancelled（双写条件化，先到者定终态，另一方零行命中）。教训：**"行先翻转"（#45）不是充分条件——凡 abort 类近零延迟失败路径，执行器必须自带 cancelled 判定** | 执行语义 | 已交付（N1 C1 实证） |
+| 57 | **进程内 kill 注册表用 globalThis 背书（#53 的运行时版）**：模块级 Map 在 Turbopack per-route bundle 下可能多实例——spawn/abort 注册方与 kill 方各持一份则 kill 静默失败。注册数据类用 DB 共享真相（#53）；**运行时句柄类（进程/AbortController）用 globalThis 挂载 Map**——同一 JS 堆内所有 bundle 实例必然共享同一 globalThis，是句柄注册表的零成本跨 bundle 桥 | 架构 | 已交付（ACTIVE_ABORTS） |
 
 ## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
@@ -369,7 +371,7 @@ M2 过滤器（api 过滤全行匹配）+ Load more（50→100 of 320）+ retent
 375 零溢出 + footer 贴底 + 触控目标 44px；console/page errors 零；VLM 六
 截图复核（两处首轮 FAIL 均为 #49 视口滚动假阴性，滚入视口重拍后全过）。
 
-## N 线 — Skill 层扩展运营（P1 下一阶段候选；基于 M 线测试结果排序）
+## N 线 — Skill 层扩展运营（已交付：N1+N2 全两项）
 
 M 线收口后，custom 技能底座完整（注册/执行/同步/治理/深链闭环）。N 线按
 测试结果驱动的价值排序：
@@ -388,3 +390,75 @@ M 线收口后，custom 技能底座完整（注册/执行/同步/治理/深链�
 
 验收标准沿用（每项：API 冒烟全 4xx 路径 + 浏览器 e2e 真实链路 + 字段级基线
 恢复 + lint/tsc/dev.log/console 四清 + 结论滚动进本表）。
+
+### N 线交付证据（2026-10-12）
+
+- **N1 慢技能入队**：schema `CustomSkill.latency`（String 列零迁移默认
+  "fast"，与重冻基线同 commit）；dynamic.ts 注册表透传 latency + 慢路径
+  10 分钟超时 + `ctx.extras.webhookAbortSignal` 停止信号；queue.ts 新增
+  `executeQueuedWebhookJob` 泳道（claim → pre-flight 停止守卫 → 注册
+  AbortController → 同一 handler 后台执行 → 条件终写 ok/error/cancelled，
+  stdout 落真实 webhook 响应快照）；real-executor `ACTIVE_ABORTS`
+  （globalThis 背书）并入 `killActiveProcess`——**停止路由零改动**即真杀
+  在途 fetch；invoke 路由 slow custom → 202 queued；resync 读全量行但只
+  注册 enabled 行（disabled 行由目录联合投影）。
+- **N2 管理面**：`skills/custom-validation.ts` 共享校验（POST/PATCH 同规
+  则）；PATCH 路由七字段局部更新（空 body 400 / 内置 400 / 未知 404 /
+  headers=null 清除）；GET 目录联合 disabled 行（enabled:false + eligible:
+  false 投影）；面板 RegisterSkillDialog 升级为双模式 CustomSkillDialog
+  （注册/编辑同表单：latency 单选卡 + headers 行编辑器 + 预填），卡片三
+  按钮（Power 软开关/Pencil 编辑/Trash 删除）+ disabled/locked 药丸 +
+  展开区 Endpoint/Execution/Headers。
+- **QA 17/17**（/home/z/n-lane-smoke，throwaway）：A 注册投影 3（含 latency
+  非法 400）+ B 队列金路径 3（202 信封/后台完成 exit 0/params 回显+headers
+  透传断言/invocation ok 真实时长 ≥delay/缺参先验证 400/慢 comp 400 保留）
+  + C 真实停止 1（/slow 25s 在途 → stop → cancelled + "Stopped by the
+  user" + 总耗时 ≪25s 证 abort 真杀 + `_meta.executor` 归因）+ D 管理面 8
+  （label/description/headers 反映、latency 切换换泳道 202、enabled=false
+  不可调仍列出、恢复、params 加必填、校验矩阵 6×4xx、headers=null 清除）
+  + E 限流回归 1（12+1→429 精确）+ F 清理 1。
+- **E2E 浏览器级**：注册对话框（Slow 单选 + 参数行 + required）→
+  custom.e2e-slow-echo 卡（slow/webhook 药丸 + 三按钮）；**真 LLM 聊天金
+  路径**：```skill 围栏 → QUEUED 卡（jobId + 诚实快照 + Watch progress）→
+  模型如实说"后台运行、无需进一步操作"（零编造）→ 深链直达 Activity tab
+  目标行展开 → 后台 3s webhook 完成行翻转 ok（CHAT-STREAM/
+  Computational Biologist/3.0s 真实时长）；编辑对话框预填 → 改描述/端点 →
+  toast + 卡片更新（reload 持久化）；停用→enabled disabled+locked 药丸 +
+  toast → 启用往返恢复（含一处 locked 残留修复）；移动端 375×812（
+  docScrollW 375 零溢出/main 319/footer 780–812 贴底/三按钮与 Register 均
+  44px）；console + page errors 零；4 截图（47/48/49/50）；VLM 复核 47 卡
+  4/4、49 聊天卡 3/3、48 字段预填通过（Execution policy/Headers 在折叠下
+  方——#49 视口假阴性，DOM 断言已证 radio checked）。
+- **基线**：demo:fresh 重置 + outputs 清理 + daemon 重启（#41/#43 纪律）；
+  字段级核对 workflows 2 / nodes 14+5 / toolJobs 16 / **skillInvocations 0
+  / customSkills 0** / chatMessages 12 / screenings 3 / candidates 86。
+- **过程产出**：新结论 #56（abort 竞态确定性 cancelled）、#57（globalThis
+  跨 bundle kill 注册表）；#43 热重载陈旧包再次实证（多步编辑 lib 中间态
+  被 Turbopack 编译缓存——重启后复验 17/17）；一处措辞残留修复（聊天卡
+  "engine lands"→"run lands"，#52 同族）；E2E 中发现并修复 locked 药丸
+  往返残留。
+
+## O 线 — Skill 层授权与协同（P1 下一阶段候选；基于 N 线测试结果排序）
+
+N 线收口后，custom 技能已是一等公民（注册/执行/停止/编辑/停用全链路）。
+测试结果暴露的排序依据：custom 技能目前 `requires: []`（注册面无授权声
+明）——K2 的 denied 深链闭环对内置 bio/web 生效但 custom 全开；QUEUED 卡
+为时点快照（行翻转后回看聊天仍是 queued 文案）；管理面在多人/多环境协
+同下需要可移植性。按价值排序：
+
+1. **custom 技能授权声明（O1）**：注册/编辑对话框加 requires 多选
+   （bioToolsEnabled/webSearchEnabled）——CustomSkill.requires 列（JSON
+   String 零迁移）+ 注册表透传 + 门控自动继承（runSkill 的 3 步已存在，
+   零执行层新代码）+ denied 卡 "Fix agent access" 深链（M1 模式复用）+
+   目录 eligible 投影对齐。测试面：denied custom 卡 + 深链闭环 e2e。
+2. **QUEUED 卡活性刷新（O2）**：聊天卡从"时点快照"升级为"订阅刷新"——
+   抽屉打开时对 queued 卡轮询（或 SSE 广播）invocation 终态，行翻转后
+   卡上状态药丸同步翻转（文案仍保留快照披露）。修复 VLM 复核指出的
+   "boilerplate 密集"观感的同时给出信息活性。
+3. **技能导入导出（O3）**：custom 技能 JSON 导出（CustomSkill 行投影 +
+   版本戳）与导入（POST 校验管道复用，冲突 409 带改名建议）——团队/环境
+   间迁移注册面。
+4. **低优先池滚动（P2）**：stop 路由 detail 措辞打磨（abort 竞态下
+   "already finished" 语义可解释但欠精确）；Runs sheet cancelled 行
+   Retry 直达；file-missing 筛选列；Escape 成文；Insights 服务端聚合；
+   叠合深化；认证；真实集群通道。

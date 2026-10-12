@@ -103,10 +103,26 @@
   自动纳入（下一轮即生效）；handler POST 已验证参数到端点（20 秒超时，非 2xx/
   超时诚实 error）；注册表从 DB 同步（TTL ≤1 秒，miss 强制同步），DELETE
   注销保留审计历史；面板注册对话框（表单 + 参数行编辑器）+ 每卡删除按钮。
+- **慢技能入队（N1）**：注册时选 Execution policy "Slow · queued" ——
+  custom 技能 latency=slow 后，智能体聊天与 REST invoke（`/api/skills/invoke`
+  返回 202）都把它排入 K5 后台队列（ToolJob + SkillInvocation queued 行 →
+  fire-and-forget webhook，10 分钟超时）；**真实停止**：停止路由经
+  AbortController 注册表（runKey=jobId，globalThis 背书跨 bundle）真杀在途
+  fetch，确定性 cancelled 终态（条件写守卫防复活）；孤儿行启动清扫、
+  QUEUED 聊天卡、Watch progress 深链、Insights/限流全部继承零额外代码。
+- **custom 技能管理面（N2）**：PATCH /api/skills/:skillId 局部更新（label/
+  description/endpoint/params/headers/latency/enabled，空 body 400、内置
+  400、未知 404）；enabled 软开关 —— 停用后离开活跃注册表（不可调用、
+  提示词不再广告）但目录仍列出（打 disabled/locked 标，可一键恢复）；
+  编辑对话框复用注册表单（预填 + latency 单选 + headers 行编辑器，
+  headers/null 清除）；注册与编辑共用同一校验模块（custom-validation.ts），
+  卡片三按钮（电源/铅笔/垃圾桶）+ 展开区显示 Endpoint/Execution/Headers。
 
 ![技能面板](docs/images/28-skills-panel.png)
 ![聊天 QUEUED 卡深链](docs/images/40-m-queued-deeplink.png)
 ![自定义 webhook 技能注册](docs/images/42-m-registry-custom.png)
+![custom 技能管理卡（N2）](docs/images/47-n-registry-custom-card.png)
+![聊天慢技能 QUEUED 卡（N1）](docs/images/49-n-chat-queued-card.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -422,9 +438,11 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | POST | `/api/screening/:id/rmsd` | 结构 RMSD 指标轴计算（`{refId}`，原子事务） |
 | POST | `/api/screening/:id/promote` | 候选提升回画布 |
 | GET | `/api/bio-tools/:type` | BLAST / PDB / PubMed / UniProt |
-| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析；含 custom.* 端点） |
-| POST | `/api/skills` | 注册自定义 webhook 技能（M3：label/description/endpoint/params 校验，冲突 409） |
+| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析；含 custom.* 端点；N2：disabled 行带 enabled:false 仍列出） |
+| POST | `/api/skills` | 注册自定义 webhook 技能（M3：label/description/endpoint/params 校验，冲突 409；N1：latency "fast"\|"slow"） |
+| PATCH | `/api/skills/:skillId` | N2：局部更新 custom 技能（label/description/endpoint/params/headers/latency/enabled；空 body 400、内置 400、未知 404） |
 | DELETE | `/api/skills/:skillId` | 注销自定义技能（内置 400 / 未知 404；审计历史保留） |
+| POST | `/api/skills/invoke` | REST 调用快速技能（200 ok / 400 invalid / 403 denied / 429 limited / 500 error）；N1：slow custom 返回 202 queued（后台队列 + jobId） |
 | GET | `/api/skills/invocations` | 统一调用审计日志（M2：keyset 分页 cursor + limit/skillId/source/status/agentId 过滤） |
 | GET/POST | `/api/skills/retention` | M2：审计保留策略预览（GET）/ 干跑与执行（POST：maxAgeDays/rowCap/dryRun） |
 

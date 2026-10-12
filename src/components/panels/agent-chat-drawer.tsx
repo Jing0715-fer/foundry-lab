@@ -452,9 +452,10 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
 
   // M1 deep-links: the card knows WHERE its outcome lives — queued runs
   // point at the Skills Activity tab (invocation row flips to a terminal
-  // status when the engine lands), denied cards point at the agent editor
-  // (the knowledge switches that caused the refusal), and limited cards
-  // point at their audit row (the retry hint lives there).
+  // status when the run lands — engine or webhook, N1 made both queueable),
+  // denied cards point at the agent editor (the knowledge switches that
+  // caused the refusal), and limited cards point at their audit row (the
+  // retry hint lives there).
   const watchInSkills = () => {
     if (call.invocationId) {
       setPendingSkillInvocation({
@@ -467,7 +468,7 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
     toast({
       title: "Opening the Skills Activity tab",
       description: call.jobId
-        ? "The queued run's invocation row flips to ok / error / cancelled when the engine lands."
+        ? "The queued run's invocation row flips to ok / error / cancelled when the run lands."
         : "The invocation row for this call is highlighted when it's on the loaded page.",
       variant: "default",
     });
@@ -511,8 +512,9 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
       {call.status === "queued" && (
         <p className="mt-1 text-[11px] text-muted-foreground">
           Running in the background — watch the Skills Activity tab (its
-          invocation row flips to ok / error / cancelled when the engine
-          lands); this card is a snapshot from when the chat message was sent.
+          invocation row flips to ok / error / cancelled when the run
+          lands); this card is a snapshot from when the chat message was
+          sent.
         </p>
       )}
       {/* M1: deep-link actions. */}

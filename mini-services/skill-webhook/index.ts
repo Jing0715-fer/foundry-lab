@@ -65,9 +65,18 @@ const server = Bun.serve({
       if (url.pathname === "/echo") {
         const delay = Math.min(10_000, Math.max(0, Number(url.searchParams.get("delay")) || 0));
         if (delay > 0) await Bun.sleep(delay);
+        // N2: echo the request headers too (minus hop-by-hop noise) so QA
+        // can assert registered custom-skill headers actually reach the
+        // webhook. The `received` body shape is unchanged.
+        const echoed: Record<string, string> = {};
+        for (const [k, v] of req.headers.entries()) {
+          if (k === "content-type" || k === "content-length" || k === "host" || k === "connection") continue;
+          echoed[k] = v;
+        }
         return Response.json({
           ok: true,
           received: body,
+          headers: echoed,
           at: new Date().toISOString(),
         });
       }

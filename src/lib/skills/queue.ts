@@ -33,11 +33,22 @@ import { join, resolve } from "path";
 import { db } from "@/lib/db";
 import { getCompTool } from "@/lib/tools";
 import { executeCompToolReal } from "@/lib/real-executor";
+// N1: the custom (webhook) branch of the queue executor needs the abort
+// registry + the stop flag for real mid-flight stops.
+import {
+  registerWebhookAbort,
+  unregisterWebhookAbort,
+} from "@/lib/real-executor";
+import { isStopRequested } from "@/lib/stop-registry";
 import { getSkill } from "./registry";
 import { validateParams } from "./runner";
 import { checkSkillRateLimit } from "./rate-limit";
 import { recordSkillInvocation } from "./runner";
-import type { SkillContext, SkillRunResult } from "./types";
+import type {
+  SkillContext,
+  SkillDefinition,
+  SkillRunResult,
+} from "./types";
 
 const OUTPUTS_ROOT = resolve(process.cwd(), "outputs");
 
@@ -195,12 +206,17 @@ export async function runSkillQueued(
 
   // 6. Fire-and-forget execution. The void promise has its own crash net —
   // this function must return the "queued" envelope immediately.
+  // N1: custom (webhook) defs capture the resolved def object directly —
+  // the background executor runs in THIS module instance, so the closure
+  // is immune to registry re-syncs while the job is in flight.
   void executeQueuedSkillJob({
     jobId,
     toolKey,
     params,
     invocationId,
     t0,
+    source: ctx.source,
+    ...(def.family === "custom" ? { customDef: def } : {}),
   }).catch(async (e: unknown) => {
     const msg = e instanceof Error ? e.message : String(e);
     await db.toolJob
@@ -230,7 +246,7 @@ export async function runSkillQueued(
     summary:
       `Queued as tool job ${jobId} — running in the background. Watch the ` +
       "Skills Activity tab (this row flips to ok / error / cancelled when the " +
-      "engine lands); results land there when done.",
+      "run lands); results land there when done.",
     durationMs: Date.now() - t0,
     data: { jobId },
     ...(invocationId ? { invocationId } : {}),
@@ -260,15 +276,21 @@ async function queuedEnvelope(
   return invocationId ? { ...result, invocationId } : result;
 }
 
-/** The background executor — one job, fully conditional-write-disciplined. */
+/** The background executor — one job, fully conditional-write-disciplined.
+ *  N1: `customDef` present → this is a SLOW custom webhook skill: the
+ *  "engine" is the registered handler (a fetch to the user's endpoint,
+ *  slow timeout + stoppable abort). Everything else is the comp lane. */
 async function executeQueuedSkillJob(args: {
   jobId: string;
   toolKey: string;
   params: Record<string, unknown>;
   invocationId?: string;
   t0: number;
+  /** The enqueue's true source — the webhook payload reports it. */
+  source: SkillContext["source"];
+  customDef?: SkillDefinition;
 }): Promise<void> {
-  const { jobId, toolKey, params, invocationId, t0 } = args;
+  const { jobId, toolKey, params, invocationId, t0, customDef } = args;
 
   // Claim: queued → running. Zero rows = stopped while queued (the stop
   // route flips the row to cancelled) → the invocation honestly never ran.
@@ -291,6 +313,19 @@ async function executeQueuedSkillJob(args: {
     return;
   }
 
+  // ── N1 custom (webhook) branch ──────────────────────────────────────────
+  if (customDef) {
+    return await executeQueuedWebhookJob({
+      jobId,
+      params,
+      invocationId,
+      t0,
+      def: customDef,
+      source: args.source,
+    });
+  }
+
+  // ── comp engine branch (unchanged K5 lane) ─────────────────────────────
   const workDir = join(OUTPUTS_ROOT, toolKey, jobId);
   await fs.mkdir(workDir, { recursive: true }).catch(() => {});
 
@@ -371,5 +406,238 @@ async function executeQueuedSkillJob(args: {
         },
       })
       .catch(() => {});
+  }
+}
+
+// ── N1: queued WEBHOOK executor ──────────────────────────────────────────
+
+/** Background executor for a SLOW custom webhook skill (runKey = jobId).
+ *
+ *  Same contract as the comp branch: claim happened already; the final
+ *  writes are conditional (a row the stop route flipped to cancelled
+ *  matches zero rows and keeps its verdict), the invocation row flips
+ *  queued → ok | error | cancelled, and a crash anywhere fails both rows
+ *  honestly via the caller's catch net.
+ *
+ *  Real stop: an AbortController is registered for the WHOLE in-flight
+ *  window (claim → fetch settle) — killActiveProcess(jobId) aborts the
+ *  fetch, the handler throws, and the conditional final write preserves
+ *  the cancelled verdict the stop route already wrote. */
+async function executeQueuedWebhookJob(args: {
+  jobId: string;
+  params: Record<string, unknown>;
+  invocationId?: string;
+  t0: number;
+  def: SkillDefinition;
+  source: SkillContext["source"];
+}): Promise<void> {
+  const { jobId, params, invocationId, t0, def } = args;
+
+  // Stoppable-signal plumbing: registered BEFORE the pre-flight check so
+  // a stop that lands in the claim→check gap still reaches the controller
+  // (killActiveProcess aborts it — a no-op pre-fetch, but it also flipped
+  // the row, which the check below then honors).
+  const ctl = new AbortController();
+  registerWebhookAbort(jobId, ctl);
+  try {
+    // Pre-flight stop guard (mirrors the engine lane's pre-spawn guard):
+    // a stop requested between the claim and the fetch start means the
+    // webhook never fires — the row was already flipped by the stop route.
+    if (isStopRequested(jobId)) {
+      if (invocationId) {
+        await db.skillInvocation
+          .updateMany({
+            where: { id: invocationId, status: "queued" },
+            data: {
+              status: "cancelled",
+              error: "Stopped by the user before the webhook started.",
+            },
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    // The handler is the SAME one the inline lane uses — the slow timeout
+    // and the abort signal are threaded through ctx.extras.
+    let data: unknown;
+    try {
+      data = await def.handler(params, {
+        // The invocation row already carries the true source from the
+        // enqueue; the handler only uses it for the webhook payload's
+        // transparency field, so pass it through unchanged.
+        source: args.source,
+        extras: { webhookAbortSignal: ctl.signal },
+      });
+    } finally {
+      // Whatever happened, this run's controller is done — the slot must
+      // be free for a retry's new registration.
+      unregisterWebhookAbort(jobId, ctl);
+    }
+
+    const summary = def.summarize
+      ? safeCustomSummary(def, data)
+      : `${def.label} completed`;
+    const responseSnippet = (() => {
+      try {
+        return JSON.stringify(data).slice(0, 2000);
+      } catch {
+        return "";
+      }
+    })();
+
+    // Final ToolJob write — only a row still RUNNING takes the outcome.
+    const fin = await db.toolJob.updateMany({
+      where: { id: jobId, status: "running" },
+      data: {
+        status: "completed",
+        stdout: responseSnippet ? `${summary}\n\nWebhook response: ${responseSnippet}` : summary,
+        stderr: "",
+        outputFiles: JSON.stringify([]),
+        exitCode: 0,
+        command: `webhook ${def.id}`,
+        params: JSON.stringify({
+          ...params,
+          _meta: {
+            executor: "skill-queue-webhook",
+            skillId: def.id,
+            ...(invocationId ? { invocationId } : {}),
+          },
+        }),
+        finishedAt: new Date(),
+      },
+    });
+    if (fin.count === 0) {
+      // Stopped mid-flight — the aborted fetch threw, the stop route had
+      // already flipped the row; keep the honest cancelled verdict.
+      if (invocationId) {
+        await db.skillInvocation
+          .updateMany({
+            where: { id: invocationId, status: "queued" },
+            data: {
+              status: "cancelled",
+              error: "Stopped by the user while the webhook was running.",
+              durationMs: Date.now() - t0,
+            },
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+
+    if (invocationId) {
+      await db.skillInvocation
+        .updateMany({
+          where: { id: invocationId, status: "queued" },
+          data: {
+            status: "ok",
+            resultSummary: summary,
+            durationMs: Date.now() - t0,
+          },
+        })
+        .catch(() => {});
+    }
+    return;
+  } catch (e) {
+    // The webhook failed (unreachable / non-2xx / aborted).
+    const msg = e instanceof Error ? e.message : String(e);
+    // A user stop aborts the fetch — that is a CANCELLED run, not a failed
+    // one, even if this write races ahead of the stop route's row flip.
+    // Both writes are conditional + idempotent: the first to land sets
+    // cancelled, the other matches zero rows — the row can never end up
+    // "failed" over a stop the user asked for.
+    if (ctl.signal.aborted && isStopRequested(jobId)) {
+      await db.toolJob
+        .updateMany({
+          where: { id: jobId, status: "running" },
+          data: {
+            status: "cancelled",
+            stderr: msg.slice(0, 2000),
+            outputFiles: JSON.stringify([]),
+            exitCode: 1,
+            command: `webhook ${def.id}`,
+            params: JSON.stringify({
+              ...params,
+              _meta: {
+                executor: "skill-queue-webhook",
+                skillId: def.id,
+                ...(invocationId ? { invocationId } : {}),
+              },
+            }),
+            finishedAt: new Date(),
+          },
+        })
+        .catch(() => {});
+      if (invocationId) {
+        await db.skillInvocation
+          .updateMany({
+            where: { id: invocationId, status: "queued" },
+            data: {
+              status: "cancelled",
+              error: "Stopped by the user while the webhook was running.",
+              durationMs: Date.now() - t0,
+            },
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+    const fin = await db.toolJob.updateMany({
+      where: { id: jobId, status: "running" },
+      data: {
+        status: "failed",
+        stdout: "",
+        stderr: msg.slice(0, 2000),
+        outputFiles: JSON.stringify([]),
+        exitCode: 1,
+        command: `webhook ${def.id}`,
+        params: JSON.stringify({
+          ...params,
+          _meta: {
+            executor: "skill-queue-webhook",
+            skillId: def.id,
+            ...(invocationId ? { invocationId } : {}),
+          },
+        }),
+        finishedAt: new Date(),
+      },
+    });
+    if (fin.count === 0) {
+      if (invocationId) {
+        await db.skillInvocation
+          .updateMany({
+            where: { id: invocationId, status: "queued" },
+            data: {
+              status: "cancelled",
+              error: "Stopped by the user while the webhook was running.",
+              durationMs: Date.now() - t0,
+            },
+          })
+          .catch(() => {});
+      }
+      return;
+    }
+    if (invocationId) {
+      await db.skillInvocation
+        .updateMany({
+          where: { id: invocationId, status: "queued" },
+          data: {
+            status: "error",
+            error: msg.slice(0, 400),
+            durationMs: Date.now() - t0,
+          },
+        })
+        .catch(() => {});
+    }
+  } finally {
+    unregisterWebhookAbort(jobId, ctl);
+  }
+}
+
+function safeCustomSummary(def: SkillDefinition, data: unknown): string {
+  try {
+    return def.summarize!(data) || `${def.label} completed`;
+  } catch {
+    return `${def.label} completed`;
   }
 }

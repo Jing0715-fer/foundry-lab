@@ -102,25 +102,77 @@ function unregisterProc(
 
 /** Kill the engine process registered under runKey (node-stop lane).
  *  Returns true when a live process was found and signalled. SIGTERM first,
- *  with a best-effort SIGKILL escalation after a 2s grace window. */
+ *  with a best-effort SIGKILL escalation after a 2s grace window.
+ *  N1: ALSO aborts a queued webhook fetch registered under the same runKey
+ *  (the K5 custom-skill lane) — one call, one stop story, any substrate. */
 export function killActiveProcess(runKey: string): boolean {
+  let stopped = false;
   const proc = ACTIVE_PROCS.get(runKey);
-  if (!proc) return false;
-  ACTIVE_PROCS.delete(runKey);
-  try {
-    proc.kill("SIGTERM");
-  } catch {
-    /* already gone */
-  }
-  // Escalation: SIGKILL after a 2s grace window (best-effort).
-  setTimeout(() => {
+  if (proc) {
+    ACTIVE_PROCS.delete(runKey);
+    stopped = true;
     try {
-      proc.kill("SIGKILL");
+      proc.kill("SIGTERM");
     } catch {
       /* already gone */
     }
-  }, 2000).unref?.();
-  return true;
+    // Escalation: SIGKILL after a 2s grace window (best-effort).
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, 2000).unref?.();
+  }
+  const ctl = ACTIVE_ABORTS.get(runKey);
+  if (ctl) {
+    ACTIVE_ABORTS.delete(runKey);
+    stopped = true;
+    try {
+      ctl.abort();
+    } catch {
+      /* already aborted */
+    }
+  }
+  return stopped;
+}
+
+// ── Queued-webhook abort registry (N1) ───────────────────────────────────────
+//
+// runKey (the ToolJob id) → the AbortController of the in-flight webhook
+// fetch for a SLOW custom skill. killActiveProcess aborts it, so the same
+// stop route that SIGTERMs engine processes halts queued webhook runs for
+// real. Backed by globalThis (not a module-level Map) on purpose: route
+// bundles can hold duplicated module instances (#53) — the process-global
+// map is the one object every instance shares, so a stop routed through a
+// different bundle still reaches the controller.
+const GLOBAL_FOR_ABRTS = globalThis as unknown as {
+  __foundryActiveWebhookAborts?: Map<string, AbortController>;
+};
+const ACTIVE_ABORTS: Map<string, AbortController> =
+  (GLOBAL_FOR_ABRTS.__foundryActiveWebhookAborts ??= new Map());
+
+/** Register the abort controller of an in-flight queued-webhook fetch
+ *  (runKey = ToolJob id). Call BEFORE awaiting the fetch so the stop lane
+ *  can reach it the whole time it is in flight. */
+export function registerWebhookAbort(
+  runKey: string | undefined,
+  ctl: AbortController,
+): void {
+  if (!runKey) return;
+  ACTIVE_ABORTS.set(runKey, ctl);
+}
+
+/** Unregister — only the CURRENT registration may clear the slot (same
+ *  identity discipline as unregisterProc: a superseded run's cleanup must
+ *  not evict a newer run's controller). */
+export function unregisterWebhookAbort(
+  runKey: string | undefined,
+  ctl: AbortController,
+): void {
+  if (!runKey) return;
+  if (ACTIVE_ABORTS.get(runKey) === ctl) ACTIVE_ABORTS.delete(runKey);
 }
 
 // ── Detection ───────────────────────────────────────────────────────────────

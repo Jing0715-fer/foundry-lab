@@ -10,15 +10,21 @@
 //   - agentId, when present, resolves the FULL agent context: knowledge
 //     gating AND per-agent rate limits apply exactly like an agent chat
 //     turn (this is the honest way to test K3 over HTTP).
-//   - Only fast, context-free skills (bio.* / web.* / custom.*) are
-//     invocable here:
+//   - Fast, context-free skills (bio.* / web.* / custom.* fast) are
+//     invocable synchronously:
 //       slow comp skills  → 400 (use POST /api/tools/run or the canvas —
 //                           minutes-long requests would just time out)
 //       canvas.* skills   → 400 (they require a workflow execution context)
+//       slow CUSTOM skills (N1) → QUEUED through the K5 lane (HTTP 202
+//                           + queued envelope with jobId — the queue is
+//                           fire-and-forget, so the request returns in
+//                           milliseconds and the webhook runs in the
+//                           background exactly like an agent chat turn).
 //
 // The response body is ALWAYS the SkillRunResult envelope (the same shape
 // every lane sees); the HTTP status mirrors the envelope:
-//   200 ok | 400 invalid | 403 denied | 429 limited | 500 error (handler)
+//   200 ok | 202 queued | 400 invalid | 403 denied | 429 limited |
+//   500 error (handler)
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -42,9 +48,13 @@ function httpStatusFor(res: SkillRunResult): number {
       return 429;
     case "error":
       return 500;
+    case "queued":
+      // N1: slow custom skills invoked over REST land in the background
+      // queue — 202 Accepted is the honest code (work accepted, not done).
+      return 202;
     default:
-      // queued / skipped / cancelled never come out of runSkill for fast
-      // skills — but a defensive 200 keeps the envelope honest if one does.
+      // skipped / cancelled never come out of this route — but a defensive
+      // 200 keeps the envelope honest if one does.
       return 200;
   }
 }
@@ -90,7 +100,7 @@ export async function POST(request: NextRequest) {
       { status },
     );
   }
-  if (def.latency === "slow") {
+  if (def.latency === "slow" && def.family !== "custom") {
     return NextResponse.json(
       {
         error:
@@ -122,6 +132,19 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Agent not found" }, { status: 404 });
     }
     ctxAgent = toAgentDTO(row);
+  }
+
+  // N1: slow CUSTOM webhooks go through the K5 queue — the request returns
+  // a "queued" envelope (202) in milliseconds while the webhook runs in the
+  // background (stoppable, audited, orphan-swept — everything the comp
+  // queue lane already proves).
+  if (def.latency === "slow" && def.family === "custom") {
+    const { runSkillQueued } = await import("@/lib/skills/queue");
+    const res = await runSkillQueued(def.id, rawParams, {
+      source: "api",
+      ...(ctxAgent ? { agent: ctxAgent } : {}),
+    });
+    return NextResponse.json(res, { status: httpStatusFor(res) });
   }
 
   const res = await runSkill(def.id, rawParams, {

@@ -41,7 +41,9 @@ import {
   HardDrive,
   KeyRound,
   Loader2,
+  Pencil,
   Plus,
+  Power,
   RefreshCw,
   Search,
   Timer,
@@ -115,6 +117,10 @@ interface SkillCatalogEntry {
   example?: Record<string, unknown>;
   /** M3: present only on custom.* entries — the registered webhook target. */
   endpoint?: string;
+  /** N2: custom.* management projection — registered headers (edit dialog
+   *  prefill) + soft-enable state (false = listed but not invocable). */
+  headers?: Record<string, string>;
+  enabled?: boolean;
   /** Only present when the catalog was fetched with ?agentId= — resolved
    *  against that agent's knowledge flags (same rule runSkill enforces). */
   eligible?: boolean;
@@ -456,6 +462,9 @@ function RegistryTab() {
   const [registerOpen, setRegisterOpen] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState<SkillCatalogEntry | null>(null);
   const [deleting, setDeleting] = React.useState(false);
+  // N2: edit dialog target + soft-enable busy flag.
+  const [editingSkill, setEditingSkill] = React.useState<SkillCatalogEntry | null>(null);
+  const [togglingId, setTogglingId] = React.useState<string | null>(null);
 
   const loadCatalog = React.useCallback(async () => {
     setLoading(true);
@@ -518,6 +527,56 @@ function RegistryTab() {
     } finally {
       setDeleting(false);
       setConfirmDelete(null);
+    }
+  };
+
+  // N2: soft-enable PATCH — disabled skills stay listed (flagged) so they
+  // can be re-enabled; enabled ones leave the registry (not invocable, not
+  // in agent prompts) until toggled back.
+  const toggleEnabled = async (skill: SkillCatalogEntry) => {
+    if (togglingId) return;
+    const next = !(skill.enabled ?? true);
+    setTogglingId(skill.id);
+    try {
+      const res = await fetch(`/api/skills/${encodeURIComponent(skill.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        useAppStore.getState().toast({
+          title: next ? "Enable failed" : "Disable failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      setSkills((prev) =>
+        prev.map((s) =>
+          s.id === skill.id
+            ? // Enabled customs resolve eligibility like the server does
+              // (customs declare no requirements → no locked pill); disabled
+              // ones show locked. Reset to undefined so the pill disappears.
+              { ...s, enabled: next, eligible: next ? undefined : false }
+            : s,
+        ),
+      );
+      useAppStore.getState().toast({
+        title: next ? "Custom skill enabled" : "Custom skill disabled",
+        description: next
+          ? `"${skill.id}" is live again — agents can invoke it on their next turn.`
+          : `"${skill.id}" is now inert — it stays listed here (flagged) but agents can no longer invoke or see it.`,
+        variant: "default",
+      });
+    } catch (e) {
+      useAppStore.getState().toast({
+        title: "Toggle failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setTogglingId(null);
     }
   };
 
@@ -624,8 +683,13 @@ function RegistryTab() {
                     skill={s}
                     open={expanded.has(s.id)}
                     onToggle={() => toggleSkill(s.id)}
+                    toggling={togglingId === s.id}
                     {...(s.family === "custom"
-                      ? { onDelete: () => setConfirmDelete(s) }
+                      ? {
+                          onDelete: () => setConfirmDelete(s),
+                          onEdit: () => setEditingSkill(s),
+                          onToggleEnabled: () => toggleEnabled(s),
+                        }
                       : {})}
                   />
                 ))}
@@ -635,12 +699,25 @@ function RegistryTab() {
         })
       )}
 
-      {/* M3: registration dialog (POST /api/skills). */}
-      <RegisterSkillDialog
+      {/* M3: registration dialog (POST /api/skills). N2: the SAME dialog
+          component renders the EDIT form (PATCH) when editingSkill is set. */}
+      <CustomSkillDialog
+        mode="register"
         open={registerOpen}
         onOpenChange={(open) => {
           setRegisterOpen(open);
           if (!open) loadCatalog();
+        }}
+      />
+      <CustomSkillDialog
+        mode="edit"
+        skill={editingSkill ?? undefined}
+        open={editingSkill !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setEditingSkill(null);
+            loadCatalog();
+          }
         }}
       />
 
@@ -691,19 +768,34 @@ function SkillCard({
   open,
   onToggle,
   onDelete,
+  onEdit,
+  onToggleEnabled,
+  toggling,
 }: {
   skill: SkillCatalogEntry;
   open: boolean;
   onToggle: () => void;
   /** M3: present only for family "custom" — deletable runtime skills. */
   onDelete?: () => void;
+  /** N2: open the edit dialog (PATCH surface). */
+  onEdit?: () => void;
+  /** N2: soft-enable toggle (PATCH { enabled }). */
+  onToggleEnabled?: () => void;
+  /** N2: true while this card's enable/disable PATCH is in flight. */
+  toggling?: boolean;
 }) {
   const latency = LATENCY_META[skill.latency] ?? LATENCY_META["slow"];
+  const disabled = skill.family === "custom" && skill.enabled === false;
 
   return (
-    <Card className="overflow-hidden transition-shadow hover:shadow-md">
+    <Card
+      className={cn(
+        "overflow-hidden transition-shadow hover:shadow-md",
+        disabled && "opacity-70",
+      )}
+    >
       <CardContent className="p-0">
-        {/* The toggle row and the delete button are SIBLINGS (never nest
+        {/* The toggle row and the action buttons are SIBLINGS (never nest
             interactive elements — keyboard + a11y). */}
         <div className="flex items-stretch">
           <button
@@ -725,6 +817,12 @@ function SkillCard({
                   <Pill
                     label="webhook"
                     className="bg-cyan-500/10 text-cyan-700 dark:text-cyan-400"
+                  />
+                )}
+                {disabled && (
+                  <Pill
+                    label="disabled"
+                    className="bg-rose-500/10 text-rose-700 dark:text-rose-400"
                   />
                 )}
                 {skill.requires.map((r) => (
@@ -759,28 +857,91 @@ function SkillCard({
               aria-hidden
             />
           </button>
-          {onDelete && (
-            <button
-              type="button"
-              onClick={onDelete}
-              aria-label={`Delete custom skill ${skill.label}`}
-              title={`Delete ${skill.id} (audit history is preserved)`}
-              className="flex w-11 items-center justify-center border-l text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+          {(onToggleEnabled || onEdit || onDelete) && (
+            <div
+              className="flex divide-x border-l"
+              aria-label="Custom skill actions"
             >
-              <Trash2 className="size-4" aria-hidden />
-            </button>
+              {onToggleEnabled && (
+                <button
+                  type="button"
+                  onClick={onToggleEnabled}
+                  disabled={toggling}
+                  aria-label={
+                    disabled
+                      ? `Enable custom skill ${skill.label}`
+                      : `Disable custom skill ${skill.label}`
+                  }
+                  title={
+                    disabled
+                      ? `Enable ${skill.id} (puts it back in the live registry)`
+                      : `Disable ${skill.id} (stays listed, agents can't invoke it)`
+                  }
+                  className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-amber-500/10 hover:text-amber-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:text-amber-400"
+                >
+                  {toggling ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                  ) : (
+                    <Power
+                      className={cn("size-4", disabled && "text-rose-500")}
+                      aria-hidden
+                    />
+                  )}
+                </button>
+              )}
+              {onEdit && (
+                <button
+                  type="button"
+                  onClick={onEdit}
+                  aria-label={`Edit custom skill ${skill.label}`}
+                  title={`Edit ${skill.id} (label, endpoint, params, headers, latency)`}
+                  className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
+                >
+                  <Pencil className="size-4" aria-hidden />
+                </button>
+              )}
+              {onDelete && (
+                <button
+                  type="button"
+                  onClick={onDelete}
+                  aria-label={`Delete custom skill ${skill.label}`}
+                  title={`Delete ${skill.id} (audit history is preserved)`}
+                  className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+                >
+                  <Trash2 className="size-4" aria-hidden />
+                </button>
+              )}
+            </div>
           )}
         </div>
 
         {open && (
           <div className="space-y-3 border-t px-4 py-3">
             {skill.family === "custom" && (
-              <p className="text-xs text-muted-foreground">
-                <span className="font-medium text-foreground">Endpoint:</span>{" "}
-                <span className="break-all font-mono text-[11px]">
-                  {skill.endpoint ?? "(unavailable)"}
-                </span>
-              </p>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Endpoint:</span>{" "}
+                  <span className="break-all font-mono text-[11px]">
+                    {skill.endpoint ?? "(unavailable)"}
+                  </span>
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">Execution:</span>{" "}
+                  {skill.latency === "slow"
+                    ? "slow — agent and REST invocations are queued as background tool jobs (stoppable, audited)"
+                    : "fast — invoked inline with a 20s webhook timeout"}
+                </p>
+                {skill.headers && Object.keys(skill.headers).length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Headers:</span>{" "}
+                    <span className="break-all font-mono text-[11px]">
+                      {Object.entries(skill.headers)
+                        .map(([k, v]) => `${k}: ${v}`)
+                        .join(" · ")}
+                    </span>
+                  </p>
+                )}
+              </div>
             )}
             {skill.aliases.length > 0 && (
               <p className="text-xs text-muted-foreground">
@@ -1910,7 +2071,7 @@ function StatusBar({
 }
 
 // ==========================================================================
-// Register skill dialog (M3) — POST /api/skills
+// Custom skill dialog (M3 register + N2 edit) — POST /api/skills | PATCH
 // ==========================================================================
 
 interface ParamRow {
@@ -1927,28 +2088,73 @@ const EMPTY_PARAM_ROW: ParamRow = {
   description: "",
 };
 
-function RegisterSkillDialog({
+/** N2: one header row = one key/value pair sent with every webhook POST. */
+interface HeaderRow {
+  key: string;
+  value: string;
+}
+
+const EMPTY_HEADER_ROW: HeaderRow = { key: "", value: "" };
+
+function CustomSkillDialog({
+  mode,
+  skill,
   open,
   onOpenChange,
 }: {
+  mode: "register" | "edit";
+  /** Edit mode: the catalog entry being edited (register mode: undefined). */
+  skill?: SkillCatalogEntry;
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
   const toast = useAppStore((s) => s.toast);
+  const editing = mode === "edit" && skill;
   const [label, setLabel] = React.useState("");
   const [description, setDescription] = React.useState("");
   const [endpoint, setEndpoint] = React.useState("");
   const [params, setParams] = React.useState<ParamRow[]>([]);
+  const [headers, setHeaders] = React.useState<HeaderRow[]>([]);
+  const [latency, setLatency] = React.useState<"fast" | "slow">("fast");
   const [submitting, setSubmitting] = React.useState(false);
   const [formError, setFormError] = React.useState<string | null>(null);
 
-  const reset = () => {
-    setLabel("");
-    setDescription("");
-    setEndpoint("");
-    setParams([]);
+  // Prefill whenever the dialog OPENS for a new target (edit) or resets
+  // (register). Only runs when open so keystrokes made while the dialog
+  // animates closed are never clobbered by a stale prefill.
+  React.useEffect(() => {
+    if (!open) return;
+    if (editing && skill) {
+      setLabel(skill.label);
+      setDescription(skill.description);
+      setEndpoint(skill.endpoint ?? "");
+      setParams(
+        (skill.params ?? []).map((p) => ({
+          key: p.key,
+          type: p.type,
+          required: p.required === true,
+          description: p.description,
+        })),
+      );
+      setHeaders(
+        Object.entries(skill.headers ?? {}).map(([key, value]) => ({
+          key,
+          value,
+        })),
+      );
+      setLatency(skill.latency);
+    } else {
+      setLabel("");
+      setDescription("");
+      setEndpoint("");
+      setParams([]);
+      setHeaders([]);
+      setLatency("fast");
+    }
     setFormError(null);
-  };
+    // Prefill is a pure function of (open, skill identity); in-flight edits
+    // are local state — the dialog resets deterministically on each open.
+  }, [open, editing, skill?.id]);
 
   const addParamRow = () => {
     if (params.length >= 6) return;
@@ -1961,6 +2167,21 @@ function RegisterSkillDialog({
 
   const removeParamRow = (i: number) => {
     setParams((prev) => prev.filter((_, idx) => idx !== i));
+  };
+
+  const addHeaderRow = () => {
+    if (headers.length >= 8) return;
+    setHeaders((prev) => [...prev, { ...EMPTY_HEADER_ROW }]);
+  };
+
+  const updateHeaderRow = (i: number, patch: Partial<HeaderRow>) => {
+    setHeaders((prev) =>
+      prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)),
+    );
+  };
+
+  const removeHeaderRow = (i: number) => {
+    setHeaders((prev) => prev.filter((_, idx) => idx !== i));
   };
 
   const submit = async () => {
@@ -1976,38 +2197,85 @@ function RegisterSkillDialog({
       setFormError("A webhook endpoint URL is required.");
       return;
     }
+    // Serialized header set: blank rows are dropped; duplicates fail locally
+    // with the same rule the server enforces.
+    const headerEntries = headers
+      .filter((h) => h.key.trim())
+      .map((h) => [h.key.trim(), h.value] as const);
+    const seenKeys = new Set(headerEntries.map(([k]) => k));
+    if (seenKeys.size !== headerEntries.length) {
+      setFormError("Duplicate header names — each header key may appear once.");
+      return;
+    }
     setSubmitting(true);
     try {
-      const payload = {
-        label: label.trim(),
-        description: description.trim() || label.trim(),
-        endpoint: endpoint.trim(),
-        params: params
-          .filter((p) => p.key.trim())
-          .map((p) => ({
-            key: p.key.trim(),
-            type: p.type,
-            ...(p.required ? { required: true } : {}),
-            description: p.description.trim() || `${p.key.trim()} parameter`,
-          })),
-      };
-      const res = await fetch("/api/skills", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        setFormError(data?.error ?? `HTTP ${res.status}`);
-        return;
+      const paramRows = params
+        .filter((p) => p.key.trim())
+        .map((p) => ({
+          key: p.key.trim(),
+          type: p.type,
+          ...(p.required ? { required: true } : {}),
+          description: p.description.trim() || `${p.key.trim()} parameter`,
+        }));
+      const headerObj: Record<string, string> = {};
+      for (const [k, v] of headerEntries) headerObj[k] = v;
+
+      if (editing && skill) {
+        // N2: update the fields the dialog owns. Enabled is NOT included
+        // (the card power button owns it) — an edit never silently
+        // re-enables a disabled skill.
+        const res = await fetch(`/api/skills/${encodeURIComponent(skill.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            label: label.trim(),
+            description: description.trim() || label.trim(),
+            endpoint: endpoint.trim(),
+            params: paramRows,
+            headers: headerEntries.length > 0 ? headerObj : null,
+            latency,
+          }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setFormError(data?.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        toast({
+          title: "Custom skill updated",
+          description: `"${skill.id}" now uses the new definition — invocations after this moment follow it (the skill manifest agents see refreshes on their next turn).`,
+          variant: "default",
+        });
+        onOpenChange(false);
+      } else {
+        const payload = {
+          label: label.trim(),
+          description: description.trim() || label.trim(),
+          endpoint: endpoint.trim(),
+          params: paramRows,
+          ...(headerEntries.length > 0 ? { headers: headerObj } : {}),
+          latency,
+        };
+        const res = await fetch("/api/skills", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          setFormError(data?.error ?? `HTTP ${res.status}`);
+          return;
+        }
+        toast({
+          title: "Custom skill registered",
+          description:
+            latency === "slow"
+              ? `"${data?.skill?.id ?? label.trim()}" is live as a SLOW skill — agent and REST invocations queue it as a background tool job (stoppable, audited).`
+              : `"${data?.skill?.id ?? label.trim()}" is live — agents can invoke it immediately (it appears in their skill manifest on the next turn).`,
+          variant: "default",
+        });
+        onOpenChange(false);
       }
-      toast({
-        title: "Custom skill registered",
-        description: `"${data?.skill?.id ?? label.trim()}" is live — agents can invoke it immediately (it appears in their skill manifest on the next turn).`,
-        variant: "default",
-      });
-      reset();
-      onOpenChange(false);
     } catch (e) {
       setFormError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -2016,24 +2284,21 @@ function RegisterSkillDialog({
   };
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(next) => {
-        if (!next) reset();
-        onOpenChange(next);
-      }}
-    >
+    <Dialog open={open} onOpenChange={(next) => onOpenChange(next)}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Webhook className="size-4 text-muted-foreground" aria-hidden />
-            Register a custom skill
+            {editing ? `Edit ${skill?.id ?? "custom skill"}` : "Register a custom skill"}
           </DialogTitle>
           <DialogDescription>
             A webhook skill: your endpoint receives a POST with the
             validated params and its 2xx response becomes the skill result.
             Registered skills flow through the same pipeline as built-ins —
             validation, rate limits, audit, insights — with no extra wiring.
+            {editing
+              ? " Edits apply to future invocations; past audit rows keep their historical shape."
+              : ""}
           </DialogDescription>
         </DialogHeader>
 
@@ -2084,8 +2349,53 @@ function RegisterSkillDialog({
               <code className="font-mono">
                 {"{skillId, params, source, agent?, at}"}
               </code>{" "}
-              with a 20s timeout. Non-2xx or timeout → honest error.
+              {latency === "slow"
+                ? "in the background queue with a 10-minute timeout."
+                : "with a 20s timeout. Non-2xx or timeout → honest error."}
             </p>
+          </div>
+
+          {/* N1: execution policy — slow skills are queued as background
+              tool jobs by agent chat + REST invoke lanes. */}
+          <div className="space-y-1.5">
+            <Label>Execution policy</Label>
+            <div className="grid grid-cols-2 gap-2" role="radiogroup" aria-label="Execution policy">
+              <button
+                type="button"
+                role="radio"
+                aria-checked={latency === "fast"}
+                onClick={() => setLatency("fast")}
+                className={cn(
+                  "rounded-md border p-2.5 text-left transition-colors",
+                  latency === "fast"
+                    ? "border-primary bg-primary/5"
+                    : "hover:bg-accent/50",
+                )}
+              >
+                <p className="text-xs font-medium text-foreground">Fast · inline</p>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  Invoked synchronously (≤10s, 20s webhook timeout).
+                </p>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={latency === "slow"}
+                onClick={() => setLatency("slow")}
+                className={cn(
+                  "rounded-md border p-2.5 text-left transition-colors",
+                  latency === "slow"
+                    ? "border-primary bg-primary/5"
+                    : "hover:bg-accent/50",
+                )}
+              >
+                <p className="text-xs font-medium text-foreground">Slow · queued</p>
+                <p className="text-[11px] leading-snug text-muted-foreground">
+                  Background tool job — real stop, audit transitions, 10-min
+                  timeout. For long external computations.
+                </p>
+              </button>
+            </div>
           </div>
 
           <div className="space-y-2">
@@ -2188,6 +2498,72 @@ function RegisterSkillDialog({
             )}
           </div>
 
+          {/* N2: headers — plain passthrough on every webhook POST. */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Headers ({headers.length}/8)</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addHeaderRow}
+                disabled={headers.length >= 8}
+                className="h-7 gap-1 text-xs"
+              >
+                <Plus className="size-3.5" />
+                Add header
+              </Button>
+            </div>
+            {headers.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                No extra headers — the webhook receives JSON content-type
+                only. Add rows for auth tokens or routing hints your
+                endpoint expects.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {headers.map((row, i) => (
+                  <div
+                    key={i}
+                    className="flex items-center gap-2"
+                    aria-label={`Header ${i + 1}`}
+                  >
+                    <Input
+                      value={row.key}
+                      onChange={(e) =>
+                        updateHeaderRow(i, { key: e.target.value })
+                      }
+                      placeholder="header (e.g. X-API-Key)"
+                      className="h-8 flex-1 font-mono text-xs"
+                      aria-label={`Header ${i + 1} name`}
+                      maxLength={60}
+                    />
+                    <Input
+                      value={row.value}
+                      onChange={(e) =>
+                        updateHeaderRow(i, { value: e.target.value })
+                      }
+                      placeholder="value"
+                      className="h-8 flex-1 font-mono text-xs"
+                      aria-label={`Header ${i + 1} value`}
+                      maxLength={500}
+                    />
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => removeHeaderRow(i)}
+                      aria-label={`Remove header ${i + 1}`}
+                      className="h-8 w-8 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
           {formError && (
             <p
               className="rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-400"
@@ -2215,10 +2591,12 @@ function RegisterSkillDialog({
           >
             {submitting ? (
               <Loader2 className="size-4 animate-spin" />
+            ) : editing ? (
+              <Pencil className="size-4" />
             ) : (
               <Webhook className="size-4" />
             )}
-            Register skill
+            {editing ? "Save changes" : "Register skill"}
           </Button>
         </div>
       </DialogContent>

@@ -61,7 +61,14 @@ export async function POST(
       ...(flipped.count === 0
         ? { detail: "job already finished — row untouched" }
         : registryKill
-          ? { detail: "engine process killed (registry)" }
+          ? {
+              detail:
+                "run halted via the live registry (" +
+                (job?.params?.includes("skill-queue-webhook")
+                  ? "queued webhook fetch aborted"
+                  : "engine process killed") +
+                ")",
+            }
           : {}),
       ...(warning ? { warning } : {}),
     });

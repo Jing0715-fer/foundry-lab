@@ -303,8 +303,15 @@ model CustomSkill {
   endpoint    String
   // Optional extra request headers (JSON Record<string,string>).
   headers     String?  // JSON Record<string,string>
-  // Soft-disable (registered but skipped) — future PATCH surface.
+  // Soft-disable (registered but skipped) — PATCH surface (N2). Disabled
+  // rows stay OUT of the live registry (agents can't invoke them) but the
+  // catalog still lists them (flagged) so they can be re-enabled.
   enabled     Boolean  @default(true)
+  // N1 execution policy: "fast" (≤10s inline, 20s webhook timeout) |
+  // "slow" (agent/REST lanes enqueue it as a background ToolJob through
+  // the K5 queue — QUEUED cards, real mid-flight stop via abort, orphan
+  // sweep, audit transitions all inherit).
+  latency     String   @default("fast") // fast | slow
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }
