@@ -104,8 +104,15 @@ export async function runSkill(
 ): Promise<SkillRunResult> {
   const t0 = Date.now();
 
-  // 1. Resolve.
-  const def = getSkill(skillId);
+  // 1. Resolve. M3: a miss may mean this module instance's custom-skill
+  //    registry is stale (per-route bundles, TTL sync) — force a re-sync
+  //    from the table and retry before declaring the id invalid.
+  let def = getSkill(skillId);
+  if (!def) {
+    const { syncCustomSkillsNow } = await import("./dynamic");
+    await syncCustomSkillsNow();
+    def = getSkill(skillId);
+  }
   if (!def) {
     return await finalize(
       {

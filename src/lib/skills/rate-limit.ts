@@ -38,6 +38,9 @@ export const FAMILY_RATE_LIMITS: Record<
   web: { max: 6, windowMs: 60_000 },
   // Canvas mutations: cheap DB writes.
   canvas: { max: 30, windowMs: 60_000 },
+  // M3 custom webhooks: external HTTP calls someone registered on purpose
+  // — same ballpark as the bio family (12/min per agent).
+  custom: { max: 12, windowMs: 60_000 },
 };
 
 export interface RateLimitDecision {

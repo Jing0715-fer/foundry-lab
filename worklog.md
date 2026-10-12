@@ -4122,3 +4122,39 @@ Stage Summary:
 - K 线（K1 Insights 聚合 / K2 denied 深链 / K3 per-agent 限流 + invoke API / K5 慢技能异步入队）全链路收口：QA 51/52（唯一失败=活跃上游断言过严，容错重验 13/13 + 本地引擎确定性通道双背书）+ 孤儿清扫实测 + 浏览器金路径全绿（真 LLM/真引擎/真审计/真 UI 三态）。状态并集最终形态八态（String 列零迁移）。
 - 过程产出 3 条新工程结论：#51 活跃上游 API 计数断言容错（或本地确定性通道背书）；#52 "去哪里看"类文案必须枚举数据经过的全部 UI 面板及其过滤条件；运维重确认：沙箱收割后台进程，daemon-run.py 双 fork 是唯一保活路径。
 - 后续开发计划（基于测试结果，ROADMAP M 线）：**M1 queued 卡深链闭环**（复用 pendingAgentEdit 深链模式三次——K 线 e2e 实证用户需手动导航三步，最后断点）→ **M2 审计保留与分页**（K6：QA 一轮 45 行，真实使用增长快，SQLite 治理 + 分页游标）→ **M3 动态技能注册**（K4：custom.* 族，K 线管道收敛后新技能零成本入运营面）；低优先池滚动（cancelled Retry 直达/file-missing 筛选列/Escape 成文/叠合深化/认证/真实集群）。
+
+---
+Task ID: 45 (M lane: M1+M2+M3 — planning)
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（M 线 Skill 层运营深化三项）+ QA 测试 + E2E 测试 + 按测试结果规划后续开发
+
+Work Log:
+- 读 worklog 尾部（Task 44 K 线收口条目）+ ROADMAP M 线规划精读 + git 状态核对（main 干净 d1a0531，dev server :3000 运行中 200）。
+- 代码勘察：skills 层全链路（types/registry/runner/queue/rate-limit/prompt/fences/index）、四个 API 路由（skills/insights/invocations/invoke）、skills-panel 三 tab 结构（Tabs 当前 uncontrolled defaultValue="registry"）、agent-chat-drawer QUEUED 卡（ToolCall.jobId 已在但无跳转按钮；denied/limited 卡 status=failed 无区分）、run-utils skillCallToToolCall（ToolCall 缺 invocationId/skillStatus 字段）、store pendingAgentEdit 先例、instrumentation 启动清扫、reset-demo 为文件级拷贝（schema 变更 + demo:snapshot 重冻即覆盖新模型）。
+- 运维确认：.zscripts/daemon-run.py 双 fork 守护器在位（dev server 经其启动）。
+
+Stage Summary:
+- M 线三项实施计划定型：
+  - M1 = store 新增 pendingSkillTab / pendingSkillInvocation 深链（镜像 pendingAgentEdit）+ ToolCall 加 invocationId/skillStatus 字段（skillCallToToolCall 填充，双 chat 泳道同源）+ Skills 面板 Tabs 转 controlled（深链直达 Activity tab + 行高亮滚动）+ 聊天 QUEUED 卡 "Watch progress" / denied 卡 "Fix agent access" / limited 卡 "View audit row" 三按钮。
+  - M2 = SkillInvocation @@index([createdAt])（窗口查询护栏——现有复合索引首列非 createdAt 不命中）+ invocations 路由 keyset 分页游标（orderBy createdAt+id 双键、take limit+1 判 hasMore、total 计数）+ Activity tab 过滤器（source/status）+ Load more + retention：skills/retention.ts（age 删除 + rowCap 超量修剪，queued 行除外）+ GET/POST /api/skills/retention（dryRun/apply/maxAgeDays/rowCap 校验）+ instrumentation 启动清扫 + 面板 Retention 卡（AlertDialog 确认 + 诚实结果 toast）。
+  - M3 = Prisma CustomSkill 模型（skillId 唯一 custom.<slug>、params JSON、endpoint http(s)、enabled）+ skills/dynamic.ts（ensureCustomSkillsLoaded globalThis 守卫 + webhook handler 20s 超时 + unregister/reload）+ runSkill 解析失手回捞 + /api/skills GET 加载 customs + POST 注册（校验 label/description/endpoint/params≤6/键正则/前缀强制/冲突 409）+ /api/skills/[skillId] DELETE（内置 400 / 未知 404）+ SkillFamily 加 "custom"（rate-limit 12/min + FAMILY_META + FAMILY_ORDER + ToolCall.kind + Webhook 图标）+ Registry tab 注册对话框 + custom 卡删除按钮 + mini-services/skill-webhook（:3030 echo/fail/slow 确定性 QA/e2e 靶）。
+  - schema 变更（CustomSkill + createdAt 索引）→ db:push + demo:snapshot 重冻 + daemon 重启（#41/#27 纪律，同 commit）。
+
+---
+Task ID: 45 (M lane: M1+M2+M3 — implementation + QA + E2E + closeout — main-orchestrator)
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（M 线 Skill 层运营深化三项）+ QA 测试 + E2E 测试 + 按测试结果规划后续开发
+
+Work Log:
+- **实施**（本 agent 亲做，约 25 文件）：Phase A 停服 → schema 加 CustomSkill 模型 + SkillInvocation @@index([createdAt]) → db:push + demo:snapshot 重冻 + daemon 重启（#41/#27 纪律）。M1：types ToolCall +invocationId/skillStatus +kind custom；store +pendingSkillTab/pendingSkillInvocation；run-utils skillCallToToolCall 填充（双 chat 泳道同源）；skills-panel Tabs 转 controlled + Activity 深链消费（匹配行展开+滚入视口+4s 高亮环+未找到诚实 toast）；chat 抽屉 QUEUED/denied/limited 三按钮。M2：retention.ts（AGE+CAP 双谓词、queued 永不删、干跑/实施同路径）+ instrumentation 启动清扫 + GET/POST /api/skills/retention + invocations keyset 分页（createdAt+id 双键、total 恒全量）+ 面板过滤器/Load more/Retention 卡（AlertDialog 引用干跑数字）。M3：dynamic.ts（webhook handler 20s 超时 + TTL 同步模型）+ registry unregisterSkill + rate-limit custom 12/min + POST /api/skills（全 4xx 校验矩阵）+ DELETE [skillId] + 注册对话框（参数行编辑器）+ 每卡删除按钮 + mini-services/skill-webhook（:3030 echo/fail/slow，经 daemon-run.py 常驻）。
+- **QA 过程中发现并修复三个真 bug**：① invoke 路由未知 id 路径硬编码 404——M3 回捞后 stale-miss 技能真实执行却被标 404（修复：仅 invalid 结果映射 404，真实执行走信封状态）；② **Turbopack per-route 模块图多实例**——DELETE bundle 注销后 GET bundle 目录仍 Serving 陈旧条目、globalThis once-guard 反而加剧（修复：DB 共享真相 + 每 bundle TTL ≤1s 同步 + 目录/写路由/解析失手强制同步，结论 #53）；③ **Prisma SQLite DateTime 物理存储是 INTEGER epoch 毫秒**——脚本直写 ISO 文本使全部日期比较静默失效（修复：写整数毫秒，结论 #54）。另修 E2 游标页 total 语义（应为全量匹配数而非剩余窗口数——UI "X of Y" 不漂移）与 A3 测试自身假设错误（custom. 前缀与内置命名空间隔离是设计行为）。
+- **QA 冒烟（/home/z/m-lane-smoke/m-smoke.ts，throwaway 不入库）42/42**：A 注册表面 13（金路径 201 + 重复 409 + 前缀/缺字段/协议/参数键/类型/重复键全 400 + 目录含 endpoint）；B webhook 执行 7（ok 回显 + 缺参 400 invalid + 500 诚实 error + **25s 端点 vs 20s handler 超时实证（20014ms）** + 审计落行）；C custom 家族 per-agent 限流 3（12×200+1×429 精确 + limited 落审计）；D 删除 5（内置 400/未知 404/在线 200 + 目录驱逐 + 审计历史保留）；E 分页 6（全页走查 union==total + 双键无重复 + 坏游标 400 + 过滤 total==DB 直查真值）；F retention 8（策略 GET + maxAgeDays/rowCap/dryRun 全 400 + 回溯 5 行干跑可见 + **apply==promised** + queued 行保护 + 幂等二跑 0）。
+- **E2E（agent-browser 浏览器级）**：Skip tour 精确点击（#35）→ M3 金路径：注册对话框（label/description/endpoint/参数行）→ custom.lab-echo 卡入 Custom webhook skills 区（endpoint 显示 + 删除按钮）→ **真 LLM 发 ```skill custom.lab-echo {"query":"e2e golden path"} → 真 webhook 执行 8ms → completed 卡 + 模型如实汇报"The webhook returned: e2e golden path"**；M1 QUEUED：真 rfdiffusion 排队（num_designs 2/contigmap 60）→ QUEUED 卡带 jobId → Watch progress → **Skills 面板 Activity tab 直达 + 目标行 teal 高亮 + 后台引擎 890ms 落地行已翻转 ok（真实 PDB 工件）**；M1 denied：ML Engineer（bio 关）发 bio.blast sequence → 门控拒绝 → **Fix agent access → Agents 编辑对话框直达 + Bio tools 开关在场 + 系统提示词预览含三个 custom.* 行（提示词集成实证）**；M2：api 过滤全行匹配 + Load more 50→100 of 320 + retention 播种回溯行 → 干跑对话框精确数字（1 aged-out of 320）→ 确认 → 320→319 + 列表重载；移动端 375×812：docScrollW 375 零溢出 + main 319 + footer 780-812 贴底 + Register 按钮 44px（32→44 修正）+ Load more h-11 + 注册对话框全宽可用；console + page errors 零。
+- **VLM 复核（六截图）**：40 深链高亮 4/4（第 3 项首轮 FAIL=retention 卡在视口外——#49 假阴性，46 专项重拍 4/4）；41 聊天 custom 卡 3/4（queued 卡在滚动位置上方——DOM+交互已证，视口假阴性）；42 custom 注册区首轮 3/4（卡未展开状态）→ 重展开+滚入视口重拍 4/4；43 移动注册表首轮 3/4（搜索框在滚动位置上方）→ 滚回顶部重拍 4/4；45 移动注册对话框 4/4；46 retention 卡 4/4。
+- **基线纪律**：demo:fresh 重置（--force）→ outputs/rfdiffusion 测试工件清理 → daemon 重启（#41/#43）→ 字段级核对：workflows 2 / nodes 19 / toolJobs 16 / **skillInvocations 0 / customSkills 0** / chatMessages 12 / screenings 3 / candidates 86——与重冻基线完全一致。
+- **收尾**：lint 零告警；tsc 仅 4 条预存（examples/websocket×2 + skills/image-edit + skills/stock-analysis-skill，均非本轮引入）；dev.log 零运行时错误；README（M1/M2/M3 三段 + API 表 5 行 + 3 截图引用）；ROADMAP（M 线已交付含证据 + 测试结论 #53/#54/#55 + 验收标准三条新增 + **N 线下一阶段规划**）；git 提交推送（schema 与重冻基线同 commit）。
+
+Stage Summary:
+- M 线三项全部落地：M1 聊天卡深链闭环（QUEUED→Activity 高亮/denied→编辑对话框/limited→审计行，历史卡优雅降级）+ M2 审计治理（keyset 分页 + 过滤器/Load more + retention 双谓词干跑=实施 + 启动清扫 + createdAt 索引）+ M3 动态技能注册（CustomSkill 模型 + webhook handler + TTL 同步注册表 + 注册/删除 API + 注册对话框 + custom 家族限流/审计/Insights/提示词全链路继承 + :3030 确定性靶服务）。QA 42/42 + 浏览器金路径全绿（真 LLM/真 webhook/真引擎/真高亮/真对话框）。
+- 最重要的过程发现：**Turbopack per-route 模块图使同一 lib 模块多实例化**（#53：模块级注册表不能假设单实例——DB 共享真相 + TTL 同步 + 关键路径强制同步的修复模式）；**Prisma SQLite DateTime 物理存储是 INTEGER epoch 毫秒**（#54：直写 ISO 文本静默破坏全部比较，零报错）；**干跑与实施共用谓词**（#55：预览数字必须来自执行路径本身）。另修 invoke 路由 stale-miss 执行被 404 误标的真 bug。
+- 后续开发计划（基于测试结果，ROADMAP N 线）：**N1 慢 webhook 技能入队**（CustomSkill.latency slow 走 K5 runSkillQueued 泳道——QUEUED 卡/真停止/孤儿清扫全免费继承，M 线超时路径已证诚实）→ **N2 custom 技能管理面**（PATCH enabled 软开关 schema 已备 + 编辑对话框复用 + headers 进 UI）→ P2 低优先池滚动（cancelled Retry 直达/file-missing 筛选列/Escape 成文/Insights 服务端聚合/叠合深化/认证/真实集群）。

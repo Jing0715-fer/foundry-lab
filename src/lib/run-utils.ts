@@ -26,6 +26,7 @@ import {
   runSkill,
   runSkillQueued,
   skillFeedback,
+  ensureCustomSkillsLoaded,
   type SkillRunResult,
   type SkillSource,
   type SkillCall,
@@ -206,6 +207,9 @@ export async function runAgentTurn(
   opts: AgentRunOptions = {},
 ): Promise<AgentRunResult> {
   const maxRounds = opts.maxRounds ?? 3;
+  // M3: hydrate custom skills BEFORE the prompt is rendered so the manifest
+  // teaches the agent everything registered (idempotent, once per process).
+  await ensureCustomSkillsLoaded();
   const llmDefaults = resolveAgentLLMOptions(agent, opts) ?? {};
   const temperature = opts.temperature ?? llmDefaults.temperature ?? 0.7;
   const llmOpts = {
@@ -298,29 +302,41 @@ export async function runAgentTurn(
  *  chat snapshot honestly says "started in the background" (the terminal
  *  status lands on the same audit row in the Activity tab when the job
  *  completes; the persisted card is a point-in-time snapshot, like every
- *  chat message). */
+ *  chat message).
+ *  M1: the card also carries invocationId (the audit-row deep-link target)
+ *  and the RAW skillStatus so denied / limited cards are distinguishable
+ *  from real errors (legacy rows without these fields simply render as
+ *  before). M3: family "custom" maps to the custom card kind. */
 export function skillCallToToolCall(call: SkillCall, res: SkillRunResult): ToolCall {
   const def = getSkill(call.skillId);
   const kind: ToolCall["kind"] =
-    def?.family === "bio" ? "bio" : def?.family === "web" ? "web" : "comp";
+    def?.family === "bio"
+      ? "bio"
+      : def?.family === "web"
+        ? "web"
+        : def?.family === "custom"
+          ? "custom"
+          : "comp";
   const tool = def ? def.id.split(".")[1] : call.rawId;
+  const base = {
+    kind,
+    tool,
+    skillId: res.skillId,
+    params: call.params,
+    ...(res.invocationId ? { invocationId: res.invocationId } : {}),
+    ...(res.status ? { skillStatus: res.status } : {}),
+  };
   if (res.status === "queued") {
     const data = res.data as { jobId?: string } | undefined;
     return {
-      kind,
-      tool,
-      skillId: res.skillId,
-      params: call.params,
+      ...base,
       result: res.summary,
       status: "queued",
       ...(data?.jobId ? { jobId: data.jobId } : {}),
     };
   }
   return {
-    kind,
-    tool,
-    skillId: res.skillId,
-    params: call.params,
+    ...base,
     result: res.status === "ok" ? res.summary : (res.error ?? res.summary),
     status: res.status === "ok" ? "completed" : "failed",
   };

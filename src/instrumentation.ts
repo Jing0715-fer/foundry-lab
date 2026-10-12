@@ -18,6 +18,10 @@
 //        honest orphan message. The queued state is only ever advanced by
 //        the background executor in the SAME process that created it; after
 //        a boot it can never land.
+//      - M2 (K6): skill-audit retention sweep with the DEFAULT policy
+//        (terminal rows > 90 days old, overflow beyond 20,000) — the
+//        audit table gets one governance checkpoint per server lifetime,
+//        log-only summary, best-effort.
 //   2. Starts the workflow scheduled-run sweeper, which persists + fires
 //      WorkflowSchedule rows through the real execution engine.
 //
@@ -50,6 +54,17 @@ export async function register() {
   // ── 2. Scheduled-run sweeper (has its own HMR guard) ─────────────────────
   const { startScheduleSweeper } = await import("./lib/scheduler");
   startScheduleSweeper();
+
+  // ── 3. Skill-audit retention sweep (M2/K6, default policy, log-only) ────
+  try {
+    const { sweepRetentionOnBoot } = await import("./lib/skills/retention");
+    await sweepRetentionOnBoot();
+  } catch (e) {
+    console.error(
+      "[instrumentation] skill-audit retention sweep failed:",
+      e instanceof Error ? e.message : e,
+    );
+  }
 }
 
 /** Fail nodes + local tool jobs + queued skill rows orphaned by a restart

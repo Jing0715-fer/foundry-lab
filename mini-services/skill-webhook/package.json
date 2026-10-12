@@ -1,0 +1,7 @@
+{
+  "name": "skill-webhook",
+  "private": true,
+  "scripts": {
+    "dev": "bun --hot index.ts"
+  }
+}

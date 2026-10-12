@@ -2,7 +2,18 @@
 
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
-import { Loader2, Send, Trash2, Wrench, Database, Globe, type LucideIcon } from "lucide-react";
+import {
+  ArrowUpRight,
+  Database,
+  Globe,
+  KeyRound,
+  Loader2,
+  Send,
+  Trash2,
+  Webhook,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -323,7 +334,7 @@ export function AgentChatDrawer({
                   ) {
                     return null;
                   }
-                  return <MessageBubble key={m.id} message={m} />;
+                  return <MessageBubble key={m.id} message={m} agent={agent} />;
                 })}
                 {loading && !streamingStarted && <TypingIndicator />}
               </div>
@@ -373,7 +384,13 @@ function TypingIndicator() {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessageDTO }) {
+function MessageBubble({
+  message,
+  agent,
+}: {
+  message: ChatMessageDTO;
+  agent: AgentDTO | null;
+}) {
   const isUser = message.role === "user";
   return (
     <div className={isUser ? "flex justify-end" : "flex flex-col items-start gap-2"}>
@@ -395,7 +412,7 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
       {message.toolCalls && message.toolCalls.length > 0 && (
         <div className="flex w-full flex-col gap-1.5">
           {message.toolCalls.map((tc, i) => (
-            <ToolCallCard key={`${tc.tool}-${i}`} call={tc} />
+            <ToolCallCard key={`${tc.tool}-${i}`} call={tc} agent={agent} />
           ))}
         </div>
       )}
@@ -403,10 +420,23 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
   );
 }
 
-function ToolCallCard({ call }: { call: ToolCall }) {
+function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null }) {
+  const setPendingSkillTab = useAppStore((s) => s.setPendingSkillTab);
+  const setPendingSkillInvocation = useAppStore((s) => s.setPendingSkillInvocation);
+  const setPendingAgentEdit = useAppStore((s) => s.setPendingAgentEdit);
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const toast = useAppStore((s) => s.toast);
+
   const isComp = call.kind === "comp";
   const isWeb = call.kind === "web";
-  const Icon: LucideIcon = isComp ? Wrench : isWeb ? Globe : Database;
+  const isCustom = call.kind === "custom";
+  const Icon: LucideIcon = isComp
+    ? Wrench
+    : isWeb
+      ? Globe
+      : isCustom
+        ? Webhook
+        : Database;
   const resultText = call.result ?? "";
   const truncated = resultText.length > 240 ? resultText.slice(0, 240) + "…" : resultText;
   const statusPill =
@@ -419,6 +449,41 @@ function ToolCallCard({ call }: { call: ToolCall }) {
           : call.status === "queued"
             ? "bg-teal-500/10 text-teal-700 dark:text-teal-400"
             : "bg-muted text-muted-foreground";
+
+  // M1 deep-links: the card knows WHERE its outcome lives — queued runs
+  // point at the Skills Activity tab (invocation row flips to a terminal
+  // status when the engine lands), denied cards point at the agent editor
+  // (the knowledge switches that caused the refusal), and limited cards
+  // point at their audit row (the retry hint lives there).
+  const watchInSkills = () => {
+    if (call.invocationId) {
+      setPendingSkillInvocation({
+        invocationId: call.invocationId,
+        ...(call.jobId ? { jobId: call.jobId } : {}),
+      });
+    }
+    setPendingSkillTab("activity");
+    setActivePanel("skills");
+    toast({
+      title: "Opening the Skills Activity tab",
+      description: call.jobId
+        ? "The queued run's invocation row flips to ok / error / cancelled when the engine lands."
+        : "The invocation row for this call is highlighted when it's on the loaded page.",
+      variant: "default",
+    });
+  };
+
+  const fixAgentAccess = () => {
+    if (!agent) return;
+    setPendingAgentEdit({ id: agent.id, title: agent.title });
+    setActivePanel("agents");
+    toast({
+      title: "Opening agent settings",
+      description: `Enable the missing knowledge switch for "${agent.title}".`,
+      variant: "default",
+    });
+  };
+
   return (
     <div className="rounded-md border bg-card p-2 text-xs">
       <div className="mb-1 flex items-center gap-1.5 font-medium">
@@ -449,6 +514,43 @@ function ToolCallCard({ call }: { call: ToolCall }) {
           invocation row flips to ok / error / cancelled when the engine
           lands); this card is a snapshot from when the chat message was sent.
         </p>
+      )}
+      {/* M1: deep-link actions. */}
+      {call.status === "queued" && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-1.5 h-7 gap-1.5 text-[11px]"
+          onClick={watchInSkills}
+        >
+          <ArrowUpRight className="size-3.5" />
+          Watch progress
+        </Button>
+      )}
+      {call.skillStatus === "denied" && agent && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-1.5 h-7 gap-1.5 text-[11px]"
+          onClick={fixAgentAccess}
+        >
+          <KeyRound className="size-3.5" />
+          Fix agent access
+        </Button>
+      )}
+      {call.skillStatus === "limited" && call.invocationId && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-1.5 h-7 gap-1.5 text-[11px] text-muted-foreground"
+          onClick={watchInSkills}
+        >
+          <ArrowUpRight className="size-3.5" />
+          View audit row
+        </Button>
       )}
     </div>
   );

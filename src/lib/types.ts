@@ -61,7 +61,7 @@ export interface ChatMessageDTO {
 }
 
 export interface ToolCall {
-  kind: "comp" | "bio" | "web";
+  kind: "comp" | "bio" | "web" | "custom";
   tool: string; // rfdiffusion | proteinmpnn | alphafold | blast | pdb | search | ...
   /** Canonical skill id when the call flowed through the skill layer (J lane). */
   skillId?: string;
@@ -70,6 +70,16 @@ export interface ToolCall {
   status?: "pending" | "running" | "completed" | "failed" | "queued";
   /** K5: the background ToolJob row when a slow comp skill was queued. */
   jobId?: string;
+  /** M1: the SkillInvocation audit row the call landed on (deep-link
+   *  target for the chat card → Skills Activity tab). Absent on legacy
+   *  rows (pre-M1) and when the audit write itself failed. */
+  invocationId?: string;
+  /** M1: the RAW skill status (ok|error|denied|invalid|skipped|limited|
+   *  queued|cancelled) the pipeline reported — `status` above collapses
+   *  everything non-ok into "failed" for legacy display, so denied /
+   *  limited cards were indistinguishable from real errors. Chat cards
+   *  use this to offer the right deep-link (denied → agent editor). */
+  skillStatus?: string;
 }
 
 export type TaskType = "general" | "design" | "analysis" | "research";

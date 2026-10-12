@@ -10,7 +10,8 @@
 //   - agentId, when present, resolves the FULL agent context: knowledge
 //     gating AND per-agent rate limits apply exactly like an agent chat
 //     turn (this is the honest way to test K3 over HTTP).
-//   - Only fast, context-free skills (bio.* / web.*) are invocable here:
+//   - Only fast, context-free skills (bio.* / web.* / custom.*) are
+//     invocable here:
 //       slow comp skills  → 400 (use POST /api/tools/run or the canvas —
 //                           minutes-long requests would just time out)
 //       canvas.* skills   → 400 (they require a workflow execution context)
@@ -22,7 +23,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 // Barrel import — self-registers the catalog (side effect, #40).
-import { getSkill, runSkill } from "@/lib/skills";
+import { getSkill, runSkill, ensureCustomSkillsLoaded } from "@/lib/skills";
 import { toAgentDTO } from "@/lib/run-utils";
 import type { SkillRunResult } from "@/lib/skills";
 import type { AgentDTO } from "@/lib/types";
@@ -71,16 +72,22 @@ export async function POST(request: NextRequest) {
     typeof body.agentId === "string" && body.agentId ? body.agentId : null;
 
   // Resolve the def first so slow/canvas skills get a clear 400 BEFORE any
-  // audit row is written (they never entered the pipeline).
+  // audit row is written (they never entered the pipeline). M3: hydrate
+  // custom skills so custom.* ids resolve here too.
+  await ensureCustomSkillsLoaded();
   const def = getSkill(skillId);
   if (!def) {
     // Still route unknown ids through runSkill: the pipeline records the
     // honest "invalid" envelope (hallucinations stay visible in the audit
-    // log) and returns it — we map that to HTTP 404.
+    // log) and returns it. M3 nuance: a MISS here can also be a stale
+    // registry — runSkill's fallback re-syncs and may genuinely EXECUTE
+    // the skill, so only an "invalid" (unresolved) result maps to 404;
+    // anything that actually ran keeps its honest envelope status.
     const res = await runSkill(skillId, rawParams, { source: "api" });
+    const status = res.status === "invalid" ? 404 : httpStatusFor(res);
     return NextResponse.json(
       { ...res, error: res.error ?? "Unknown skill" },
-      { status: 404 },
+      { status },
     );
   }
   if (def.latency === "slow") {

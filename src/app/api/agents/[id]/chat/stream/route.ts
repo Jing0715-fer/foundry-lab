@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { toAgentDTO, buildAgentSystemPrompt, skillCallToToolCall } from "@/lib/run-utils";
 import { chatStream, type ChatMessage } from "@/lib/llm";
 // Barrel import — self-registers the skill catalog (side effect).
-import { getSkill, extractSkillCalls, runSkill, runSkillQueued, skillFeedback } from "@/lib/skills";
+import { getSkill, extractSkillCalls, runSkill, runSkillQueued, skillFeedback, ensureCustomSkillsLoaded } from "@/lib/skills";
 import type { ToolCall } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -72,6 +72,9 @@ export async function POST(
   });
 
   const agentDTO = toAgentDTO(agent);
+  // M3: hydrate custom skills before the prompt renders (idempotent, once
+  // per process) — the manifest then teaches every registered custom skill.
+  await ensureCustomSkillsLoaded();
   // System prompt = persona + live skill manifest + fine-tune suffix — the
   // exact same builder the non-stream lane uses (single source of truth).
   const system = buildAgentSystemPrompt(agentDTO);

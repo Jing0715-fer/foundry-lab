@@ -1,19 +1,30 @@
 "use client";
 
 // Skills observability panel — registry browser + invocation audit log +
-// aggregate insights (K lane).
+// aggregate insights (K lane), deep-linked + governable + extensible (M lane).
 //
 // Three tabs over the skill layer:
-// - Registry: the /api/skills catalog grouped by family (comp/bio/web/canvas)
-//   with expandable param docs and a client-side search filter.
+// - Registry: the /api/skills catalog grouped by family (comp/bio/web/canvas/
+//   custom) with expandable param docs and a client-side search filter.
+//   M3: custom webhook skills registered through POST /api/skills appear
+//   here with a per-card Delete (audit history is preserved); the
+//   "Register skill" dialog creates new ones.
 // - Activity: the /api/skills/invocations audit log — every agent operation
 //   in the system (chat tool calls, workflow nodes, PI canvas edits, REST
 //   tool runs) flows through runSkill() and lands here. Denied rows carry a
 //   "Fix agent access" deep-link (K2) that opens the agent editor — the
 //   knowledge switches that caused the denial live there.
+//   M1: chat deep-links (pendingSkillTab / pendingSkillInvocation) land on
+//   this tab, expanding + scrolling to the target invocation row.
+//   M2: source/status filters, cursor-paginated "Load more", and a
+//   retention card (dry-run preview + confirm-gated prune).
 // - Insights (K1): the /api/skills/insights aggregate view — success rates,
 //   P50/P95 latency, denied/invalid/limited trends per skill / agent / lane
 //   over a selectable window.
+//
+// The Tabs are CONTROLLED (M1): the initial tab can be requested from
+// another surface through store.pendingSkillTab (mirroring the
+// pendingAgentEdit / pendingScreeningId deep-link patterns).
 
 import * as React from "react";
 import {
@@ -25,29 +36,61 @@ import {
   ChevronDown,
   ChevronRight,
   Clock,
+  Database,
   Gauge,
+  HardDrive,
   KeyRound,
   Loader2,
+  Plus,
   RefreshCw,
   Search,
   Timer,
+  Trash2,
+  Webhook,
   Zap,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
 // --- Wire types (mirror the /api/skills + /api/skills/invocations +
-//     /api/skills/insights DTOs) ----------------------------------------------
+//     /api/skills/insights + /api/skills/retention DTOs) ----------------------
 // Defined locally so no server module (src/lib/skills/* pulls Prisma) ever
 // crosses into the client bundle; the server owns the source of truth.
 
-type SkillFamily = "comp" | "bio" | "web" | "canvas";
+type SkillFamily = "comp" | "bio" | "web" | "canvas" | "custom";
 type SkillRequirement = "bioToolsEnabled" | "webSearchEnabled";
 
 interface SkillParamDef {
@@ -70,8 +113,10 @@ interface SkillCatalogEntry {
   requires: SkillRequirement[];
   latency: "fast" | "slow";
   example?: Record<string, unknown>;
+  /** M3: present only on custom.* entries — the registered webhook target. */
+  endpoint?: string;
   /** Only present when the catalog was fetched with ?agentId= — resolved
-   * against that agent's knowledge flags (same rule runSkill enforces). */
+   *  against that agent's knowledge flags (same rule runSkill enforces). */
   eligible?: boolean;
 }
 
@@ -89,6 +134,14 @@ interface SkillInvocationDTO {
   error: string | null;
   durationMs: number | null;
   createdAt: string;
+}
+
+interface InvocationsResponse {
+  invocations: SkillInvocationDTO[];
+  count: number;
+  total: number;
+  nextCursor?: string;
+  hasMore: boolean;
 }
 
 type StatusCounts = {
@@ -150,6 +203,22 @@ interface InsightsResponse {
   sources: SourceInsight[];
 }
 
+interface RetentionDecision {
+  maxAgeDays: number;
+  rowCap: number;
+  cutoffAt: string;
+  totalRows: number;
+  agedOut: number;
+  overCap: number;
+  deletable: number;
+  applied: number;
+}
+
+interface RetentionStats {
+  policy: { maxAgeDays: number; rowCap: number };
+  dryRun: RetentionDecision;
+}
+
 // --- Shared helpers ----------------------------------------------------------
 
 function timeAgo(iso: string): string {
@@ -180,7 +249,7 @@ function formatRate(rate: number | null): string {
 
 // --- Registry metadata -------------------------------------------------------
 
-const FAMILY_ORDER: SkillFamily[] = ["comp", "bio", "web", "canvas"];
+const FAMILY_ORDER: SkillFamily[] = ["comp", "bio", "web", "canvas", "custom"];
 
 const FAMILY_META: Record<SkillFamily, { label: string; pill: string }> = {
   comp: {
@@ -198,6 +267,11 @@ const FAMILY_META: Record<SkillFamily, { label: string; pill: string }> = {
   canvas: {
     label: "PI canvas mutations",
     pill: "bg-pink-500/10 text-pink-700 dark:text-pink-400",
+  },
+  // M3: runtime-registered webhook skills.
+  custom: {
+    label: "Custom webhook skills",
+    pill: "bg-cyan-500/10 text-cyan-700 dark:text-cyan-400",
   },
 };
 
@@ -278,6 +352,19 @@ const STATUS_BAR_COLORS: Record<keyof StatusCounts, string> = {
   cancelled: "bg-zinc-400/70",
 };
 
+const INV_SOURCES = [
+  "chat",
+  "chat-stream",
+  "workflow",
+  "canvas",
+  "api",
+  "task",
+  "meeting",
+  "research",
+] as const;
+
+const INV_STATUSES = STATUS_BAR_ORDER.map((s) => String(s));
+
 function Pill({ label, className }: { label: string; className?: string }) {
   return (
     <span
@@ -295,7 +382,25 @@ function Pill({ label, className }: { label: string; className?: string }) {
 // Panel
 // ==========================================================================
 
+type TabKey = "registry" | "activity" | "insights";
+
 export function SkillsPanel() {
+  // M1: controlled tabs. The initial tab may be requested by another
+  // surface via store.pendingSkillTab (chat QUEUED cards, denied cards…);
+  // the request is consumed on mount OR while mounted (subscription).
+  const pendingSkillTab = useAppStore((s) => s.pendingSkillTab);
+  const setPendingSkillTab = useAppStore((s) => s.setPendingSkillTab);
+  const [tab, setTab] = React.useState<TabKey>(
+    () => useAppStore.getState().pendingSkillTab ?? "registry",
+  );
+
+  React.useEffect(() => {
+    if (pendingSkillTab) {
+      setTab(pendingSkillTab);
+      setPendingSkillTab(null);
+    }
+  }, [pendingSkillTab, setPendingSkillTab]);
+
   return (
     <div className="space-y-6 p-4 md:p-6">
       <div>
@@ -307,7 +412,7 @@ export function SkillsPanel() {
         </p>
       </div>
 
-      <Tabs defaultValue="registry" className="space-y-4">
+      <Tabs value={tab} onValueChange={(v) => setTab(v as TabKey)} className="space-y-4">
         <TabsList>
           <TabsTrigger value="registry" className="gap-1.5">
             <BookOpen className="size-3.5" />
@@ -338,7 +443,7 @@ export function SkillsPanel() {
 }
 
 // ==========================================================================
-// Tab 1 — Registry (skill catalog browser)
+// Tab 1 — Registry (skill catalog browser + M3 custom registration)
 // ==========================================================================
 
 function RegistryTab() {
@@ -347,6 +452,10 @@ function RegistryTab() {
   const [error, setError] = React.useState<string | null>(null);
   const [query, setQuery] = React.useState("");
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  // M3: registration dialog + shared delete confirm.
+  const [registerOpen, setRegisterOpen] = React.useState(false);
+  const [confirmDelete, setConfirmDelete] = React.useState<SkillCatalogEntry | null>(null);
+  const [deleting, setDeleting] = React.useState(false);
 
   const loadCatalog = React.useCallback(async () => {
     setLoading(true);
@@ -379,6 +488,39 @@ function RegistryTab() {
     });
   };
 
+  const deleteCustom = async (skill: SkillCatalogEntry) => {
+    setDeleting(true);
+    try {
+      const res = await fetch(`/api/skills/${encodeURIComponent(skill.id)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        useAppStore.getState().toast({
+          title: "Delete failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      setSkills((prev) => prev.filter((s) => s.id !== skill.id));
+      useAppStore.getState().toast({
+        title: "Custom skill deleted",
+        description: `"${skill.id}" was unregistered. Audit history for its past invocations is preserved in the Activity tab.`,
+        variant: "default",
+      });
+    } catch (e) {
+      useAppStore.getState().toast({
+        title: "Delete failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setDeleting(false);
+      setConfirmDelete(null);
+    }
+  };
+
   const q = query.trim().toLowerCase();
   const filtered = React.useMemo(
     () =>
@@ -402,7 +544,7 @@ function RegistryTab() {
     [filtered],
   );
 
-  if (loading) {
+  if (loading && skills.length === 0) {
     return <PanelSkeleton count={5} />;
   }
 
@@ -424,17 +566,29 @@ function RegistryTab() {
 
   return (
     <div className="space-y-4">
-      {/* Client-side search over id / label / description. */}
-      <div className="relative max-w-sm">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          type="search"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search skills by id, label, or description…"
-          className="pl-8"
-          aria-label="Search skills"
-        />
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Client-side search over id / label / description. */}
+        <div className="relative max-w-sm flex-1">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search skills by id, label, or description…"
+            className="pl-8"
+            aria-label="Search skills"
+          />
+        </div>
+        {/* M3: register a custom webhook skill. */}
+        <Button
+          type="button"
+          size="sm"
+          onClick={() => setRegisterOpen(true)}
+          className="h-11 gap-1.5 sm:h-8"
+        >
+          <Plus className="size-4" />
+          Register skill
+        </Button>
       </div>
 
       <p className="text-xs text-muted-foreground" aria-live="polite">
@@ -470,6 +624,9 @@ function RegistryTab() {
                     skill={s}
                     open={expanded.has(s.id)}
                     onToggle={() => toggleSkill(s.id)}
+                    {...(s.family === "custom"
+                      ? { onDelete: () => setConfirmDelete(s) }
+                      : {})}
                   />
                 ))}
               </div>
@@ -477,6 +634,54 @@ function RegistryTab() {
           );
         })
       )}
+
+      {/* M3: registration dialog (POST /api/skills). */}
+      <RegisterSkillDialog
+        open={registerOpen}
+        onOpenChange={(open) => {
+          setRegisterOpen(open);
+          if (!open) loadCatalog();
+        }}
+      />
+
+      {/* M3: shared delete confirm (one instance for all custom cards). */}
+      <AlertDialog
+        open={confirmDelete !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmDelete(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete custom skill?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmDelete &&
+                `"${confirmDelete.id}" (${confirmDelete.label}) will be unregistered — agents lose the capability immediately. Past invocation rows stay in the Activity tab for the audit history.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={deleting}
+              onClick={(e) => {
+                // Keep the dialog open while the DELETE runs; the close is
+                // handled by deleteCustom's finally (preventDefault stops
+                // Radix's auto-close).
+                e.preventDefault();
+                if (confirmDelete) deleteCustom(confirmDelete);
+              }}
+              className="bg-rose-600 text-white hover:bg-rose-700"
+            >
+              {deleting ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Delete skill
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }
@@ -485,65 +690,98 @@ function SkillCard({
   skill,
   open,
   onToggle,
+  onDelete,
 }: {
   skill: SkillCatalogEntry;
   open: boolean;
   onToggle: () => void;
+  /** M3: present only for family "custom" — deletable runtime skills. */
+  onDelete?: () => void;
 }) {
   const latency = LATENCY_META[skill.latency] ?? LATENCY_META["slow"];
+
   return (
     <Card className="overflow-hidden transition-shadow hover:shadow-md">
       <CardContent className="p-0">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-expanded={open}
-          className="flex w-full items-start justify-between gap-3 p-4 text-left transition-colors hover:bg-accent/50"
-        >
-          <div className="min-w-0 flex-1 space-y-1.5">
-            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-              <code className="font-mono text-xs font-medium text-foreground">
-                {skill.id}
-              </code>
-              <span className="text-sm font-medium text-foreground">
-                {skill.label}
-              </span>
-              <Pill label={latency.label} className={latency.pill} />
-              {skill.requires.map((r) => (
-                <Pill
-                  key={r}
-                  label={`requires ${REQUIREMENT_LABELS[r]}`}
-                  className="bg-muted text-muted-foreground"
-                />
-              ))}
-              {skill.eligible === true && (
-                <Pill
-                  label="eligible"
-                  className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
-                />
-              )}
-              {skill.eligible === false && (
-                <Pill
-                  label="locked"
-                  className="bg-rose-500/10 text-rose-700 dark:text-rose-400"
-                />
-              )}
+        {/* The toggle row and the delete button are SIBLINGS (never nest
+            interactive elements — keyboard + a11y). */}
+        <div className="flex items-stretch">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-expanded={open}
+            className="flex min-w-0 flex-1 items-start justify-between gap-3 p-4 text-left transition-colors hover:bg-accent/50"
+          >
+            <div className="min-w-0 flex-1 space-y-1.5">
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <code className="font-mono text-xs font-medium text-foreground">
+                  {skill.id}
+                </code>
+                <span className="text-sm font-medium text-foreground">
+                  {skill.label}
+                </span>
+                <Pill label={latency.label} className={latency.pill} />
+                {skill.family === "custom" && (
+                  <Pill
+                    label="webhook"
+                    className="bg-cyan-500/10 text-cyan-700 dark:text-cyan-400"
+                  />
+                )}
+                {skill.requires.map((r) => (
+                  <Pill
+                    key={r}
+                    label={`requires ${REQUIREMENT_LABELS[r]}`}
+                    className="bg-muted text-muted-foreground"
+                  />
+                ))}
+                {skill.eligible === true && (
+                  <Pill
+                    label="eligible"
+                    className="bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                  />
+                )}
+                {skill.eligible === false && (
+                  <Pill
+                    label="locked"
+                    className="bg-rose-500/10 text-rose-700 dark:text-rose-400"
+                  />
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                {skill.description}
+              </p>
             </div>
-            <p className="text-xs text-muted-foreground">
-              {skill.description}
-            </p>
-          </div>
-          <ChevronDown
-            className={cn(
-              "mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform",
-              open && "rotate-180",
-            )}
-            aria-hidden
-          />
-        </button>
+            <ChevronDown
+              className={cn(
+                "mt-0.5 size-4 shrink-0 text-muted-foreground transition-transform",
+                open && "rotate-180",
+              )}
+              aria-hidden
+            />
+          </button>
+          {onDelete && (
+            <button
+              type="button"
+              onClick={onDelete}
+              aria-label={`Delete custom skill ${skill.label}`}
+              title={`Delete ${skill.id} (audit history is preserved)`}
+              className="flex w-11 items-center justify-center border-l text-muted-foreground transition-colors hover:bg-rose-500/10 hover:text-rose-600 dark:hover:text-rose-400"
+            >
+              <Trash2 className="size-4" aria-hidden />
+            </button>
+          )}
+        </div>
 
         {open && (
           <div className="space-y-3 border-t px-4 py-3">
+            {skill.family === "custom" && (
+              <p className="text-xs text-muted-foreground">
+                <span className="font-medium text-foreground">Endpoint:</span>{" "}
+                <span className="break-all font-mono text-[11px]">
+                  {skill.endpoint ?? "(unavailable)"}
+                </span>
+              </p>
+            )}
             {skill.aliases.length > 0 && (
               <p className="text-xs text-muted-foreground">
                 <span className="font-medium text-foreground">Aliases:</span>{" "}
@@ -615,35 +853,82 @@ function SkillCard({
 }
 
 // ==========================================================================
-// Tab 2 — Activity (invocation audit log)
+// Tab 2 — Activity (invocation audit log: filters + pagination + retention)
 // ==========================================================================
+
+const PAGE_SIZE = 50;
 
 function ActivityTab() {
   const [invocations, setInvocations] = React.useState<SkillInvocationDTO[]>([]);
-  const [count, setCount] = React.useState(0);
+  const [total, setTotal] = React.useState(0);
+  const [nextCursor, setNextCursor] = React.useState<string | undefined>(undefined);
   const [loading, setLoading] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<Set<string>>(new Set());
+  // M2: filters (source + status) — both optional, "all" is the sentinel.
+  const [sourceFilter, setSourceFilter] = React.useState<string>("all");
+  const [statusFilter, setStatusFilter] = React.useState<string>("all");
+  // M1: deep-link highlight state.
+  const [highlightId, setHighlightId] = React.useState<string | null>(null);
 
-  const loadInvocations = React.useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch("/api/skills/invocations?limit=50");
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      setInvocations(Array.isArray(data?.invocations) ? data.invocations : []);
-      setCount(typeof data?.count === "number" ? data.count : 0);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const pendingSkillInvocation = useAppStore((s) => s.pendingSkillInvocation);
+  const setPendingSkillInvocation = useAppStore((s) => s.setPendingSkillInvocation);
+  const toast = useAppStore((s) => s.toast);
+
+  const filterQuery = React.useMemo(() => {
+    const sp = new URLSearchParams({ limit: String(PAGE_SIZE) });
+    if (sourceFilter !== "all") sp.set("source", sourceFilter);
+    if (statusFilter !== "all") sp.set("status", statusFilter);
+    return sp;
+  }, [sourceFilter, statusFilter]);
+
+  const loadInvocations = React.useCallback(
+    async (filters: URLSearchParams) => {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(`/api/skills/invocations?${filters.toString()}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as InvocationsResponse;
+        setInvocations(Array.isArray(data?.invocations) ? data.invocations : []);
+        setTotal(typeof data?.total === "number" ? data.total : 0);
+        setNextCursor(data?.nextCursor);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
 
   React.useEffect(() => {
-    loadInvocations();
-  }, [loadInvocations]);
+    loadInvocations(filterQuery);
+  }, [loadInvocations, filterQuery]);
+
+  const loadMore = async () => {
+    if (!nextCursor || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const sp = new URLSearchParams(filterQuery);
+      sp.set("cursor", nextCursor);
+      const res = await fetch(`/api/skills/invocations?${sp.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as InvocationsResponse;
+      setInvocations((prev) => [...prev, ...(data.invocations ?? [])]);
+      setNextCursor(data?.nextCursor);
+      if (typeof data?.total === "number") setTotal(data.total);
+    } catch (e) {
+      toast({
+        title: "Could not load more rows",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   const toggleInvocation = (id: string) => {
     setExpanded((prev) => {
@@ -657,26 +942,110 @@ function ActivityTab() {
     });
   };
 
+  // M1: consume the pending invocation deep-link once the first page has
+  // loaded — expand + scroll + briefly ring the target row. jobId is the
+  // fallback matcher for legacy cards that never persisted invocationId.
+  React.useEffect(() => {
+    if (!pendingSkillInvocation || loading) return;
+    const pending = pendingSkillInvocation;
+    const target =
+      invocations.find((inv) => inv.id === pending.invocationId) ??
+      (pending.jobId
+        ? invocations.find((inv) =>
+            (inv.resultSummary ?? "").includes(`tool job ${pending.jobId}`),
+          )
+        : undefined);
+    if (target) {
+      setExpanded((prev) => new Set(prev).add(target.id));
+      setHighlightId(target.id);
+      requestAnimationFrame(() => {
+        document
+          .querySelector(`[data-inv-id="${CSS.escape(target.id)}"]`)
+          ?.scrollIntoView({ block: "center", behavior: "smooth" });
+      });
+      window.setTimeout(
+        () => setHighlightId((cur) => (cur === target.id ? null : cur)),
+        4000,
+      );
+    } else {
+      toast({
+        title: "Invocation not on the loaded page",
+        description:
+          "The audit row is older than the rows shown — clear the filters and press Load more, or find it in Insights.",
+        variant: "default",
+      });
+    }
+    setPendingSkillInvocation(null);
+  }, [pendingSkillInvocation, loading, invocations, setPendingSkillInvocation, toast]);
+
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-sm font-medium text-muted-foreground">
-          Latest {invocations.length || count} invocation
-          {invocations.length === 1 ? "" : "s"}
-        </p>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={loadInvocations}
-          disabled={loading}
+      {/* M2: filter row — source + status (Select value is ALWAYS a string;
+          "all" is the sentinel, never "" — #34). */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={sourceFilter}
+          onValueChange={(v) => setSourceFilter(v || "all")}
         >
-          {loading ? (
-            <Loader2 className="size-3.5 animate-spin" />
-          ) : (
-            <RefreshCw className="size-3.5" />
-          )}
-          Refresh
-        </Button>
+          <SelectTrigger
+            className="h-11 w-36 text-xs sm:h-8"
+            aria-label="Filter by source lane"
+          >
+            <SelectValue placeholder="source" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all" className="text-xs">
+              all sources
+            </SelectItem>
+            {INV_SOURCES.map((s) => (
+              <SelectItem key={s} value={s} className="text-xs">
+                {s}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select
+          value={statusFilter}
+          onValueChange={(v) => setStatusFilter(v || "all")}
+        >
+          <SelectTrigger
+            className="h-11 w-32 text-xs sm:h-8"
+            aria-label="Filter by status"
+          >
+            <SelectValue placeholder="status" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all" className="text-xs">
+              all statuses
+            </SelectItem>
+            {INV_STATUSES.map((s) => (
+              <SelectItem key={s} value={s} className="text-xs">
+                {s}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <div className="ml-auto flex items-center gap-2">
+          <p className="text-sm font-medium text-muted-foreground">
+            {invocations.length === total
+              ? `${total} invocation${total === 1 ? "" : "s"}`
+              : `${invocations.length} of ${total} invocations`}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => loadInvocations(filterQuery)}
+            disabled={loading}
+            className="h-11 sm:h-8"
+          >
+            {loading ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3.5" />
+            )}
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {loading ? (
@@ -687,7 +1056,7 @@ function ActivityTab() {
           title="Audit log unavailable"
           description={`Failed to load skill invocations. ${error}`}
           action={
-            <Button variant="outline" onClick={loadInvocations}>
+            <Button variant="outline" onClick={() => loadInvocations(filterQuery)}>
               <RefreshCw className="size-4" />
               Retry
             </Button>
@@ -697,28 +1066,65 @@ function ActivityTab() {
         <EmptyState
           icon={Activity}
           title="No skill invocations yet"
-          description="Every agent operation — chat tool calls, workflow nodes, PI canvas edits, and REST tool runs — is audited here. Run an agent chat with a bio query (e.g. search PubMed for nanobodies) to see entries appear."
+          description={
+            sourceFilter !== "all" || statusFilter !== "all"
+              ? "No invocations match the current filters — try widening them."
+              : "Every agent operation — chat tool calls, workflow nodes, PI canvas edits, and REST tool runs — is audited here. Run an agent chat with a bio query (e.g. search PubMed for nanobodies) to see entries appear."
+          }
           action={
-            <Button variant="outline" onClick={loadInvocations}>
+            <Button
+              variant="outline"
+              onClick={() => loadInvocations(filterQuery)}
+            >
               <RefreshCw className="size-4" />
               Refresh
             </Button>
           }
         />
       ) : (
-        /* Long-list pattern: capped height + internal scroll (thin custom
-           scrollbar styling comes from the global .overflow-y-auto rules). */
-        <div className="max-h-[calc(100vh-220px)] space-y-2 overflow-y-auto pr-1">
-          {invocations.map((inv) => (
-            <InvocationCard
-              key={inv.id}
-              inv={inv}
-              open={expanded.has(inv.id)}
-              onToggle={() => toggleInvocation(inv.id)}
-            />
-          ))}
-        </div>
+        <>
+          {/* Long-list pattern: capped height + internal scroll (thin custom
+              scrollbar styling comes from the global .overflow-y-auto rules). */}
+          <div className="max-h-[calc(100vh-220px)] space-y-2 overflow-y-auto pr-1">
+            {invocations.map((inv) => (
+              <InvocationCard
+                key={inv.id}
+                inv={inv}
+                open={expanded.has(inv.id)}
+                onToggle={() => toggleInvocation(inv.id)}
+                highlighted={highlightId === inv.id}
+              />
+            ))}
+          </div>
+
+          {/* M2: cursor-paginated Load more (never offset — new rows landing
+              mid-scroll would otherwise shift the window). */}
+          {nextCursor && (
+            <div className="flex justify-center py-1">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={loadMore}
+                disabled={loadingMore}
+                className="h-11 min-w-44 sm:h-9 sm:min-w-40"
+              >
+                {loadingMore ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <ChevronDown className="size-3.5" />
+                )}
+                Load more ({total - invocations.length} older)
+              </Button>
+            </div>
+          )}
+        </>
       )}
+
+      {/* M2: retention governance card. */}
+      <RetentionCard
+        onPruned={() => loadInvocations(filterQuery)}
+        totalRows={total}
+      />
     </div>
   );
 }
@@ -727,10 +1133,13 @@ function InvocationCard({
   inv,
   open,
   onToggle,
+  highlighted,
 }: {
   inv: SkillInvocationDTO;
   open: boolean;
   onToggle: () => void;
+  /** M1 deep-link target — brief teal ring + smooth scroll. */
+  highlighted: boolean;
 }) {
   const status = INV_STATUS_META[inv.status] ?? INV_STATUS_META["invalid"];
   const summary = inv.error ?? inv.resultSummary;
@@ -740,7 +1149,14 @@ function InvocationCard({
   const showFixAccess = inv.status === "denied";
 
   return (
-    <Card className="overflow-hidden">
+    <Card
+      data-inv-id={inv.id}
+      className={cn(
+        "overflow-hidden",
+        highlighted &&
+          "ring-2 ring-teal-500/60 ring-offset-1 ring-offset-background",
+      )}
+    >
       <CardContent className="space-y-2 py-3.5">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <code className="font-mono text-xs font-medium text-foreground">
@@ -863,6 +1279,227 @@ function FixAgentAccessButton({
       <KeyRound className="size-3.5" />
       Fix agent access
     </Button>
+  );
+}
+
+// ==========================================================================
+// Retention (M2/K6) — dry-run preview + confirm-gated prune
+// ==========================================================================
+
+function RetentionCard({
+  onPruned,
+  totalRows,
+}: {
+  /** Reload the invocation list after a prune (rows vanished). */
+  onPruned: () => void;
+  /** The list's current filter total — shown until the retention preview
+   *  loads (its own totalRows is unfiltered, an honest distinction). */
+  totalRows: number;
+}) {
+  const [stats, setStats] = React.useState<RetentionStats | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [maxAgeDays, setMaxAgeDays] = React.useState<number>(90);
+  const [confirmState, setConfirmState] = React.useState<RetentionDecision | null>(null);
+  const [pruning, setPruning] = React.useState(false);
+  const toast = useAppStore((s) => s.toast);
+
+  const loadStats = React.useCallback(async () => {
+    setLoading(true);
+    try {
+      const res = await fetch("/api/skills/retention");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setStats((await res.json()) as RetentionStats);
+    } catch {
+      setStats(null);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadStats();
+  }, [loadStats]);
+
+  const startPrune = async () => {
+    // Dry-run FIRST with the exact parameters the confirm will apply — the
+    // dialog shows the numbers the delete will produce (no estimate drift).
+    try {
+      const res = await fetch("/api/skills/retention", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxAgeDays, dryRun: true }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast({
+          title: "Retention preview failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      setConfirmState(data as RetentionDecision);
+    } catch (e) {
+      toast({
+        title: "Retention preview failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
+  };
+
+  const applyPrune = async () => {
+    if (!confirmState) return;
+    setPruning(true);
+    try {
+      const res = await fetch("/api/skills/retention", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxAgeDays: confirmState.maxAgeDays, dryRun: false }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        toast({
+          title: "Retention run failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      const applied = (data as RetentionDecision).applied;
+      toast({
+        title: applied > 0 ? `Pruned ${applied} audit row${applied === 1 ? "" : "s"}` : "Nothing to prune",
+        description:
+          applied > 0
+            ? `Removed ${confirmState.agedOut} aged-out + ${confirmState.overCap} over-cap terminal rows (queued rows are never pruned).`
+            : "No terminal rows are old enough or beyond the cap — the audit log is already within policy.",
+        variant: "default",
+      });
+      await loadStats();
+      onPruned();
+    } catch (e) {
+      toast({
+        title: "Retention run failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setPruning(false);
+      setConfirmState(null);
+    }
+  };
+
+  const preview = stats?.dryRun;
+
+  return (
+    <Card>
+      <CardContent className="space-y-3 p-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
+            <HardDrive className="size-4 text-muted-foreground" aria-hidden />
+            Audit retention
+          </h3>
+          {preview && (
+            <span className="text-xs text-muted-foreground tabular-nums">
+              {preview.totalRows} rows total · {preview.deletable} prunable by
+              default policy
+            </span>
+          )}
+        </div>
+
+        {loading ? (
+          <p className="text-xs text-muted-foreground">Loading retention policy…</p>
+        ) : !preview ? (
+          <p className="text-xs text-muted-foreground">
+            Retention status unavailable — the sweep still runs at server boot.
+          </p>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground">
+              Terminal rows older than the cutoff are pruned, and the table is
+              capped at the newest {stats?.policy.rowCap.toLocaleString()} rows
+              (matching the Insights aggregation window). Rows behind a queued
+              background run are never pruned. Server restarts sweep the
+              defaults automatically; this applies a tighter age on demand.
+            </p>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="space-y-1">
+                <Label
+                  htmlFor="retention-max-age"
+                  className="text-[11px] text-muted-foreground"
+                >
+                  Max age (days)
+                </Label>
+                <Input
+                  id="retention-max-age"
+                  type="number"
+                  min={1}
+                  max={3650}
+                  value={maxAgeDays}
+                  onChange={(e) => {
+                    const v = Number(e.target.value);
+                    setMaxAgeDays(Number.isFinite(v) ? Math.min(3650, Math.max(1, Math.round(v))) : 90);
+                  }}
+                  className="h-11 w-28 text-xs sm:h-8"
+                />
+              </div>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={startPrune}
+                disabled={pruning}
+                className="h-11 gap-1.5 sm:h-8"
+              >
+                {pruning ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+                Prune old rows…
+              </Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+
+      {/* Confirm gate: the dialog quotes the dry-run numbers the apply will
+          produce with these exact parameters. */}
+      <AlertDialog
+        open={confirmState !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmState(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Prune the skill audit log?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {confirmState &&
+                `With a ${confirmState.maxAgeDays}-day cutoff: ${confirmState.agedOut} aged-out terminal row(s) and ${confirmState.overCap} over-cap row(s) will be deleted — ${confirmState.deletable} in total, out of ${confirmState.totalRows}. This cannot be undone. Queued rows are never pruned.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={pruning}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={pruning}
+              onClick={(e) => {
+                e.preventDefault();
+                applyPrune();
+              }}
+            >
+              {pruning ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Prune {confirmState ? confirmState.deletable : ""} row
+              {confirmState && confirmState.deletable === 1 ? "" : "s"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </Card>
   );
 }
 
@@ -1269,5 +1906,322 @@ function StatusBar({
         ))}
       </div>
     </div>
+  );
+}
+
+// ==========================================================================
+// Register skill dialog (M3) — POST /api/skills
+// ==========================================================================
+
+interface ParamRow {
+  key: string;
+  type: "string" | "number" | "boolean" | "json";
+  required: boolean;
+  description: string;
+}
+
+const EMPTY_PARAM_ROW: ParamRow = {
+  key: "",
+  type: "string",
+  required: false,
+  description: "",
+};
+
+function RegisterSkillDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const toast = useAppStore((s) => s.toast);
+  const [label, setLabel] = React.useState("");
+  const [description, setDescription] = React.useState("");
+  const [endpoint, setEndpoint] = React.useState("");
+  const [params, setParams] = React.useState<ParamRow[]>([]);
+  const [submitting, setSubmitting] = React.useState(false);
+  const [formError, setFormError] = React.useState<string | null>(null);
+
+  const reset = () => {
+    setLabel("");
+    setDescription("");
+    setEndpoint("");
+    setParams([]);
+    setFormError(null);
+  };
+
+  const addParamRow = () => {
+    if (params.length >= 6) return;
+    setParams((prev) => [...prev, { ...EMPTY_PARAM_ROW }]);
+  };
+
+  const updateParamRow = (i: number, patch: Partial<ParamRow>) => {
+    setParams((prev) => prev.map((row, idx) => (idx === i ? { ...row, ...patch } : row)));
+  };
+
+  const removeParamRow = (i: number) => {
+    setParams((prev) => prev.filter((_, idx) => idx !== i));
+  };
+
+  const submit = async () => {
+    setFormError(null);
+    if (submitting) return;
+    // Light client-side guardrails — the server validates fully (400s carry
+    // its message into the inline error).
+    if (!label.trim()) {
+      setFormError("A label is required.");
+      return;
+    }
+    if (!endpoint.trim()) {
+      setFormError("A webhook endpoint URL is required.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const payload = {
+        label: label.trim(),
+        description: description.trim() || label.trim(),
+        endpoint: endpoint.trim(),
+        params: params
+          .filter((p) => p.key.trim())
+          .map((p) => ({
+            key: p.key.trim(),
+            type: p.type,
+            ...(p.required ? { required: true } : {}),
+            description: p.description.trim() || `${p.key.trim()} parameter`,
+          })),
+      };
+      const res = await fetch("/api/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setFormError(data?.error ?? `HTTP ${res.status}`);
+        return;
+      }
+      toast({
+        title: "Custom skill registered",
+        description: `"${data?.skill?.id ?? label.trim()}" is live — agents can invoke it immediately (it appears in their skill manifest on the next turn).`,
+        variant: "default",
+      });
+      reset();
+      onOpenChange(false);
+    } catch (e) {
+      setFormError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) reset();
+        onOpenChange(next);
+      }}
+    >
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle className="flex items-center gap-2">
+            <Webhook className="size-4 text-muted-foreground" aria-hidden />
+            Register a custom skill
+          </DialogTitle>
+          <DialogDescription>
+            A webhook skill: your endpoint receives a POST with the
+            validated params and its 2xx response becomes the skill result.
+            Registered skills flow through the same pipeline as built-ins —
+            validation, rate limits, audit, insights — with no extra wiring.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-label">
+              Label <span className="text-rose-600 dark:text-rose-400">*</span>
+            </Label>
+            <Input
+              id="skill-label"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. Lab inventory lookup"
+              maxLength={80}
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-description">Description</Label>
+            <Textarea
+              id="skill-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What the skill does — this is what agents read to decide when to call it."
+              rows={2}
+              maxLength={400}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Defaults to the label when left empty.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="skill-endpoint">
+              Webhook endpoint{" "}
+              <span className="text-rose-600 dark:text-rose-400">*</span>
+            </Label>
+            <Input
+              id="skill-endpoint"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              placeholder="http://localhost:3030/echo"
+              inputMode="url"
+              maxLength={2000}
+            />
+            <p className="text-[11px] text-muted-foreground">
+              http(s) URL — POSTed{" "}
+              <code className="font-mono">
+                {"{skillId, params, source, agent?, at}"}
+              </code>{" "}
+              with a 20s timeout. Non-2xx or timeout → honest error.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label>Params ({params.length}/6)</Label>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={addParamRow}
+                disabled={params.length >= 6}
+                className="h-7 gap-1 text-xs"
+              >
+                <Plus className="size-3.5" />
+                Add param
+              </Button>
+            </div>
+            {params.length === 0 ? (
+              <p className="text-[11px] text-muted-foreground">
+                No declared params — the skill still runs; the webhook just
+                receives the request context.
+              </p>
+            ) : (
+              <div className="space-y-2">
+                {params.map((row, i) => (
+                  <div
+                    key={i}
+                    className="space-y-1.5 rounded-md border p-2.5"
+                    aria-label={`Param ${i + 1}`}
+                  >
+                    <div className="flex items-center gap-2">
+                      <Input
+                        value={row.key}
+                        onChange={(e) => updateParamRow(i, { key: e.target.value })}
+                        placeholder="key (e.g. query)"
+                        className="h-8 flex-1 font-mono text-xs"
+                        aria-label={`Param ${i + 1} key`}
+                        maxLength={40}
+                      />
+                      <Select
+                        value={row.type}
+                        onValueChange={(v) =>
+                          updateParamRow(i, {
+                            type: v as ParamRow["type"],
+                          })
+                        }
+                      >
+                        <SelectTrigger
+                          className="h-8 w-28 text-xs"
+                          aria-label={`Param ${i + 1} type`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(["string", "number", "boolean", "json"] as const).map(
+                            (t) => (
+                              <SelectItem key={t} value={t} className="text-xs">
+                                {t}
+                              </SelectItem>
+                            ),
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <label className="flex h-8 cursor-pointer items-center gap-1.5 text-xs text-muted-foreground">
+                        <input
+                          type="checkbox"
+                          checked={row.required}
+                          onChange={(e) =>
+                            updateParamRow(i, { required: e.target.checked })
+                          }
+                          className="size-4 accent-primary"
+                          aria-label={`Param ${i + 1} required`}
+                        />
+                        req
+                      </label>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => removeParamRow(i)}
+                        aria-label={`Remove param ${i + 1}`}
+                        className="h-8 w-8 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400"
+                      >
+                        <Trash2 className="size-3.5" />
+                      </Button>
+                    </div>
+                    <Input
+                      value={row.description}
+                      onChange={(e) =>
+                        updateParamRow(i, { description: e.target.value })
+                      }
+                      placeholder="Description agents read for this param"
+                      className="h-8 text-xs"
+                      aria-label={`Param ${i + 1} description`}
+                      maxLength={200}
+                    />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {formError && (
+            <p
+              className="rounded-md bg-rose-500/10 px-3 py-2 text-xs text-rose-700 dark:text-rose-400"
+              role="alert"
+            >
+              {formError}
+            </p>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onOpenChange(false)}
+            disabled={submitting}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={submit}
+            disabled={submitting}
+            className="gap-1.5"
+          >
+            {submitting ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Webhook className="size-4" />
+            )}
+            Register skill
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }

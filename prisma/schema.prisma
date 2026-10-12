@@ -262,7 +262,8 @@ model SkillInvocation {
   agentTitle    String?
   workflowId    String?
   nodeId        String?
-  // ok | error | denied | invalid | skipped
+  // ok | error | denied | invalid | skipped | limited | queued | cancelled
+  // (String column, zero-migration status union — see skills/types.ts.)
   status        String
   params        String   // JSON (post-validation)
   resultSummary String?
@@ -270,8 +271,42 @@ model SkillInvocation {
   durationMs    Int?
   createdAt     DateTime @default(now())
 
+  // M2 (K6): window queries (insights `WHERE createdAt >= X`, retention
+  // `WHERE createdAt < cutoff`) filter on createdAt ALONE — the composite
+  // indexes below lead with skillId/source, so they never serve those
+  // scans. A dedicated createdAt index is the large-window performance
+  // guard the roadmap called out.
+  @@index([createdAt])
   @@index([skillId, createdAt])
   @@index([source, createdAt])
+}
+
+// ─── Custom skills (M lane M3/K4: dynamic skill registration) ────────────────
+// Runtime-registered webhook skills (`custom.*` family) created via
+// POST /api/skills. Loaded into the in-process registry at boot / first
+// catalog read (skills/dynamic.ts ensureCustomSkillsLoaded) and invoked
+// through the SAME runSkill pipeline as built-ins — validation, gating
+// (none required by default), rate limiting (custom family default),
+// audit, insights and the Activity log all inherit with zero extra code.
+model CustomSkill {
+  id          String   @id @default(cuid())
+  // Canonical registry id — ALWAYS the `custom.<slug>` form (validated at
+  // registration; collisions with built-ins and existing customs are 409).
+  skillId     String   @unique
+  label       String
+  description String
+  // JSON array of SkillParamDef — the same param schema contract built-ins
+  // declare (validateParams coerces/clamps against it unchanged).
+  params      String   // JSON SkillParamDef[]
+  // Webhook target — http(s) URL POSTed {skillId, params, source, agent?}
+  // with a 20s timeout. Non-2xx or timeout → honest "error" envelope.
+  endpoint    String
+  // Optional extra request headers (JSON Record<string,string>).
+  headers     String?  // JSON Record<string,string>
+  // Soft-disable (registered but skipped) — future PATCH surface.
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // ─── Screening (large-scale result evaluation & ranking) ─────────────────────

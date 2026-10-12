@@ -87,8 +87,26 @@
   + Top skills / Most active agents / By lane 三表，百分位只覆盖真实执行过的
   调用），每个智能体操作（聊天工具调用、工作流节点、PI 画布变更、REST 工具运行）
   都可观测。
+- **聊天卡深链闭环（M1）**：QUEUED 卡 “Watch progress” 一键直达 Skills
+  Activity tab 并高亮该次调用审计行（行自动展开 + 滚入视口）；denied 卡
+  “Fix agent access” 直达智能体编辑对话框（知识开关就在眼前）；limited 卡
+  “View audit row” 直达审计行 —— 卡片携带 invocationId + 原始 skillStatus
+  （历史卡无字段时优雅降级，不显示按钮）。
+- **审计治理（M2）**：invocations 接口 keyset 分页（createdAt+id 双键全序、
+  limit+1 判 hasMore、total 恒为全量匹配数）+ 面板过滤器（source/status）
+  + Load more；审计保留策略（终端行 >90 天 + 超 20k 行上限剪枝，queued
+  行永不删）——服务器启动时自动清扫 + 面板 Retention 卡（干跑预览与实际删除
+  同一谓词，确认对话框引用干跑数字）+ `createdAt` 专用索引（窗口查询护栏）。
+- **动态技能注册（M3）**：POST /api/skills 注册 webhook 技能（custom.* 族）
+  ——参数 schema 校验、`custom.` 前缀强制、与内置/现有冲突 409；技能经统一
+  管道执行（校验/门控/限流 12 次/分钟/审计/Insights 全链路继承），提示词清单
+  自动纳入（下一轮即生效）；handler POST 已验证参数到端点（20 秒超时，非 2xx/
+  超时诚实 error）；注册表从 DB 同步（TTL ≤1 秒，miss 强制同步），DELETE
+  注销保留审计历史；面板注册对话框（表单 + 参数行编辑器）+ 每卡删除按钮。
 
 ![技能面板](docs/images/28-skills-panel.png)
+![聊天 QUEUED 卡深链](docs/images/40-m-queued-deeplink.png)
+![自定义 webhook 技能注册](docs/images/42-m-registry-custom.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -404,8 +422,11 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | POST | `/api/screening/:id/rmsd` | 结构 RMSD 指标轴计算（`{refId}`，原子事务） |
 | POST | `/api/screening/:id/promote` | 候选提升回画布 |
 | GET | `/api/bio-tools/:type` | BLAST / PDB / PubMed / UniProt |
-| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析） |
-| GET | `/api/skills/invocations` | 统一调用审计日志（limit/skillId/source/status/agentId 过滤） |
+| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析；含 custom.* 端点） |
+| POST | `/api/skills` | 注册自定义 webhook 技能（M3：label/description/endpoint/params 校验，冲突 409） |
+| DELETE | `/api/skills/:skillId` | 注销自定义技能（内置 400 / 未知 404；审计历史保留） |
+| GET | `/api/skills/invocations` | 统一调用审计日志（M2：keyset 分页 cursor + limit/skillId/source/status/agentId 过滤） |
+| GET/POST | `/api/skills/retention` | M2：审计保留策略预览（GET）/ 干跑与执行（POST：maxAgeDays/rowCap/dryRun） |
 
 ## 常见问题
 

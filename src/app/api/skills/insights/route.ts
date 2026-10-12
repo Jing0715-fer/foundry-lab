@@ -17,7 +17,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 // Barrel import — self-registers the catalog (side effect, #40).
-import { catalogEntries } from "@/lib/skills";
+// M3: ensureCustomSkillsLoaded hydrates custom.* rows so their labels
+// resolve in the per-skill aggregates.
+import { catalogEntries, ensureCustomSkillsLoaded } from "@/lib/skills";
 
 export const dynamic = "force-dynamic";
 
@@ -135,6 +137,7 @@ function latencyStats(durations: number[]): {
 }
 
 export async function GET(request: NextRequest) {
+  await ensureCustomSkillsLoaded();
   const raw = request.nextUrl.searchParams.get("window") ?? "7d";
   const window = raw in WINDOWS ? raw : "7d";
   const windowMs = WINDOWS[window];

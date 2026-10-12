@@ -18,3 +18,11 @@ export {
 } from "./rate-limit";
 export { renderSkillManifest } from "./prompt";
 export { extractSkillCalls, type SkillCall, type SkillFence } from "./fences";
+export {
+  ensureCustomSkillsLoaded,
+  syncCustomSkillsNow,
+  reloadCustomSkills,
+  registerCustomSkill,
+  type CustomSkillRow,
+} from "./dynamic";
+export { unregisterSkill } from "./registry";

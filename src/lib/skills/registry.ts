@@ -25,6 +25,17 @@ export function registerSkill(def: SkillDefinition): void {
   }
 }
 
+/** Unregister a skill by canonical id (M3 delete path). Aliases that no
+ *  longer point at this id are left alone (a re-registered skill may have
+ *  reclaimed them); aliases that do are dropped. */
+export function unregisterSkill(id: string): void {
+  if (!registry.has(id)) return;
+  registry.delete(id);
+  for (const [alias, canonical] of aliasIndex) {
+    if (canonical === id) aliasIndex.delete(alias);
+  }
+}
+
 /** Look up a skill by canonical id OR any registered alias. */
 export function getSkill(idOrAlias: string): SkillDefinition | undefined {
   const canonical = aliasIndex.get(idOrAlias) ?? idOrAlias;

@@ -13,8 +13,9 @@
 
 import type { AgentDTO } from "../types";
 
-/** Skill family — also the wire `kind` for backward-compatible ToolCall rows. */
-export type SkillFamily = "comp" | "bio" | "web" | "canvas";
+/** Skill family — also the wire `kind` for backward-compatible ToolCall rows.
+ *  M3: "custom" = runtime-registered webhook skills (custom.*). */
+export type SkillFamily = "comp" | "bio" | "web" | "canvas" | "custom";
 
 /** Where an invocation came from — recorded on every audit row. */
 export type SkillSource =
@@ -92,6 +93,9 @@ export interface SkillCatalogEntry {
   rateLimit?: { max: number; windowMs: number };
   /** Prompt-facing usage example rendered into system prompts. */
   example?: Record<string, unknown>;
+  /** M3: present only on custom.* entries — the registered webhook
+   *  endpoint (built-in projections never carry one). */
+  endpoint?: string;
 }
 
 export interface SkillDefinition extends SkillCatalogEntry {
