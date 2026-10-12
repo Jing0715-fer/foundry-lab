@@ -3526,3 +3526,18 @@ Work Log:
 
 Stage Summary:
 - S/E/U 三线浏览器全链路通过：skill 协议（LLM 真实遵循前向 fence）+ 真实进程级中止（物理点击）+ 异步 Retry + 移动端 + 演示 DB 零污染。
+
+---
+Task ID: 22-fin
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：ROADMAP 重写 + README 更新 + git 提交
+
+Work Log:
+- docs/ROADMAP.md 重写：S/E 线交付记录 + 测试结论表（10 项：LLM 遵循前向 fence 协议/webSearchEnabled 首次生效/进程级 stop 实测/deferred 诚实语义/切换菜单数据过期/进程组击杀/重启后集群 stop/Stop all 措辞/fence 回声加固/审计 feed 筛选）+ 下一阶段 = C 线 P1（数据与可信度 + C6 切换菜单/C7 审计筛选）+ 新增 S2 线 P1.5（skill 体系深化：workflow 工具节点合流/配置化/测试台/page_reader）+ E 线 P2 收尾（进程组/重启后 stop/组卡拖拽）；验收标准新增「agent 层新能力必须走 skill 协议」与「运行状态竞态必须条件写守卫」条款。
+- README.md：智能体层章节重写为 Skill 标准化协议（管线五环节/前向 fence/真实联网搜索/Skills 面板）；运行队列章节补四项 E 线能力（进程级中止/看门狗/异步重试）；API 表新增 /api/skills、/api/skills/invocations、/nodes/:id/stop。
+- .gitignore 治理：db/*.db + agent-ctx/ + *.pid + outputs/ 不再入库；git rm --cached（/api/seed 可恢复演示基线）。
+- 最终检查：lint 零告警、tsc src/ 零错误、dev.log 无运行时错误、应用 200、演示 DB 基线完整（My First Workflow 14 + Antibody Campaign 5）。
+- git 提交推送。
+
+Stage Summary:
+- 下一阶段以本轮 10 项实测结论为据：C 线（数据与可信度）与 S2 线（skill 体系向 workflow 节点延伸）并行推进；agent 层 skill 化成为架构基线（验收条款化）。
