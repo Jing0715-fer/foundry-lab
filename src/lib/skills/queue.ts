@@ -229,7 +229,8 @@ export async function runSkillQueued(
     status: "queued",
     summary:
       `Queued as tool job ${jobId} — running in the background. Watch the ` +
-      "Tools panel or the Skills Activity tab; results land there when done.",
+      "Skills Activity tab (this row flips to ok / error / cancelled when the " +
+      "engine lands); results land there when done.",
     durationMs: Date.now() - t0,
     data: { jobId },
     ...(invocationId ? { invocationId } : {}),

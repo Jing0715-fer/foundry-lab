@@ -445,9 +445,9 @@ function ToolCallCard({ call }: { call: ToolCall }) {
       )}
       {call.status === "queued" && (
         <p className="mt-1 text-[11px] text-muted-foreground">
-          Running in the background — watch the Tools panel or the Skills
-          Activity tab; this card is a snapshot from when the chat message was
-          sent.
+          Running in the background — watch the Skills Activity tab (its
+          invocation row flips to ok / error / cancelled when the engine
+          lands); this card is a snapshot from when the chat message was sent.
         </p>
       )}
     </div>

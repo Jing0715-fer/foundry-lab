@@ -326,8 +326,9 @@ export function skillFeedback(res: SkillRunResult): string {
       return (
         `[Skill ${res.skillId} queued]\n${res.summary}\n\n` +
         "The run executes in the background and is NOT finished yet. Tell the " +
-        "user the job has been started, where to watch it (Tools panel / Skills " +
-        "Activity tab), and that results will appear there when it completes. " +
+        "user the job has been started, where to watch it (the Skills Activity " +
+        "tab — its invocation row flips to ok / error / cancelled when the " +
+        "engine lands), and that results will appear there when it completes. " +
         "Do not fabricate results — answer from your own knowledge in the meantime."
       );
     case "cancelled":

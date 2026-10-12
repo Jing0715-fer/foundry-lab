@@ -88,8 +88,9 @@ export async function POST(request: NextRequest) {
       {
         error:
           `Skill "${def.id}" is a slow engine skill — REST invocation would ` +
-          "block for minutes. Use POST /api/tools/run, the Tools panel, or a " +
-          "workflow canvas node instead (agent chat lanes queue it automatically).",
+          "block for minutes. Use POST /api/tools/run, a cluster/workflow " +
+          "lane, or a workflow canvas node instead (agent chat lanes queue " +
+          "it automatically).",
       },
       { status: 400 },
     );

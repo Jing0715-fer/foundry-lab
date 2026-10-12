@@ -6,7 +6,9 @@
 > 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）、10-14（J 线智能体操作
 > skill 标准化）、10-15（L 线真实中止与 cancelled 语义——S/E 参考分支三块移植 + QA/e2e
 > 全验证）、10-16（I 线 RMSD 轴打磨 + 执行令牌 #47 封口——含集群 e2e 双模式
-> 51/51 + 76/76 与陈旧断言修复）十二轮测试结论滚动更新，随每个阶段交付后重写。
+> 51/51 + 76/76 与陈旧断言修复）、10-17（K 线 Skill 层运营化：Insights 聚合 + denied
+> 深链 + per-agent 限流 + 慢技能异步入队，QA 51/52 容错重验 + 浏览器金路径全绿）
+> 十三轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -164,6 +166,8 @@
 | 48 | **语义变更必须重跑所有断言该语义的通道（L 线事故复盘）**：L 线把停止/取消语义改为 cancelled，但未重跑集群 e2e 通道——fixture 仍断言 G 时代的 "failed" 期望，本轮跑通道才暴露 6 条陈旧断言。同批发现 sync 文件列表顺序跟随 `find`（readdir 非确定）——`files[0]` 假设是 PDB 属脆弱断言，需显式选 .pdb。教训：**改共享行为语义 → 必须全通道重跑（含测试装置自身的期望值审计）** | QA 工程 | 已修复（本轮通道全绿 51/51 + 76/76） |
 | 49 | **VLM 截图前必须把目标 UI 滚入视口**：视口截图不含折叠下方内容——控件列底部的 RMSD 卡在首屏折叠下方，首轮 VLM 复核假性 FAIL；scrollIntoView 后 4/4。教训：**截图前断言目标 getBoundingClientRect 在视口内**（与 #35/#36 同族的 e2e 工程标准） | e2e 工程标准 | 验收参考 |
 | 50 | **令牌/epoch 类防御的正确生成位**：领占方在写库前自生成 token（与 status=running 同一次原子写），而非写后回读——回读窗口内 stop+retry 可把新 token 读成自己的。**生成位与写入位必须同一次原子操作**（#44 "pre-spawn 守卫"模式的 DB 化） | 架构 | 已交付（I-6） |
+| 51 | **对活跃上游 API 的 QA 断言必须容错**：13 连发打真 RCSB，1 次瞬时上游失败（error 行 + 诚实 502 信封）使 `oks===12` 过严断言挂掉——但限流器数学反而被更严格证明（槽位由 ok+error 共同消耗：11+1=12 → 第 13 次 429 精确）。教训：**打真实第三方 API 的计数类断言按"成功+上游错误=配额"容错，或用确定性的本地引擎通道（D5 comp 6/15min 实证）背书配额语义** | QA 工程 | 已遵守（B 阶段容错重验 13/13） |
+| 52 | **用户指引文案必须指向真实可见面**：K5 queued 消息/卡片原写 "watch the Tools panel"——但本地 skill 队列 ToolJob 行在 Cluster 面板（`_meta.cluster===true` 过滤）与 AlphaFold 面板（`tool==='alphafold'` 过滤）均不可见，唯一用户可见面是 Skills Activity tab（invocation 行状态转移）。教训：**写"去哪里看"类文案前先枚举该数据经过的全部 UI 面板及其过滤条件**——否则指引一条死路 | UX/文案 | 已修复（4 处措辞 + 截图重拍） |
 
 ## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
@@ -181,28 +185,62 @@
 6. **真实 SSH 集群通道**（G 线残留，未动）：F3 徽标的真实集群场景（当前 mock
    e2e 双模式 127/127 背书）。
 
-## K 线 — Skill 层运营化（P1，下一阶段主推；测试结果驱动升级）
+## K 线 — Skill 层运营化（已交付：K1+K2+K3+K5；余项 K4/K6 转候选池）
 
-本轮测试依据：J/L/I 三线后执行底座与观测面均已稳定（全部通道绿）；
-SkillInvocation 审计表已有真实流量（本轮 18 条测试期行再次证明每次 comp 运行
-都落表）——但只有原始流，没有运营视角。K 线按价值排序：
+- **K1 技能使用分析（已交付）**：GET /api/skills/insights（window=24h|7d|30d|all，
+  非法值回退 7d）——totals（invocations/byStatus 八态并集/okRate=ok/(ok+error)/
+  P50/P95/avg，**百分位只覆盖真实执行过的调用**——denied/invalid/limited/skipped
+  从未进 handler，不参与测量，脚注明示）+ per-skill（calls/okRate/P50/P95/last
+  used）+ per-agent（**denied/limited 信号计数**）+ per-source 泳道聚合；
+  skills-panel 第三 tab "Insights"（时间窗单选 + Refresh + Outcome 分布 +
+  Top skills / Most active agents / By lane 三表，45 行真实流量下 e2e 实证，
+  移动端折叠布局）。
+- **K2 denied 直达（已交付）**：Activity denied 行 "Fix agent access" 按钮 →
+  store.pendingAgentEdit 深链（镜像 pendingScreeningId 模式）→ Agents 面板自动
+  打开该 agent 的编辑对话框（知识开关触手可及）——e2e 实证（Scientific Critic
+  denied 行 → 对话框打开 + 2 个知识 switch 在场）。
+- **K3 速率配额（已交付）**：skills/rate-limit.ts（family 默认 comp 6/15min、
+  bio 12/min、web 6/min、canvas 30/min + per-skill 覆盖 + **per-agent 滑动
+  窗口**；agentId::skillId 键控）；runSkill 管道步骤 3.5（门控后执行前）；
+  **槽位只被真实执行消耗**（ok/error），denied/invalid/limited 不消耗（拒绝
+  不上锁）；匿名 REST/用户泳道不限流（信任级同 tools/run——滥用场景是循环
+  模型不是点击的人）；"limited" 落审计表携带重试提示。配套 POST
+  /api/skills/invoke（bio/web 快技能 REST 直调 + QA 面：unknown 404 invalid /
+  缺参 400 / slow comp 400 指路 / canvas 400 / agent 404）。
+- **K5 慢技能异步入队（已交付）**：skills/queue.ts runSkillQueued（resolve→
+  validate→gate→limit→SkillInvocation "queued" 行 + ToolJob 行（triggeredBy
+  agent:\<title\>）→ fire-and-forget 真引擎 runKey=jobId → 条件终写
+  ok/error/cancelled）；chat 双泳道 + meeting/research/task 接入（**流式泳道
+  不再拒发**：旧 skipSkill 慢技能分支废除；**门控补漏**——旧 skipSkill 从不查
+  requires，bio 关闭的 agent 引擎请求会放行，现在 denied 在入队前）；workflow
+  agent 节点保持同步（节点即异步底座）；崩溃网 + 服务器重启孤儿行启动清扫
+  （instrumentation：queued 行诚实翻转 error/failed）；chat 卡 QUEUED 态 teal
+  药丸 + 诚实快照说明（"卡片是发送时的快照，作业在后台"——模型反馈明确
+  **禁止编造结果**）。
+- **状态并集最终形态**：ok | error | denied | invalid | skipped | limited |
+  queued | cancelled（String 列零迁移）。
 
-1. **技能使用分析**（K1）：SkillInvocation 聚合视图（按 skill/source/agent 的
-   成功率、P50/P95 延迟、denied/invalid 趋势）——面板 Activity Tab 已有原始
-   流，缺聚合统计卡；执行底座令牌化后可加 per-run 维度。
-2. **智能体维度资格编辑直达**（K2）：Activity 中 denied 行一键跳转该 agent 的
-   编辑对话框（知识开关就在那里）——闭环门控反馈环。
-3. **技能级速率与配额**（K3）：runSkill 管道加 per-agent 简单速率限制（技能
-   滥用防护，web.search 尤其）。
-4. **comp 技能在流式泳道的异步入队**（K5）：慢技能当前直接 skip，可改为入
-   ToolJob 队列后回推卡片（策略泳道统一；与执行令牌天然亲和——队列行同样
-   可带 token）。
+**QA/e2e 证据（本线收口轮）**：API 冒烟 51/52（唯一失败 = B1a 断言对活跃
+RCSB 上游过严——13 连发一次瞬时失败，限流器数学反而被更严格证明：槽位由
+ok+error 共同消耗，11+1=12 → 第 13 次 429，见结论 #51）；B 阶段容错重验
+13/13（12×200+1×429 确定性）；孤儿清扫实测（插伪造 queued 行 → daemon 重启
+→ invocation error + ToolJob failed 诚实翻转 + dev.log 对账日志）；浏览器级
+金路径全绿：Insights 聚合（45 行流量全指标 DOM 断言）/ K2 深链闭环 / K5 真
+LLM → skill 围栏 → QUEUED 卡 → 真引擎完成（ToolJob completed exitCode 0 +
+invocation queued→ok + 真实 PDB 工件）/ 移动端 375 零溢出 footer 贴底 /
+console + page errors 零。收尾修复（P3）：queued 消息 4 处 "Tools panel"
+措辞改为真实可见面 "Skills Activity tab"（本地 skill 队列行在 Cluster/
+AlphaFold 面板均有过滤不可见，见结论 #52）+ 截图 39 重拍。
+
+**余项（转候选池，测试结果驱动排序）**：
 5. **动态技能注册 API**（K4）：POST /api/skills 注册自定义技能（handler 白名单
    模板或外部 webhook URL）。
 6. **审计保留策略**（K6）：SkillInvocation 定期归档/清理（SQLite 体积治理）+
-   筛选视图分页游标。
+   筛选视图分页游标（本轮 45 行/QA 一轮即积累，真实使用会更快）。
+7. **（新发现）queued 卡深链**：聊天 QUEUED 卡可加跳转 Skills 面板 Activity
+   tab 的按钮（镜像 pendingAgentEdit 模式）——当前用户需手动导航。
 
-余留候选小项（本轮新发现，低优先）：Runs sheet cancelled 行无 Retry 按钮
+余留候选小项（历轮累积，低优先）：Runs sheet cancelled 行无 Retry 按钮
 （重跑走 inspector Run——功能可达，仅少一步直达）；"file missing" 状态可
 进一步进筛选列（当前仅选择器/chip 语境）。
 
@@ -264,3 +302,26 @@ SkillInvocation 审计表已有真实流量（本轮 18 条测试期行再次证
 - **VLM 截图复核前必须把目标 UI 滚入视口**（#49）：截图前断言目标
   getBoundingClientRect 在视口内（视口截图不含折叠下方内容，长控件列底部
   元素首轮必假性 FAIL）。
+
+## M 线 — Skill 层运营深化（P1 下一阶段主推；基于 K 线测试结果排序）
+
+K 线收口后，skill 底座已具备完整运营面（清单/门控/限流/队列/审计/聚合/反馈
+闭环）。M 线按测试结果驱动的价值排序：
+
+1. **queued 卡深链闭环**（M1，小而直接）：聊天 QUEUED 卡 + denied/limited
+   反馈 → 一键跳转目标面（Skills Activity tab / agent 编辑）——复用
+   pendingAgentEdit 深链模式三次（pendingSkillInvocation / pendingSkillTab）。
+   K 线 e2e 已证用户当前需手动导航三步，这是最后的断点。
+2. **审计保留与分页**（M2 = K6）：SkillInvocation 定期归档/清理（SQLite 体积
+   治理；QA 一轮即积累 45 行）+ invocations/insights 分页游标 + Insights
+   大窗口性能护栏（索引 + LIMIT 聚合）。运营面的数据治理配套。
+3. **动态技能注册**（M3 = K4）：POST /api/skills 注册自定义技能——handler
+   白名单模板（参数模板化 shell/webhook）或外部 webhook URL 转发；注册表
+   增运行时技能族 custom.*；Insights/Activity/限流全链路自动继承（K 线管道
+   已收敛，新技能零成本入运营面）。
+4. **低优先池滚动**（P2）：Runs sheet cancelled 行 Retry 直达；file-missing
+   进筛选列；Escape 分层语义成文（I 线余项）；叠合深化（多链/per-region）；
+   认证与团队协作（独立分支）；真实 SSH 集群通道（待真实环境）。
+
+验收标准沿用（每项：API 冒烟全 4xx 路径 + 浏览器 e2e 真实链路 + 字段级基线
+恢复 + lint/tsc/dev.log/console 四清 + 结论滚动进本表）。

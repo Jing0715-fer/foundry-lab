@@ -4101,3 +4101,24 @@ Stage Summary:
   - K3 = skills/rate-limit.ts（family 默认 + per-skill 覆盖 + per-agent 滑动窗口）+ runSkill 步骤 3.5 + 新终态 "limited"；附带 POST /api/skills/invoke（bio/web REST 直调，QA 面 + api source 补全）。
   - K5 = skills/queue.ts runSkillQueued（resolve→validate→gate→limit→ToolJob 行 + SkillInvocation "queued" 行→fire-and-forget 真引擎 runKey=jobId→条件终写 ok/error/cancelled）+ chat 两泳道与 meeting/research/task 泳道接入（workflow agent 节点保持同步——节点即异步底座）；新终态 "queued"/"cancelled"；tools-jobs stop 路由加 requestStop+killActiveProcess 真杀；instrumentation 启动清扫孤儿 queued 行。
 - 状态并集最终形态：ok | error | denied | invalid | skipped | limited | queued | cancelled（String 列零迁移）。
+
+---
+Task ID: 44 (K lane: K1+K2+K3+K5 — QA + E2E + 收尾 + 规划 — main-orchestrator)
+Agent: main-orchestrator (Z.ai Code)
+Task: 上一会话 K 线四项实现已提交（bd5f5c4）但上下文耗尽未落 QA/e2e 记录 → 本轮补齐：QA 冒烟 + E2E 浏览器级 + 收尾修复 + 基线恢复 + 文档/规划收口
+
+Work Log:
+- **前置**：读 worklog 尾部（Task 44 规划条目）+ /home/z/TODO 交接状态（实现 6 项 completed，QA in_progress，e2e/收尾/规划 pending）+ git log 核对（bd5f5c4 含 K 线全部 25 文件 + 4 张 e2e 截图，DB 已在纯净基线）+ 实现文件精读（queue.ts 条件终写纪律/rate-limit.ts 槽位语义/instrumentation 孤儿清扫）。
+- **运维**：发现沙箱在工具调用间收割后台进程（nohup/setsid 均不保命）→ 找到既定方案 `.zscripts/daemon-run.py`（双 fork 守护化）→ dev server（:3000）与 mock-cluster（:3022）均经守护器重启存活（worklog #2695 纪律的重确认）。
+- **QA（API 冒烟，/home/z/k2-lane-smoke/k-smoke.ts，throwaway 不入库）**：首轮 **51/52**——A invoke 表面 6 组（unknown 404 invalid 信封/缺参 400/慢 comp 400 指路/canvas 400/真 bio.pdb 200 + api 源审计/未知 agent 404）；B per-agent 限流；C insights 聚合（八态并集/okRate 数学/窗口回退/all）；D 队列机制直连导入（D1 queued 信封 + ToolJob 行 triggeredBy 归因 / D2 同一行转移 ok（真引擎）/ D3 denied 不入队（**门控补漏实证**：旧 skipSkill 从不查 requires）/ D4 重停止路径（HTTP stop + 进程注册表击杀 + 迟到写丢弃 + pgrep 归零）/ D5 comp 6/15min 六入队一拒绝全排干 / D6 反馈禁止编造）。唯一失败 B1a = **测试断言对活跃 RCSB 上游过严**（13 连发 1 次瞬时上游失败→诚实 error 行 + 502 信封；限流器数学反而更严格成立：槽位由 ok+error 共同消耗 11+1=12 → 第 13 次 429 精确）。
+- **B 阶段容错重验**：13/13（12×200 + 1×429 确定性）——限流器语义双通道背书（B 重验 + D5 本地引擎确定性通道）。
+- **孤儿清扫实测**：insert-orphans.ts 插伪造 queued 行（SkillInvocation + ToolJob）→ daemon-run.py 重启 → invocation→error + ToolJob→failed 诚实翻转（文案如实披露重启孤儿语义）+ dev.log 三行对账日志 → 伪造行清理。
+- **E2E（agent-browser 浏览器级）**：Skip tour 精确点击（#35 纪律）→ **K1**：Skills → Insights tab（45 行 QA 真实流量）：Invocations 45/OK rate 97.1%（35 executed）/P50 173ms/P95 1.5s/六态分布（34 ok/1 error/2 denied/3 invalid/4 limited/1 cancelled 与 DB 逐项一致）/Top skills 表（bio.pdb 32 calls 96.4%、comp.rfdiffusion 10 calls 100%）/Most active agents（PI 27+3 limited、**Critic 2 denied——K2 靶行**）/By lane（API 35 / CHAT-STREAM 10 分解全对）/诚实延迟脚注；窗口切换 24h 实证。**K2**：Activity denied 行 "Fix agent access" → Agents 面板自动开 Critic 编辑对话框（2 知识 switch 在场）——深链闭环。**K5 金路径**：Computational Biologist 聊天真消息 → 真模型发 ```skill comp.rfdiffusion 围栏 → **QUEUED 卡**（teal 药丸 + jobId + 诚实快照说明）→ 模型文字明确"已后台启动，去 Tools 面板或 Activity tab 看进度"且不编造结果 → 后台真引擎完成（ToolJob completed exitCode 0 / invocation queued→ok / 真实 PDB 工件落 outputs/rfdiffusion/<jobId>/）→ Activity tab 显示该行（ok + CHAT-STREAM + 归因 + 工件清单）。**移动端** 375×812：docScrollW=375 无溢出 + main 319 + footer 812 贴底；**console + page errors 零**（JSON 输出逐条核验，无 error 级消息）。
+- **QA 发现并修复（P3 措辞，#52）**：queued 消息/卡片/REST 指路文案写 "watch the Tools panel"——但本地 skill 队列 ToolJob 行在 Cluster 面板（`_meta.cluster===true` 过滤）与 AlphaFold 面板（`tool==='alphafold'` 过滤）均不可见，唯一用户可见面是 Skills Activity tab → **4 处措辞修正**（queue.ts 信封 summary / runner.ts 模型反馈 / chat 抽屉卡快照说明 / invoke 路由 400 指路）+ Fast Refresh 后浏览器重验新措辞渲染 + 截图 39 重拍（旧截图含过时文案）。
+- **基线纪律**：QA/e2e 全部完成后 demo:reset --force（首轮脚本交互确认卡死 60s 超时——改 --force 直跑）→ outputs/rfdiffusion 测试目录清理 → daemon 重启（#41 陈旧 client）→ 字段级核对：workflows 2 / My First 14/12 / Antibody Design Campaign 5/3 / toolJobs 16 / **skillInvocations 0** / screenings 3（rmsdRefId 全 None）/ candidates 60+20+6 / chatMessages 12。
+- **收尾**：lint 零告警；tsc 仅 4 条预存（examples/skills）；dev.log 零运行时错误（prisma:query 日志除外）；README（K5 停止语义措辞修正 + 技能面板 bullet 补 Insights/K2 直达）；ROADMAP（K 线标记已交付含证据 + 测试结论 #51/#52 + **M 线下一阶段规划**）；git 提交推送。
+
+Stage Summary:
+- K 线（K1 Insights 聚合 / K2 denied 深链 / K3 per-agent 限流 + invoke API / K5 慢技能异步入队）全链路收口：QA 51/52（唯一失败=活跃上游断言过严，容错重验 13/13 + 本地引擎确定性通道双背书）+ 孤儿清扫实测 + 浏览器金路径全绿（真 LLM/真引擎/真审计/真 UI 三态）。状态并集最终形态八态（String 列零迁移）。
+- 过程产出 3 条新工程结论：#51 活跃上游 API 计数断言容错（或本地确定性通道背书）；#52 "去哪里看"类文案必须枚举数据经过的全部 UI 面板及其过滤条件；运维重确认：沙箱收割后台进程，daemon-run.py 双 fork 是唯一保活路径。
+- 后续开发计划（基于测试结果，ROADMAP M 线）：**M1 queued 卡深链闭环**（复用 pendingAgentEdit 深链模式三次——K 线 e2e 实证用户需手动导航三步，最后断点）→ **M2 审计保留与分页**（K6：QA 一轮 45 行，真实使用增长快，SQLite 治理 + 分页游标）→ **M3 动态技能注册**（K4：custom.* 族，K 线管道收敛后新技能零成本入运营面）；低优先池滚动（cancelled Retry 直达/file-missing 筛选列/Escape 成文/叠合深化/认证/真实集群）。
