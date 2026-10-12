@@ -534,11 +534,17 @@ export function extractClusterTarget(raw: unknown): ClusterRunTarget | null {
  *  until the remote job finishes. Returns {summary, stdout, files, command}.
  *  `exitCode` is null + `pollCeiling: true` when the cluster poll ceiling
  *  was reached while the remote job was still running (NOT a failure and NOT
- *  a success — callers must keep the node running and reconcile later). */
+ *  a success — callers must keep the node running and reconcile later).
+ *
+ *  opts.runKey (K lane, ported from S/E line): an opaque stop-lane key (the
+ *  canvas node id). Local runs register the spawned engine process under it
+ *  (killActiveProcess can SIGTERM it); cluster runs tag their ToolJob rows
+ *  `triggeredBy: "node:<runKey>"` so the node-stop lane finds and cancels
+ *  them without scraping node logs. */
 export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
-  opts: { cluster?: ClusterRunTarget } = {},
+  opts: { cluster?: ClusterRunTarget; runKey?: string } = {},
 ): Promise<{
   summary: string;
   stdout: string;
@@ -552,10 +558,12 @@ export async function executeCompTool(
     return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "", exitCode: 1 };
   }
   if (opts.cluster) {
-    return executeCompToolOnCluster(def, toolKey, params, opts.cluster);
+    return executeCompToolOnCluster(def, toolKey, params, opts.cluster, opts.runKey);
   }
   const workDir = resolve(process.cwd(), "outputs", toolKey, `wf-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
-  const res = await executeCompToolReal(toolKey, params, workDir);
+  const res = await executeCompToolReal(toolKey, params, workDir, {
+    runKey: opts.runKey,
+  });
   const summary = def.resultSummary(params, res.stdout);
   // Honest failure surfacing: non-zero exits carry stderr + a clear banner
   // so the node logs show the REAL error (never a silent success).
@@ -581,6 +589,7 @@ async function executeCompToolOnCluster(
   toolKey: string,
   params: Record<string, unknown>,
   target: ClusterRunTarget,
+  runKey?: string,
 ): Promise<{
   summary: string;
   stdout: string;
@@ -590,6 +599,9 @@ async function executeCompToolOnCluster(
   pollCeiling?: true;
 }> {
   // (a) Job row first — its id keys the workDir, run record, and poll target.
+  // K lane: runKey (the canvas node id) tags the row `node:<id>` so the
+  // node-stop lane can discover + cancel it directly (fallback: node-log
+  // marker scraping, kept for pre-K rows).
   let jobId: string;
   try {
     const job = await db.toolJob.create({
@@ -609,7 +621,7 @@ async function executeCompToolOnCluster(
         stdout: "",
         stderr: "",
         outputFiles: JSON.stringify([]),
-        triggeredBy: "workflow",
+        triggeredBy: runKey ? `node:${runKey}` : "workflow",
         startedAt: new Date(),
       },
     });

@@ -5,10 +5,12 @@
 //              workflow name — the "what is executing right now" lane.
 //   - failed:  terminal failures from the last 48h — each row carries a
 //              retry affordance (the client POSTs /api/workflow/nodes/:id/run,
-//              which claims completed/failed nodes conditionally and cascades
-//              downstream).
-//   - recent:  latest terminal runs (completed/failed) from the last 48h —
-//              duration + status for the activity feed.
+//              which claims completed/failed/cancelled nodes conditionally
+//              and cascades downstream).
+//   - recent:  latest terminal runs (completed/failed/cancelled) from the
+//              last 48h — duration + status for the activity feed. Cancelled
+//              rows (K lane: user stops) are terminal, not failures — they
+//              render struck-through with their own pill in the sheet.
 //
 // Read-only: no mutations happen here. The query itself selects ONLY the
 // fields the runs sheet renders (result/logs bodies can be megabytes and
@@ -73,11 +75,16 @@ export async function GET() {
       select: SELECT,
     })) as RunNode[];
 
-    // Terminal lanes from the window, newest first.
+    // Terminal lanes from the window, newest first. Cancelled QUEUED rows
+    // never started (startedAt null) — they match by completedAt instead so
+    // a stop of a not-yet-claimed node stays visible in the window.
     const terminalRows = (await db.node.findMany({
       where: {
-        status: { in: ["completed", "failed"] },
-        startedAt: { gte: since },
+        status: { in: ["completed", "failed", "cancelled"] },
+        OR: [
+          { startedAt: { gte: since } },
+          { status: "cancelled", completedAt: { gte: since } },
+        ],
       },
       orderBy: { startedAt: "desc" },
       take: MAX_RECENT * 2, // over-fetch once, split after (failed wins the cap)
@@ -85,12 +92,20 @@ export async function GET() {
     })) as RunNode[];
 
     // Exact window counts (independent of the display caps above).
-    const [failedCount, completedCount] = await Promise.all([
+    const [failedCount, completedCount, cancelledCount] = await Promise.all([
       db.node.count({
         where: { status: "failed", startedAt: { gte: since } },
       }),
       db.node.count({
         where: { status: "completed", startedAt: { gte: since } },
+      }),
+      db.node.count({
+        where: {
+          OR: [
+            { status: "cancelled", startedAt: { gte: since } },
+            { status: "cancelled", completedAt: { gte: since } },
+          ],
+        },
       }),
     ]);
 
@@ -132,6 +147,7 @@ export async function GET() {
         running: activeRows.filter((n) => n.status === "running").length,
         queued: activeRows.filter((n) => n.status === "pending").length,
         failed: failedCount,
+        cancelled: cancelledCount,
         completedInWindow: completedCount,
       },
     });

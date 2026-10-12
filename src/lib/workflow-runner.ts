@@ -229,10 +229,12 @@ export async function runWorkflowById(
           .catch(() => {
             // runNode's own failure paths persist a failed status; a
             // thrown exception (DB hiccup) marks the node failed so the
-            // pool never wedges on a phantom "running" lane.
+            // pool never wedges on a phantom "running" lane. Conditional on
+            // still-running: a user Stop that already landed `cancelled`
+            // must not be resurrected as failed by this safety net.
             void db.node
-              .update({
-                where: { id: nodeId },
+              .updateMany({
+                where: { id: nodeId, status: "running" },
                 data: { status: "failed", completedAt: new Date() },
               })
               .catch(() => {});

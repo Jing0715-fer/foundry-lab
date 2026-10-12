@@ -4019,3 +4019,25 @@ Work Log:
 
 Stage Summary:
 - 双实现冲突以「保留参考分支 + 回归主线」收口，零工作丢失；三块可移植改进已在参考分支上经完整 QA/e2e 验证；main 恢复干净运行（全 API 200 + 基线完好）。
+
+---
+Task ID: 42 (L lane: L1-L5 — main-orchestrator)
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（并行会话合并决议的三块移植：真实进程击杀 / cancelled 终态 + 条件写守卫族 / RunsSheet 异步 Retry + 键盘修复）+ QA 测试 + E2E 测试 + 按测试结果规划后续开发
+
+Work Log:
+- **前置**：读 worklog 尾部（Task 22-merge 决议）+ git 状态核对（main 干净、parallel/s-e-lane-22 在场）+ 参考分支三块实现精读（node-run-control.ts / real-executor ACTIVE_PROCS+runKey 六 spawn 点 / runs-sheet async+closest / stop 路由）与 main 现状逐点对比（main 的 executeNodeGuarded 在 workflow-engine 带 QA 23-a 集群豁免、stop 路由带 CANCELLED_VIA_NODE_STOP 双向徽标与日志 marker 发现——移植需保留两者语义）。
+- **L1 进程注册表**（real-executor.ts）：ACTIVE_PROCS Map + registerProc/unregisterProc（陈旧 unregister 校验 proc 身份防误杀后继）+ killActiveProcess（SIGTERM + 2s SIGKILL 升级 unref）；runKey 线程化 executeCompToolReal(opts.runKey) → executeNativeOrEngine → runNativeTool/runBuiltinEngine/runFoundryMpnn → runProcess（spawn 后注册、close/error 注销——仅当前注册者可清槽）；runProcess 新增 **pre-spawn 停止守卫**（runKey 已停止则不 spawn——关掉"claim 后 spawn 前落地的停止"窗口，本轮 QA 自发现）。
+- **L1 接线**：run-utils executeCompTool 加 opts.runKey（本地真实引擎注册 + 集群 ToolJob 行 triggeredBy: node:<runKey>——停止路由免日志刮削直达发现，日志 marker 保留兜底）；workflow-engine 两个 comp 分支传 node.id；skills/catalog comp handler 传 ctx.nodeId（agent 节点发 comp 技能同样可杀）。
+- **L2 cancelled 终态**：types NodeStatus + prisma schema 注释（String 列零迁移）+ NodeExecResult 状态并集；stop-registry.ts（零依赖新模块——workflow-engine 与停止路由共用无环）；executeNodeGuarded 重构（clusterRouted 分支统一走 post-race 守卫；fresh 执行先 clearStop 清陈旧；守卫命中→返回 cancelled）；workflow-runner 异常安全网条件化（updateMany where running——不再把 cancelled 复活成 failed）。
+- **L3 停止路由重写**：node-run-control.ts 新模块 stopNodeRun 四步（requestStop → killActiveProcess → **先行翻转 cancelled**（reconciler 只动 running 行→先翻封死竞态）→ 链接作业取消（triggeredBy 主发现 ∪ 日志 marker 兜底；集群 stopClusterJob(viaNodeStop) 徽标单点写入 / 本地 SIGTERM+行取消+stderr 徽标））；stop 路由薄壳化 + 保留 404/409 守卫 + 竞态 409（final 非 cancelled = 自然结算赢）+ detail 溯源字段。
+- **L4 异步运行**：run 路由 ?async=1（领占即返回 running DTO；executeAll 后台 fire-and-forget + 崩溃条件写 failed 防楔死）；re-claim 状态并集加 cancelled（取消节点可重跑）；runOne 返回类型加 cancelled。
+- **L5 终态识别与 UI**：SSE stream 三处（初始短路/轮询终态/reconcile 映射 job cancelled→node cancelled）；runs 路由 Recent+计数加 cancelled（queued-then-stopped 行 startedAt=null→按 completedAt 匹配窗口）；PATCH 路由状态白名单 + node-card（cancelled 徽章 Ban/药丸划线/底条 zinc/结果文案）+ minimap 状态色 + inspector SSE 终态 toast 三变体 + runs-sheet（cancelled 行 Ban/zinc/划线/"cancelled — stopped by user" + 汇总计数 + Retry→?async=1 + 行键盘 closest("button,a,[role=button]") 排除 + Stop toast 带 detail + 标题/脚注文案更新）。
+- **QA 冒烟（/home/z/k-lane/k-smoke.ts，throwaway 不入库）**：首轮 26/28（两处失败=测试自身断言 bug：rfdA 已被 B 阶段重试为 completed→存活 cancelled 只有 2 行；E2 找错节点）；修正后 **32/32 全过**——A：async 61ms 领占即返/引擎真活/stop→detail "local engine process killed"/pgrep 归零/迟到 9s 不复活；A2（新增）：claim 后立即 stop→pre-spawn 守卫→引擎永不 spawn（6.4s 轮询零 spawn）；B：改轻参数重试 from cancelled→真实引擎完成+##OUTPUTS##；C：409/404；D：runner 泳道（D1 领占/D2 queued 停止→runner 声明跳过/D3 引擎真活/D4 停止/D5 泳道排干 200/D6-D8 终态核对 input completed+rfd/out cancelled）；E：runs 路由 cancelled 计数+Recent 行。
+- **QA 过程中发现并解决的两起事故**：①首轮 D 阶段 3 个孤儿引擎 + run POST 60s——根因一为 jfetch 测试签名 bug（第 3 参数被忽略→默认 60s abort 误判服务端挂起）；根因二为**热重载模块实例错位**（dev server 长寿运行跨我的代码改动，spawn 方与 kill 方各持不同编译纪元的 ACTIVE_PROCS Map→kill 静默失败）——重启 dev server 后受控复现（单引擎 spawn+真杀+池排干全对）+ 全量复跑 32/32；②clearStop 新鲜度竞态自发现（executeNodeGuarded 开头清"陈旧"标志会把 async claim 后立即 stop 的新鲜标志清掉→引擎照常 spawn）——pre-spawn 守卫修复并以 A2 用例实证。两起均固化为测试结论 #43/#44。
+- **E2E（agent-browser 浏览器级）**：Skip tour 精确点击→切到 K E2E 工作流→**真实键盘链路**（Runs sheet 中 focus Stop 按钮→Enter→停止真实击发+行转入 Recent 为 cancelled+sheet 不关（行未劫持键盘））；停止后 pgrep 归零（浏览器侧发起的真实进程击杀）；cancelled 行划线+Ban+汇总"1 cancelled (48h)" DOM 断言；画布节点徽章（cancelled 药丸+Ban 图标+"Stopped by user before completion."）；**UI 重试闭环**（inspector 改轻参数→Run→cancelled 节点重跑→真实引擎完成"produced 2 scaffolds"）；console/page errors 零；移动端 375×812（main 319/无溢出/footer 780 贴底）；VLM 复核双截图全 PASS（docs/images/30-k-canvas-cancelled-badge.png + 31-k-runs-sheet-cancelled.png——首次截图 reload 后工作流重置为默认的坑已识别并重拍）。
+- **基线纪律**：e2e 后字段级恢复——删除测试工作流 ×2（含崩溃轮残留）+ outputs 清理 + **16 条测试期 SkillInvocation 审计行清零**（每 comp 运行都落审计表，基线要求 0）；终态核对：workflows 2 / My First 14/12 / Antibody 5/3 / toolJobs 16 / skillInvocations 0 / screenings 3+86 / chatMessages 12 / runs 汇总全 0；schema 仅注释变更（String 列零迁移）——无重冻需求，基线数据未动。
+- **收尾**：README（Runs 段重写真实停止语义+async 重试+键盘；API 表两行更新）；ROADMAP（L 线成果段 + 测试结论 #43-#47 五条新结论 + I 线补 execution token 第 6 项 + 验收标准新增三条：停止类验收证伪"只翻行"五断言/模块级注册表改动后必须重启再测/清陈旧防御需新鲜度配套）；lint 零告警 + tsc 零新增（仅 examples/skills 4 条预存）+ dev.log 零运行时错误；git 提交推送。
+
+Stage Summary:
+- Task 22-merge 决议的三块移植全部落地为 L 线五项（L1 注册表/L2 终态/L3 四步停止/L4 异步/L5 UI 三态），"JS 无法取消"的行级 stop 升级为真实进程击杀 + cancelled 一等终态；QA 32/32 + 浏览器级 e2e（真实键盘/真实击杀/真实引擎重试）全过。QA 过程产出的两个新工程结论（#43 热重载注册表实例错位、#44 清陈旧 vs 异步领占竞态→pre-spawn 守卫）已固化进验收标准。已知限制 #47（迟到泳道覆盖重试行，LLM 泳道不可杀）记录为 I 线 execution token 候选项。后续开发建议：I 线（RMSD 轴打磨 + execution token + 遗留收口）为 P1 候选，K 线（skill 运营化）为 P2。

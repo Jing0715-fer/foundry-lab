@@ -17,6 +17,7 @@ const VALID_NODE_STATUSES = [
   "running",
   "completed",
   "failed",
+  "cancelled",
 ] as const;
 
 type PatchBody = {

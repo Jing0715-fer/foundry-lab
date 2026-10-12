@@ -4,7 +4,8 @@
 > 执行引擎）、10-09（C+E 线数据可信度与执行健壮性）、10-10（D+F 线科研深度与可读性）、
 > 10-11（F 线 P1 打磨与运维）、10-12（G 线验证通道与生产化）、10-13（H 线科研深度与可及性
 > 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）、10-14（J 线智能体操作
-> skill 标准化）十轮测试结论滚动更新，随每个阶段交付后重写。
+> skill 标准化）、10-15（L 线真实中止与 cancelled 语义——S/E 参考分支三块移植 + QA/e2e
+> 全验证）十一轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -78,7 +79,40 @@
     （Registry 浏览器 + Activity 审计日志，J6-a 子代理交付）。
   - 浏览器级 e2e：金路径（真模型 ```skill bio.pdb → 真 RCSB → 卡片 bio|bio.pdb|completed）+
     web.search 首执行 + done.toolCalls 即时合并修复 + Activity 双行核对 + 移动端 + console
-    零告警；基线纪律遵守（schema 变更重冻 + e2e 后恢复 + 字段级核对）。
+    零警告；基线重冻与恢复纪律遵守（详见 Task 41 worklog）。
+- **L 线 · 真实中止与 cancelled 语义（本轮交付，S/E 参考分支三块移植）**：并行会话合并
+  （Task 22-merge）决议的三块独有改进全部落到 main 的 J 线基座上，"看得见也管得住"升级为
+  **真实停止**：
+  - **L1 进程注册表 + runKey 贯穿**（real-executor）：`ACTIVE_PROCS` Map + `killActiveProcess`
+  （SIGTERM + 2s SIGKILL 升级 + 陈旧 unregister 防误杀后继运行）；`runKey`（= 画布节点 id）
+  穿透 executeCompToolReal → native/builtin/foundry 六个 spawn 点 → runProcess 注册/注销；
+  集群泳道同步改写 `triggeredBy: node:<id>`（停止路由免日志刮削直达发现）；J 线 comp 技能
+  handler 也传 ctx.nodeId（agent 节点发 comp 技能同样可杀）。
+  - **L2 cancelled 终态**：NodeStatus/NodeExecResult 加 `cancelled`（schema 注释同步——String
+  列零迁移）；stop-registry（零依赖新模块）+ executeNodeGuarded **post-race 停止守卫**
+  （迟到结果报 cancelled 而非自然结果；fresh 执行先清陈旧标志）；runner 单节点/工作流两
+  泳道条件写守卫全部保留（迟到永不复活）；runner 异常安全网条件化（不再把 cancelled
+  复活成 failed）；SSE 流三处终态识别 + job cancelled → node cancelled 诚实映射；runs
+  路由 Recent/计数加 cancelled 泳道（queued-then-stopped 的 startedAt=null 行按
+  completedAt 匹配窗口）。
+  - **L3 stopNodeRun 四步真实停止**（node-run-control 新模块）：register stop →
+  SIGTERM 进程 → **先行翻转 cancelled**（SSE reconcile 只动 running 行，先翻即封死竞态
+  路径）→ 链接作业取消（triggeredBy 主发现 + 日志 marker 兜底，集群 scancel/
+  本地 SIGTERM + 双向徽标）；响应携带 detail 溯源行（"local engine process killed" 等）。
+  - **L4 async 运行模式**（run 路由 `?async=1`）：领占即返回（61ms 实测），执行后台
+  fire-and-forget + 崩溃安全网条件写 failed（永不楔死 running）；RunsSheet Retry 改异步
+  （spinner 只覆盖 claim 阶段）；行键盘 closest 排除清单修复（Stop/Retry 的 Enter 归
+  按钮不归行）。
+  - **L5 UI 三态呈现**：RunsSheet cancelled 行（Ban 图标 + zinc 药丸 + 划线 + "cancelled —
+  stopped by user"）+ 汇总行含取消计数；node-card cancelled 徽章/药丸/底条 + 停止结果
+  文案；minimap 状态色；inspector SSE 终态 toast 三变体；PATCH 路由状态白名单加
+  cancelled。
+  - **QA/e2e 证据**：API 冒烟 32/32（含 pre-spawn 守卫：claim 后立即 stop → 引擎永不
+  spawn；双泳道真实击杀 pgrep 归零；迟到 9s 不复活；queued 停止 → runner 声明跳过；
+  404/409 全路径）；浏览器级 e2e（真实键盘 Enter 击发 Stop 按钮 + 行不劫持 + sheet 不
+  关；cancelled 徽章/划线/汇总计数 VLM 双截图实证；改轻参数后 UI 重跑 from cancelled
+  真实引擎完成）；移动端 375 零溢出 + console 零错误；演示基线字段级恢复（含 16 条
+  测试期 SkillInvocation 审计行清理）。
 
 ## 测试结论（驱动后续优先级）
 
@@ -97,8 +131,13 @@
 | 40 | **barrel 副作用注册模式**：直接 import 子模块（skills/registry）绕过 barrel 的 `import "./catalog"` 副作用 → 注册表空、零报错静默失效。教训：**有副作用注册的中心化模块，消费方一律从 barrel 导入**；客户端安全子集（prompt/types）例外直连防服务端模块进 client bundle | 架构 | 已修复（e2e 实证 18/18） |
 | 41 | **Prisma schema 变更后运行中 dev server 持旧 client**：新模型 db.x undefined → 500。既有纪律 #20 的强化实例：**db push 后必须 daemon 重启**（不依赖报错发现） | 运维 | 已遵守 |
 | 42 | **流式 SSE done 事件字段丢失**：chat-stream 泳道执行的 toolCalls 只在持久化后 refetch 可见（done 处理器只 merge content/messageId）——新执行的操作卡片对用户不可见。修复：done 全字段合并 | UX | 已修复（e2e 实证卡片即时出现） |
+| 43 | **模块级注册表跨热重载不自洽**：ACTIVE_PROCS 是模块内 Map——dev server 热重载产生新模块实例后，spawn 方与 kill 方可能各持一份 Map → kill 静默失败 + 孤儿引擎。教训：**含模块级单例注册表的代码改动后，QA/e2e 必须重启 dev server 再跑**（本轮孤儿引擎事故根因）；生产单实例无此问题 | 运维/QA | 已遵守（重启后 32/32） |
+| 44 | **“清陈旧”防御与 async claim 的竞态**：executeNodeGuarded 开头 clearStop（清上一轮陈旧停止标志）会把 "claim 后立即 stop" 的新鲜标志一并清掉 → 引擎照常 spawn。修复 = runProcess **pre-spawn 守卫**（runKey 已停止则不 spawn）+ 停止先行翻行 + 迟到结果条件写丢弃三层兑底。教训：**新鲜度类防御需要 epoch/token，否则与异步领占竞态** | 执行语义 | 已修复（A2 用例实证） |
+| 45 | **真实停止三件套模式**：①进程真实击杀（SIGTERM+SIGKILL 升级）；②**行先翻转**（reconciler/轮询只动 running 行——先翻即封死错终态竞态路径）；③条件写守卫（迟到结果永不复活）。停止顺序：register→kill→翻行→取消链接作业（作业发现走 DB triggeredBy 主路径，免日志刮） | 架构 | 已交付（L1-L3） |
+| 46 | **throwaway 脚本的签名对齐**：jfetch 自定义（path, init, timeoutMs?）第 3 参数被两处调用忽略 → 默认 60s abort 误判为“服务端挂起”。教训：一次性脚本也要对齐函数签名，超时语义放 init 对象 | QA 工程 | 已修复 |
+| 47 | **迟到执行 vs 重试覆盖竞态（已知限制）**：stop→retry 后，旧泳道（不可杀的 LLM 长 lane）迟到 persist `where status running` 可能覆盖新运行刚领占的行。本轮未解（需 execution token/epoch 方案）；本地引擎泳道因真实击杀（秒级收敛）实际不可达 | 执行语义 | M 线候选 |
 
-## I 线 — RMSD 轴打磨与遗留收口（P1，下一阶段建议）
+## I 线 — RMSD 轴打磨与遗留收口（P1，下一阶段候选）
 
 1. **RMSD 轴打磨**（#38/#39）：参考候选选择器预检磁盘存在（标记/过滤悬空 PDB）；
    rescan 后新候选无 rmsd 键的 UI 提示（"N 个新候选尚无 RMSD，请重算"）；参考排除出域
@@ -110,6 +149,9 @@
 4. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
    建议独立分支推进。
 5. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
+6. **execution token（#47）**：节点执行领占时写入 epoch/token，persist 守卫从
+   `where status running` 升级为 `where status running AND runToken = epoch`——彻底封死
+   迟到泳道覆盖新运行的窗口（当前靠真实击杀收敛实际风险）。
 
 ## K 线 — Skill 层运营化（P2，J 线后续建议）
 
@@ -163,3 +205,12 @@
 - **新增智能体操作路径必须走 runSkill 管道**（J 线后）：声明 SkillDefinition（含参数 schema
   + requires）→ 注册进 catalog → 不得手写旁路执行器；专门执行器（集群/队列）必须至少
   recordSkillInvocation 落审计表。
+- **停止类能力的验收必须证伪"只翻行"**（L 线后）：①本地进程停止断言 pgrep 归零（真实
+  SIGTERM 路径）；②迟到结果不复活（停止后 ≥ 9s 行仍 cancelled）；③行先翻转再慢速远程
+  取消（reconciler 只动 running 行的竞态封死顺序，#45）；④queued 停止后 runner 声明跳过
+  （claim 守卫）；⑤异步模式断言响应 <3s 且行进入 active 泳道。
+- **含模块级单例注册表（ACTIVE_PROCS/STOP_REQUESTED/连接表）的代码改动后，QA/e2e 前
+  必须重启 dev server**（#43：热重载产生多模块实例 → spawn 方与 kill 方各持一份 Map →
+  kill 静默失败 + 孤儿引擎；重启后 32/32 复跑实证）。
+- **"清陈旧"类防御必须考虑新鲜度**（#44）：先清后用模式（clearStop→执行→post-race 查）
+  与异步领占竞态——新鲜停止会被当陈旧清掉；配套 pre-spawn 守卫或 epoch/token。

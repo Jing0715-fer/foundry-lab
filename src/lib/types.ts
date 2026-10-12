@@ -147,7 +147,7 @@ export type NodeType =
   | "rf3" | "esmfold" | "colabfold";
 
 export type NodeStatus =
-  | "idle" | "pending" | "running" | "completed" | "failed";
+  | "idle" | "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type PortKind =
   | "agent" | "text" | "context" | "summary"

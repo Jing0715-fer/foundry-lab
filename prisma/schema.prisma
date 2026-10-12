@@ -204,7 +204,7 @@ model Node {
   name        String
   x           Float    @default(0)
   y           Float    @default(0)
-  status      String   @default("idle") // idle|pending|running|completed|failed
+  status      String   @default("idle") // idle|pending|running|completed|failed|cancelled
   progress    Int      @default(0)
   params      String   @default("{}") // JSON
   result      String?

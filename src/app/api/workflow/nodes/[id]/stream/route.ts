@@ -124,7 +124,11 @@ export async function GET(
       });
 
       // Short-circuit if the node is already terminal on connection.
-      if (initial.status === "completed" || initial.status === "failed") {
+      if (
+        initial.status === "completed" ||
+        initial.status === "failed" ||
+        initial.status === "cancelled"
+      ) {
         send("done", { status: initial.status });
         close();
         return;
@@ -152,8 +156,11 @@ export async function GET(
           return null; // still running remotely — nothing to settle yet
         }
 
-        // Map the ToolJob outcome onto node semantics.
-        const nodeStatus = job.status === "completed" ? "completed" : "failed";
+        // Map the ToolJob outcome onto node semantics. A cancelled job
+        // (node-stop lane or its own panel) maps to a cancelled NODE —
+        // honest, and distinct from an engine failure.
+        const nodeStatus =
+          job.status === "completed" ? "completed" : job.status === "cancelled" ? "cancelled" : "failed";
         let files: string[] = [];
         try {
           const parsed = job.outputFiles ? JSON.parse(job.outputFiles) : [];
@@ -240,7 +247,11 @@ export async function GET(
             result,
             rowUpdatedAt: (settled ? settled.writtenAt : current.updatedAt).toISOString(),
           });
-          if (status === "completed" || status === "failed") {
+          if (
+            status === "completed" ||
+            status === "failed" ||
+            status === "cancelled"
+          ) {
             send("done", { status });
             close();
             return;

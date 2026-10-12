@@ -136,14 +136,18 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   冲突自动偏移到最近空位——两次 sweep 同源、连续快速新建都不会叠卡。
 - **全局运行队列（Runs）**：顶栏 Runs 按钮（运行中数量徽标）打开跨工作流
   的实时队列：运行中/排队（3 秒轮询 + 进度条）、近 48h 失败节点一键
-  **重试**（即时反馈 + 单节点重跑并级联下游）、最近完成（时长统计）；
-  行点击直接跳到对应工作流并选中该节点。运行中的节点可以**中止**
-  （Stop / Stop all：节点立即标记为 failed；在途执行的结果被丢弃，
-  下游随之按失败语义解锁——已派发到集群的作业会一并取消，被取消的
-  ToolJob 行在集群/AlphaFold 面板显示 `cancelled` + `via node stop`
-  溯源徽标）；本地执行的每个节点受 15 分钟**看门狗**保护（集群长任务
-  豁免——集群通道自带 30/120 分钟诚实轮询天花板），引擎挂死不再楔死
-  并行池。
+  **重试**（`?async=1` 异步模式：领占即返回，按钮 spinner 只覆盖 claim
+  阶段，执行后台继续由轮询接手呈现）、最近完成（时长统计）+ **已取消**
+  （划线行 + Ban 图标，与失败/完成视觉三分）；行点击直接跳到对应工作流
+  并选中该节点（行内 Stop/Retry 按钮的键盘 Enter 激活不会被行劫持）。
+  运行中的节点可以**真实中止**（Stop / Stop all）：本地引擎进程被
+  SIGTERM + 2s 后 SIGKILL 升级击杀（spawn 前落地的停止则由 pre-spawn
+  守卫直接不启动引擎）；行立即翻转为 **`cancelled` 终态**（非 failed）
+  + 链接的集群/本地 ToolJob 一并取消（`via node stop` 溯源徽标）；
+  在途执行的迟到结果被条件写守卫丢弃，永不复活用户的停止裁决；
+  取消的节点可像失败节点一样重跑（领占式 re-claim）。本地执行的每个
+  节点受 15 分钟**看门狗**保护（集群长任务豁免——集群通道自带
+  30/120 分钟诚实轮询天花板），引擎挂死不再楔死并行池。
 
 ### 🖼️ 3D 结构查看器
 
@@ -358,8 +362,8 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | GET | `/api/tools/jobs/:id` | 任务状态 / 日志 / 文件 |
 | GET/POST | `/api/workflow` | 工作流读取 / 全量运行 |
 | POST | `/api/workflow/nodes` · `/edges` | 增删节点 / 连线 |
-| POST | `/api/workflow/nodes/:id/run` | 单节点运行 |
-| POST | `/api/workflow/nodes/:id/stop` | 中止运行/排队中的节点（标记 failed + 解锁下游） |
+| POST | `/api/workflow/nodes/:id/run` | 单节点运行（`?async=1`：领占即返回，执行后台继续） |
+| POST | `/api/workflow/nodes/:id/stop` | 真实中止：击杀本地引擎进程 + 取消链接作业 + 行翻转为 `cancelled` |
 | POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
 | GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
 | POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
