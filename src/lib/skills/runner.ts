@@ -17,6 +17,7 @@
 
 import { db } from "@/lib/db";
 import { getSkill } from "./registry";
+import { checkSkillRateLimit } from "./rate-limit";
 import type {
   SkillContext,
   SkillDefinition,
@@ -149,6 +150,29 @@ export async function runSkill(
             "configuration, so the skill was refused at execution time. Tell the " +
             "user to enable it in the agent's settings if they want this capability — " +
             "do not pretend the tool ran.",
+          durationMs: Date.now() - t0,
+        },
+        ctx,
+        params,
+      );
+    }
+
+    // 3.5. Rate limit (K3) — per-agent sliding window, checked AND consumed
+    // only when the invocation is about to execute. Anonymous lanes (no
+    // ctx.agent) are unlimited. The refusal itself is audited as "limited".
+    const rl = checkSkillRateLimit(ctx.agent.id, def);
+    if (!rl.allowed) {
+      const retryIn = Math.ceil((rl.retryAfterMs ?? 0) / 1000);
+      return await finalize(
+        {
+          skillId: def.id,
+          status: "limited",
+          summary: `Rate limited — max ${rl.max} per ${Math.round(rl.windowMs / 1000)}s per agent`,
+          error:
+            `Rate limit reached for skill "${def.id}" — at most ${rl.max} ` +
+            `invocations per ${Math.round(rl.windowMs / 1000)}s per agent. ` +
+            `Try again in ~${retryIn}s. Do not retry immediately and do not ` +
+            "pretend the tool ran — answer from what you already have.",
           durationMs: Date.now() - t0,
         },
         ctx,
@@ -296,5 +320,17 @@ export function skillFeedback(res: SkillRunResult): string {
       return `[Skill ${res.skillId} rejected — invalid request]\n${res.error}\n\nEmit a corrected skill call if you still need it.`;
     case "skipped":
       return `[Skill ${res.skillId} skipped]\n${res.error}`;
+    case "limited":
+      return `[Skill ${res.skillId} rate limited]\n${res.error}`;
+    case "queued":
+      return (
+        `[Skill ${res.skillId} queued]\n${res.summary}\n\n` +
+        "The run executes in the background and is NOT finished yet. Tell the " +
+        "user the job has been started, where to watch it (Tools panel / Skills " +
+        "Activity tab), and that results will appear there when it completes. " +
+        "Do not fabricate results — answer from your own knowledge in the meantime."
+      );
+    case "cancelled":
+      return `[Skill ${res.skillId} cancelled]\n${res.error ?? res.summary}`;
   }
 }

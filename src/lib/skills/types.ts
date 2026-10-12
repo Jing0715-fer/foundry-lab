@@ -27,8 +27,28 @@ export type SkillSource =
   | "meeting"
   | "research";
 
-/** Terminal statuses of a skill invocation (persisted on SkillInvocation). */
-export type SkillStatus = "ok" | "error" | "denied" | "invalid" | "skipped";
+/** Terminal (or K5 transient-queued) statuses of a skill invocation
+ *  (persisted on SkillInvocation — String column, no migration needed).
+ *
+ *  J lane base: ok | error | denied | invalid | skipped.
+ *  K lane additions:
+ *    limited  — K3 rate limit refused the invocation BEFORE execution
+ *               (per-agent sliding window; the refusal itself is audited).
+ *    queued   — K5 slow-skill lane accepted the call into the ToolJob queue;
+ *               the row transitions to ok | error | cancelled when the
+ *               background engine run lands (conditional write — a stopped
+ *               job never overwrites a fresh verdict).
+ *    cancelled — K5 stop path: the linked ToolJob was stopped before the
+ *               engine finished, so the invocation honestly never completed. */
+export type SkillStatus =
+  | "ok"
+  | "error"
+  | "denied"
+  | "invalid"
+  | "skipped"
+  | "limited"
+  | "queued"
+  | "cancelled";
 
 /**
  * Knowledge flags an agent must have set for the skill to run. Enforced by
@@ -65,6 +85,11 @@ export interface SkillCatalogEntry {
   requires: SkillRequirement[];
   /** fast (<~10s) | slow (minutes — engines). Streaming lane policy key. */
   latency: "fast" | "slow";
+  /** K3: per-skill rate-limit override. Absent → the FAMILY default
+   *  (see rate-limit.ts) applies. Only enforced per-agent (anonymous
+   *  REST/user-initiated lanes are unlimited, same trust level as
+   *  POST /api/tools/run). */
+  rateLimit?: { max: number; windowMs: number };
   /** Prompt-facing usage example rendered into system prompts. */
   example?: Record<string, unknown>;
 }

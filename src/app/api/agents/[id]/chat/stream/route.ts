@@ -3,7 +3,7 @@ import { db } from "@/lib/db";
 import { toAgentDTO, buildAgentSystemPrompt, skillCallToToolCall } from "@/lib/run-utils";
 import { chatStream, type ChatMessage } from "@/lib/llm";
 // Barrel import — self-registers the skill catalog (side effect).
-import { getSkill, extractSkillCalls, runSkill, skipSkill, skillFeedback } from "@/lib/skills";
+import { getSkill, extractSkillCalls, runSkill, runSkillQueued, skillFeedback } from "@/lib/skills";
 import type { ToolCall } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -29,13 +29,16 @@ export const runtime = "nodejs";
  * the OLDEST 50, so once a chat exceeded 50 turns the agent answered with
  * ancient context.)
  *
- * Skill-calling round (pragmatic streaming version, J lane): after the first
- * streamed reply completes, parse it with extractSkillCalls (```skill + legacy
- * ```tool / ```bio fences). Per call:
+ * Skill-calling round (pragmatic streaming version, J + K lane): after the
+ * first streamed reply completes, parse it with extractSkillCalls (```skill +
+ * legacy ```tool / ```bio fences). Per call:
  *   - FAST skills (bio / web) execute via runSkill — full validate → gate →
- *     execute → audit, exactly like the non-stream lane;
- *   - SLOW skills (comp engines, minutes) are declined by lane policy and
- *     recorded as "skipped" SkillInvocations — visible, not invisible;
+ *     rate-limit → execute → audit, exactly like the non-stream lane;
+ *   - SLOW skills (comp engines, minutes) are ENQUEUED as background
+ *     ToolJobs via runSkillQueued (K5): the turn returns a "queued"
+ *     envelope immediately, the engine runs fire-and-forget (stoppable via
+ *     the Tools panel), and the SkillInvocation row lands its terminal
+ *     status when the job lands;
  *   - unknown ids / invalid params return honest "invalid" envelopes;
  *   - ONE follow-up streamed completion runs with the skill feedback appended
  *     to the conversation, streaming its deltas into this same SSE response
@@ -148,10 +151,13 @@ export async function POST(
       }
 
       // ── Skill-calling round (pragmatic streaming version) ────────────────
-      // Parse the streamed reply with the unified fence parser; execute the
-      // FAST skills and run ONE follow-up streamed completion folding the
-      // feedback in. Everything streamed into this SSE response is what gets
-      // persisted (content === what the user saw).
+      // Parse the streamed reply with the unified fence parser and execute
+      // the FAST skills inline; slow comp skills are ENQUEUED as background
+      // ToolJobs (K5 — previously this lane declined them with "run it on
+      // the canvas instead"; now the model's request actually starts the
+      // engine, the stream stays responsive, and the audit row lands its
+      // terminal status when the job lands). Everything streamed into this
+      // SSE response is what gets persisted (content === what the user saw).
       const toolCalls: ToolCall[] = [];
       let content = fullText;
       try {
@@ -160,23 +166,22 @@ export async function POST(
           const followUps: string[] = [];
           for (const call of calls) {
             const def = getSkill(call.skillId);
-            // Fast skills (bio/web) run inline through the full pipeline;
-            // slow skills (comp engines) are declined by lane policy and
-            // AUDITED as "skipped"; unknown ids flow through runSkill and
-            // get honest "invalid" envelopes (hallucinations become visible).
+            // Fast skills (bio/web) run inline through the full pipeline
+            // (validate → gate → rate-limit → execute → audit); slow skills
+            // (comp engines) queue as background ToolJobs with the same
+            // validate → gate → rate-limit prelude; unknown ids flow through
+            // runSkill and get honest "invalid" envelopes (hallucinations
+            // become visible).
             const res =
-              !def || def.latency === "fast"
-                ? await runSkill(call.skillId, call.params, {
+              def && def.latency === "slow"
+                ? await runSkillQueued(call.skillId, call.params, {
                     source: "chat-stream",
                     agent: agentDTO,
                   })
-                : await skipSkill(
-                    call.skillId,
-                    "Slow engine skills are not executed in the streaming chat " +
-                      "lane — tell the user to run them via the workflow canvas " +
-                      "or the Tools panel.",
-                    { source: "chat-stream", agent: agentDTO },
-                  );
+                : await runSkill(call.skillId, call.params, {
+                    source: "chat-stream",
+                    agent: agentDTO,
+                  });
             toolCalls.push(skillCallToToolCall(call, res));
             followUps.push(skillFeedback(res));
           }

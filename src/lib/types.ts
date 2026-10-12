@@ -67,7 +67,8 @@ export interface ToolCall {
   skillId?: string;
   params: Record<string, unknown>;
   result?: string;
-  status?: "pending" | "running" | "completed" | "failed";
+  status?: "pending" | "running" | "completed" | "failed" | "queued";
+  /** K5: the background ToolJob row when a slow comp skill was queued. */
   jobId?: string;
 }
 

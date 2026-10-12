@@ -98,6 +98,11 @@ interface AppState {
    * screening" chip on a promote node). Consumed by the panel on mount /
    * list load, then cleared. */
   pendingScreeningId: string | null;
+  /** K2 gating-feedback deep-link: an agent another panel asked the Agents
+   * panel to open + edit (e.g. the Skills Activity tab's "Fix agent access"
+   * button on a denied invocation — the knowledge switches live in the
+   * editor dialog). Consumed by the panel on list load, then cleared. */
+  pendingAgentEdit: { id: string; title: string | null } | null;
 
   // actions: workflow
   setWorkflow: (w: WorkflowDTO | null) => void;
@@ -151,6 +156,8 @@ interface AppState {
   toggleSweepCollapse: (groupId: string) => void;
   /** Request the Screening panel to open + select this screening (C2). */
   setPendingScreeningId: (id: string | null) => void;
+  /** Request the Agents panel to open + edit this agent (K2). */
+  setPendingAgentEdit: (a: { id: string; title: string | null } | null) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
   dismissToast: (id: string) => void;
 }
@@ -183,6 +190,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   runsSheetOpen: false,
   collapsedSweepGroups: [],
   pendingScreeningId: null,
+  pendingAgentEdit: null,
 
   setWorkflow: (w) => {
     const switching = !!w && !!get().workflow && w.id !== get().workflow!.id;
@@ -465,6 +473,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         : [...s.collapsedSweepGroups, groupId],
     })),
   setPendingScreeningId: (id) => set({ pendingScreeningId: id }),
+  setPendingAgentEdit: (a) => set({ pendingAgentEdit: a }),
 
   toast: (t) => {
     const id = Math.random().toString(36).slice(2, 9);

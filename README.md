@@ -62,12 +62,19 @@
 - **工具调用循环**（最多 5 轮，并行 bio + comp 工具调用）：智能体聊天中可自主调用
   BLAST / PDB / PubMed / UniProt 等真实 API。
 - **技能标准化层（Skill Layer）**：所有智能体操作统一为技能 —— 单一注册表（18 技能
-  4 族：comp / bio / web / canvas）、单一执行管道（解析→校验→门控→执行→审计）、
-  单一审计表（SkillInvocation，含 source/agent/时长/五态状态）。能力门控
+  4 族：comp / bio / web / canvas）、单一执行管道（解析→校验→门控→**限流**→执行→
+  审计）、单一审计表（SkillInvocation，含 source/agent/时长/八态状态）。能力门控
   （bioToolsEnabled / webSearchEnabled）在**执行层强制**；提示词清单从注册表实时渲染，
   与执行门控永不漂移；旧 ```tool / ```bio 围栏向后兼容归一。
-- **Web 搜索技能**：智能体可真实联网检索（z-ai-web-dev-sdk），当前信息/文献/新闻
-  直接折入回复。
+- **技能级速率配额（K3）**：per-agent 滑动窗口限流（comp 6 次/15 分钟、bio 12 次/分钟、
+  web 6 次/分钟、canvas 30 次/分钟；技能定义可覆盖），拒绝落审计表为 `limited`
+  态并携带重试提示；匿名 REST/用户发起的泳道不限流。
+- **慢技能异步入队（K5）**：聊天/会议/研究/任务泳道中的 comp 引擎技能不再阻塞泳道
+  分钟级执行，也不再被流式泳道拒发（旧 “skipped”）—— 现在入 ToolJob 队列后台真引擎
+  执行（runKey=jobId，Tools 面板可真实停止），返回 “queued” 信封：聊天卡即刻可见
+  “已后台启动”，审计行在引擎落地时转移为 ok / error / cancelled（条件写守卫）；
+  服务器重启的孤儿行由启动清扫诚实翻转。工作流 agent 节点保持同步执行（节点即
+  异步底座）。
 - **持久化运行时参数**：微调对话框可配置 temperature / max-tokens / top-p /
   附加系统指令 / 流式输出，作用于该智能体的每一次 LLM 调用。
 - **团队会议**：多智能体多轮辩论，产出结构化纪要。

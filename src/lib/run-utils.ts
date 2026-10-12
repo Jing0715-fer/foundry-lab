@@ -24,6 +24,7 @@ import {
   renderSkillManifest,
   extractSkillCalls,
   runSkill,
+  runSkillQueued,
   skillFeedback,
   type SkillRunResult,
   type SkillSource,
@@ -54,6 +55,19 @@ export interface AgentRunOptions {
    * The reflected text becomes the returned `text`. Default `false` (backward-compat).
    */
   reflect?: boolean;
+  /**
+   * K5 slow-skill policy for this turn (default "sync"):
+   *   "sync"  — slow comp skills execute inline (the legacy behavior; the
+   *             workflow agent-node lane keeps it: the NODE itself is the
+   *             async substrate + real-stop story).
+   *   "queue" — slow comp skills are enqueued as background ToolJobs via
+   *             runSkillQueued: the turn returns a "queued" envelope
+   *             immediately, the engine runs fire-and-forget (runKey=jobId,
+   *             stoppable), and the audit row lands its terminal status
+   *             when the job lands. Chat / meeting / research / task lanes
+   *             pass "queue" so multi-minute engines never block the lane.
+   */
+  slowSkillPolicy?: "sync" | "queue";
   /** Audit attribution for skill invocations from this turn (default "chat").
    *  Meetings pass "meeting", research "research", tasks "task", the workflow
    *  engine "workflow" (+ node/workflow ids via skillCtx). */
@@ -226,13 +240,29 @@ export async function runAgentTurn(
     // Unknown ids, invalid params, and permission denials return honest
     // envelopes to the model instead of being silently dropped (or, worse,
     // executing despite the agent's knowledge flags being off).
+    //
+    // K5: with slowSkillPolicy "queue" (chat/meeting/research/task lanes)
+    // slow comp skills are enqueued as background ToolJobs instead of
+    // blocking this turn for minutes; "sync" (the default — workflow agent
+    // nodes) keeps the legacy inline execution (the node is the async
+    // substrate there and carries the real-stop story via runKey=nodeId).
     for (const call of calls) {
-      const res = await runSkill(call.skillId, call.params, {
-        source: opts.source ?? "chat",
-        agent,
-        workflowId: opts.skillCtx?.workflowId,
-        nodeId: opts.skillCtx?.nodeId,
-      });
+      const def = getSkill(call.skillId);
+      const slowQueued =
+        opts.slowSkillPolicy === "queue" && !!def && def.latency === "slow";
+      const res = slowQueued
+        ? await runSkillQueued(call.skillId, call.params, {
+            source: opts.source ?? "chat",
+            agent,
+            workflowId: opts.skillCtx?.workflowId,
+            nodeId: opts.skillCtx?.nodeId,
+          })
+        : await runSkill(call.skillId, call.params, {
+            source: opts.source ?? "chat",
+            agent,
+            workflowId: opts.skillCtx?.workflowId,
+            nodeId: opts.skillCtx?.nodeId,
+          });
       toolCalls.push(skillCallToToolCall(call, res));
       convo.push({ role: "user", content: skillFeedback(res) });
     }
@@ -263,12 +293,29 @@ export async function runAgentTurn(
 
 /** Map a skill invocation result onto the legacy ToolCall shape the chat UI
  *  renders (kind/tool stay compatible; skillId carries the canonical id).
- *  Shared by the non-stream and stream chat lanes. */
+ *  Shared by the non-stream and stream chat lanes.
+ *  K5: a "queued" envelope maps to a queued card carrying the jobId — the
+ *  chat snapshot honestly says "started in the background" (the terminal
+ *  status lands on the same audit row in the Activity tab when the job
+ *  completes; the persisted card is a point-in-time snapshot, like every
+ *  chat message). */
 export function skillCallToToolCall(call: SkillCall, res: SkillRunResult): ToolCall {
   const def = getSkill(call.skillId);
   const kind: ToolCall["kind"] =
     def?.family === "bio" ? "bio" : def?.family === "web" ? "web" : "comp";
   const tool = def ? def.id.split(".")[1] : call.rawId;
+  if (res.status === "queued") {
+    const data = res.data as { jobId?: string } | undefined;
+    return {
+      kind,
+      tool,
+      skillId: res.skillId,
+      params: call.params,
+      result: res.summary,
+      status: "queued",
+      ...(data?.jobId ? { jobId: data.jobId } : {}),
+    };
+  }
   return {
     kind,
     tool,
@@ -312,6 +359,9 @@ export async function runTeamMeeting(
         temperature,
         maxRounds: 1,
         source: "meeting",
+        // K5: an engine fence mid-meeting must not freeze the round for
+        // minutes — queue it and keep the discussion moving.
+        slowSkillPolicy: "queue",
       });
       messages.push({
         agentName: agent.title,
@@ -373,6 +423,7 @@ export async function runIndividualMeeting(
       temperature,
       maxRounds: 1,
       source: "meeting",
+      slowSkillPolicy: "queue",
     });
     messages.push({ agentName: agent.title, agentColor: agent.color, message: text, roundIndex: r });
 
@@ -430,7 +481,7 @@ export async function runResearch(
       [
         { role: "user", content: `[Planning phase] Propose a research plan for: ${topic}. ${description ?? ""} (≤200 words)` },
       ],
-      { temperature, maxRounds: 1, source: "research" },
+      { temperature, maxRounds: 1, source: "research", slowSkillPolicy: "queue" },
     );
     messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: 0, phase: "planning" });
   }
@@ -449,6 +500,7 @@ export async function runResearch(
         temperature,
         maxRounds: 1,
         source: "research",
+        slowSkillPolicy: "queue",
       });
       messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: r, phase: "researching" });
     }

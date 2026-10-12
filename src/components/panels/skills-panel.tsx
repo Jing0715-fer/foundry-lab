@@ -1,26 +1,36 @@
 "use client";
 
-// Skills observability panel — registry browser + invocation audit log.
+// Skills observability panel — registry browser + invocation audit log +
+// aggregate insights (K lane).
 //
-// Two tabs over the J-lane skill layer:
+// Three tabs over the skill layer:
 // - Registry: the /api/skills catalog grouped by family (comp/bio/web/canvas)
 //   with expandable param docs and a client-side search filter.
 // - Activity: the /api/skills/invocations audit log — every agent operation
 //   in the system (chat tool calls, workflow nodes, PI canvas edits, REST
-//   tool runs) flows through runSkill() and lands here.
+//   tool runs) flows through runSkill() and lands here. Denied rows carry a
+//   "Fix agent access" deep-link (K2) that opens the agent editor — the
+//   knowledge switches that caused the denial live there.
+// - Insights (K1): the /api/skills/insights aggregate view — success rates,
+//   P50/P95 latency, denied/invalid/limited trends per skill / agent / lane
+//   over a selectable window.
 
 import * as React from "react";
 import {
   Activity,
   AlertCircle,
+  BarChart3,
   BookOpen,
   Braces,
   ChevronDown,
   ChevronRight,
   Clock,
+  Gauge,
+  KeyRound,
   Loader2,
   RefreshCw,
   Search,
+  Timer,
   Zap,
 } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,9 +39,11 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
+import { useAppStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 
-// --- Wire types (mirror the /api/skills + /api/skills/invocations DTOs) ------
+// --- Wire types (mirror the /api/skills + /api/skills/invocations +
+//     /api/skills/insights DTOs) ----------------------------------------------
 // Defined locally so no server module (src/lib/skills/* pulls Prisma) ever
 // crosses into the client bundle; the server owns the source of truth.
 
@@ -79,6 +91,65 @@ interface SkillInvocationDTO {
   createdAt: string;
 }
 
+type StatusCounts = {
+  ok: number;
+  error: number;
+  denied: number;
+  invalid: number;
+  skipped: number;
+  limited: number;
+  queued: number;
+  cancelled: number;
+};
+
+interface SkillInsight {
+  skillId: string;
+  label: string | null;
+  family: string | null;
+  count: number;
+  byStatus: StatusCounts;
+  executed: number;
+  okRate: number | null;
+  p50Ms: number | null;
+  p95Ms: number | null;
+  avgMs: number | null;
+  lastUsedAt: string | null;
+}
+
+interface AgentInsight {
+  agentId: string;
+  agentTitle: string;
+  count: number;
+  denied: number;
+  limited: number;
+  lastUsedAt: string | null;
+}
+
+interface SourceInsight {
+  source: string;
+  count: number;
+  byStatus: StatusCounts;
+}
+
+interface InsightsResponse {
+  window: string;
+  windowMs: number | null;
+  truncated: boolean;
+  generatedAt: string;
+  totals: {
+    invocations: number;
+    byStatus: StatusCounts;
+    executed: number;
+    okRate: number | null;
+    p50Ms: number | null;
+    p95Ms: number | null;
+    avgMs: number | null;
+  };
+  skills: SkillInsight[];
+  agents: AgentInsight[];
+  sources: SourceInsight[];
+}
+
 // --- Shared helpers ----------------------------------------------------------
 
 function timeAgo(iso: string): string {
@@ -99,6 +170,12 @@ function formatDuration(ms: number | null): string {
   if (ms == null) return "—";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** 0.873 → "87.3%"; null → "—" (no executed calls in window). */
+function formatRate(rate: number | null): string {
+  if (rate == null) return "—";
+  return `${(rate * 100).toFixed(rate >= 0.995 ? 0 : 1)}%`;
 }
 
 // --- Registry metadata -------------------------------------------------------
@@ -163,6 +240,42 @@ const INV_STATUS_META: Record<string, { label: string; pill: string }> = {
     label: "skipped",
     pill: "border border-dashed border-slate-400/70 bg-transparent text-slate-600 dark:text-slate-400",
   },
+  // K lane additions.
+  limited: {
+    label: "limited",
+    pill: "bg-orange-500/10 text-orange-700 dark:text-orange-400",
+  },
+  queued: {
+    label: "queued",
+    pill: "bg-teal-500/10 text-teal-700 dark:text-teal-400",
+  },
+  cancelled: {
+    label: "cancelled",
+    pill: "border border-dashed border-zinc-400/70 bg-zinc-500/10 text-zinc-600 dark:text-zinc-400",
+  },
+};
+
+/** Statuses worth showing as a segment in the insights distribution bar. */
+const STATUS_BAR_ORDER: (keyof StatusCounts)[] = [
+  "ok",
+  "error",
+  "denied",
+  "invalid",
+  "limited",
+  "skipped",
+  "queued",
+  "cancelled",
+];
+
+const STATUS_BAR_COLORS: Record<keyof StatusCounts, string> = {
+  ok: "bg-emerald-500/70",
+  error: "bg-rose-500/70",
+  denied: "bg-amber-500/70",
+  invalid: "bg-slate-400/70",
+  limited: "bg-orange-500/70",
+  skipped: "bg-slate-300 dark:bg-slate-600",
+  queued: "bg-teal-500/70",
+  cancelled: "bg-zinc-400/70",
 };
 
 function Pill({ label, className }: { label: string; className?: string }) {
@@ -189,7 +302,8 @@ export function SkillsPanel() {
         <h2 className="text-2xl font-semibold tracking-tight">Skills</h2>
         <p className="text-sm text-muted-foreground">
           Every agent operation runs through one skill registry — browse the
-          catalog and inspect the invocation audit trail.
+          catalog, inspect the invocation audit trail, and read the aggregate
+          health of the layer.
         </p>
       </div>
 
@@ -203,6 +317,10 @@ export function SkillsPanel() {
             <Activity className="size-3.5" />
             Activity
           </TabsTrigger>
+          <TabsTrigger value="insights" className="gap-1.5">
+            <BarChart3 className="size-3.5" />
+            Insights
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="registry" className="space-y-4">
@@ -210,6 +328,9 @@ export function SkillsPanel() {
         </TabsContent>
         <TabsContent value="activity" className="space-y-4">
           <ActivityTab />
+        </TabsContent>
+        <TabsContent value="insights" className="space-y-4">
+          <InsightsTab />
         </TabsContent>
       </Tabs>
     </div>
@@ -614,6 +735,9 @@ function InvocationCard({
   const status = INV_STATUS_META[inv.status] ?? INV_STATUS_META["invalid"];
   const summary = inv.error ?? inv.resultSummary;
   const paramKeys = Object.keys(inv.params);
+  // K2: a denied row means an agent ASKED for a capability its knowledge
+  // config refuses — the switches that fix it live in the agent editor.
+  const showFixAccess = inv.status === "denied";
 
   return (
     <Card className="overflow-hidden">
@@ -662,6 +786,13 @@ function InvocationCard({
           </button>
         )}
 
+        {showFixAccess && (
+          <FixAgentAccessButton
+            agentId={inv.agentId}
+            agentTitle={inv.agentTitle}
+          />
+        )}
+
         {/* Params — collapsible JSON view (omitted when empty). */}
         {paramKeys.length > 0 && (
           <div className="rounded-md border">
@@ -688,5 +819,455 @@ function InvocationCard({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** K2 — deep-link into the Agents panel editor (the knowledge switches
+ *  that caused the denial live there). Store-level pending state, the same
+ *  provenance pattern the Screening deep-link uses. */
+function FixAgentAccessButton({
+  agentId,
+  agentTitle,
+}: {
+  agentId: string | null;
+  agentTitle: string | null;
+}) {
+  const setPendingAgentEdit = useAppStore((s) => s.setPendingAgentEdit);
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const toast = useAppStore((s) => s.toast);
+
+  if (!agentId) {
+    // Denied without an agent context (a lane-level refusal) — nothing to
+    // deep-link into; show nothing rather than a dead button.
+    return null;
+  }
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className="h-7 gap-1.5 text-xs"
+      onClick={() => {
+        setPendingAgentEdit({ id: agentId, title: agentTitle });
+        setActivePanel("agents");
+        toast({
+          title: "Opening agent settings",
+          description: agentTitle
+            ? `Enable the missing knowledge switch for "${agentTitle}".`
+            : "Enable the missing knowledge switch for this agent.",
+          variant: "default",
+        });
+      }}
+    >
+      <KeyRound className="size-3.5" />
+      Fix agent access
+    </Button>
+  );
+}
+
+// ==========================================================================
+// Tab 3 — Insights (K1 aggregate analytics)
+// ==========================================================================
+
+const WINDOWS: { key: "24h" | "7d" | "30d" | "all"; label: string }[] = [
+  { key: "24h", label: "24h" },
+  { key: "7d", label: "7d" },
+  { key: "30d", label: "30d" },
+  { key: "all", label: "All" },
+];
+
+function InsightsTab() {
+  const [window, setWindow] = React.useState<"24h" | "7d" | "30d" | "all">("7d");
+  const [data, setData] = React.useState<InsightsResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [error, setError] = React.useState<string | null>(null);
+
+  const loadInsights = React.useCallback(async (w: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/skills/insights?window=${encodeURIComponent(w)}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as InsightsResponse;
+      setData(json);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadInsights(window);
+  }, [loadInsights, window]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        {/* Window selector — segmented buttons (radio group semantics).
+            Touch-target sized (h-9 = 36px) per the mobile check standard. */}
+        <div
+          role="radiogroup"
+          aria-label="Insights time window"
+          className="inline-flex rounded-md border p-0.5"
+        >
+          {WINDOWS.map((w) => (
+            <button
+              key={w.key}
+              type="button"
+              role="radio"
+              aria-checked={window === w.key}
+              onClick={() => setWindow(w.key)}
+              className={cn(
+                "h-9 min-w-11 rounded-sm px-3 text-xs font-medium transition-colors",
+                window === w.key
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:text-foreground",
+              )}
+            >
+              {w.label}
+            </button>
+          ))}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => loadInsights(window)}
+          disabled={loading}
+        >
+          {loading ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="size-3.5" />
+          )}
+          Refresh
+        </Button>
+      </div>
+
+      {loading ? (
+        <PanelSkeleton count={4} />
+      ) : error ? (
+        <EmptyState
+          icon={AlertCircle}
+          title="Insights unavailable"
+          description={`Failed to aggregate skill invocations. ${error}`}
+          action={
+            <Button variant="outline" onClick={() => loadInsights(window)}>
+              <RefreshCw className="size-4" />
+              Retry
+            </Button>
+          }
+        />
+      ) : !data || data.totals.invocations === 0 ? (
+        <EmptyState
+          icon={BarChart3}
+          title="No invocations in this window"
+          description="Run some agent operations — chat tool calls, workflow nodes, REST tool runs — and the aggregate view will build up here."
+          action={
+            <Button variant="outline" onClick={() => loadInsights(window)}>
+              <RefreshCw className="size-4" />
+              Refresh
+            </Button>
+          }
+        />
+      ) : (
+        <>
+          {/* Summary stat cards. */}
+          <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+            <StatCard
+              label="Invocations"
+              value={String(data.totals.invocations)}
+              hint={
+                data.truncated ? "latest 20,000 rows" : `${data.window} window`
+              }
+            />
+            <StatCard
+              label="OK rate"
+              value={formatRate(data.totals.okRate)}
+              hint={`${data.totals.executed} executed`}
+              tone={
+                data.totals.okRate != null && data.totals.okRate < 0.8
+                  ? "warn"
+                  : "ok"
+              }
+            />
+            <StatCard
+              label="P50 latency"
+              value={formatDuration(data.totals.p50Ms)}
+              hint="executed calls only"
+              icon={<Gauge className="size-3.5" />}
+            />
+            <StatCard
+              label="P95 latency"
+              value={formatDuration(data.totals.p95Ms)}
+              hint="executed calls only"
+              icon={<Timer className="size-3.5" />}
+            />
+          </div>
+
+          {/* Status distribution. */}
+          <Card>
+            <CardContent className="space-y-2.5 p-4">
+              <h3 className="text-sm font-semibold text-foreground">
+                Outcome distribution
+              </h3>
+              <StatusBar counts={data.totals.byStatus} total={data.totals.invocations} />
+            </CardContent>
+          </Card>
+
+          {/* Top skills table (max height + scroll per the long-list rule). */}
+          <Card>
+            <CardContent className="space-y-2.5 p-4">
+              <h3 className="text-sm font-semibold text-foreground">
+                Top skills
+                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                  by invocation count in window
+                </span>
+              </h3>
+              <div className="max-h-96 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b text-left text-[10px] uppercase tracking-wide text-muted-foreground">
+                      <th scope="col" className="py-1.5 pr-2 font-medium">Skill</th>
+                      <th scope="col" className="py-1.5 pr-2 text-right font-medium">Calls</th>
+                      <th scope="col" className="py-1.5 pr-2 text-right font-medium">OK rate</th>
+                      <th scope="col" className="py-1.5 pr-2 text-right font-medium">P50</th>
+                      <th scope="col" className="py-1.5 pr-2 text-right font-medium">P95</th>
+                      <th scope="col" className="py-1.5 text-right font-medium">Last used</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.skills.map((s) => (
+                      <tr key={s.skillId} className="border-b last:border-0">
+                        <td className="py-1.5 pr-2">
+                          <code className="font-mono text-[11px] text-foreground">
+                            {s.skillId}
+                          </code>
+                        </td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums">
+                          {s.count}
+                        </td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums">
+                          <span
+                            className={cn(
+                              s.okRate != null &&
+                                s.okRate < 0.8 &&
+                                s.executed > 0 &&
+                                "text-amber-600 dark:text-amber-400",
+                            )}
+                          >
+                            {formatRate(s.okRate)}
+                          </span>
+                        </td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums text-muted-foreground">
+                          {formatDuration(s.p50Ms)}
+                        </td>
+                        <td className="py-1.5 pr-2 text-right tabular-nums text-muted-foreground">
+                          {formatDuration(s.p95Ms)}
+                        </td>
+                        <td className="py-1.5 text-right whitespace-nowrap text-muted-foreground">
+                          {s.lastUsedAt ? timeAgo(s.lastUsedAt) : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          {/* Agents + Sources (two columns on desktop). */}
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Card>
+              <CardContent className="space-y-2.5 p-4">
+                <h3 className="text-sm font-semibold text-foreground">
+                  Most active agents
+                  <span className="ml-2 text-xs font-normal text-muted-foreground">
+                    denied / limited are the gating + quota signals (K2/K3)
+                  </span>
+                </h3>
+                {data.agents.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No agent-attributed invocations in this window — the rows
+                    here came from user-initiated lanes.
+                  </p>
+                ) : (
+                  <ul className="max-h-64 space-y-1.5 overflow-y-auto">
+                    {data.agents.map((a) => (
+                      <li
+                        key={a.agentId}
+                        className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md bg-muted/30 px-2.5 py-1.5 text-xs"
+                      >
+                        <span className="font-medium text-foreground">
+                          {a.agentTitle}
+                        </span>
+                        <span className="tabular-nums text-muted-foreground">
+                          {a.count} call{a.count === 1 ? "" : "s"}
+                        </span>
+                        {a.denied > 0 && (
+                          <Pill
+                            label={`${a.denied} denied`}
+                            className="bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                          />
+                        )}
+                        {a.limited > 0 && (
+                          <Pill
+                            label={`${a.limited} limited`}
+                            className="bg-orange-500/10 text-orange-700 dark:text-orange-400"
+                          />
+                        )}
+                        <span className="ml-auto whitespace-nowrap text-muted-foreground">
+                          {a.lastUsedAt ? timeAgo(a.lastUsedAt) : "—"}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardContent className="space-y-2.5 p-4">
+                <h3 className="text-sm font-semibold text-foreground">
+                  By lane (source)
+                </h3>
+                <ul className="max-h-64 space-y-1.5 overflow-y-auto">
+                  {data.sources.map((s) => (
+                    <li
+                      key={s.source}
+                      className="rounded-md bg-muted/30 px-2.5 py-1.5 text-xs"
+                    >
+                      <div className="flex items-center gap-2">
+                        <Pill
+                          label={s.source}
+                          className="bg-muted uppercase text-muted-foreground"
+                        />
+                        <span className="tabular-nums text-muted-foreground">
+                          {s.count} call{s.count === 1 ? "" : "s"}
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground">
+                        {STATUS_BAR_ORDER.filter(
+                          (k) => s.byStatus[k] > 0,
+                        ).map((k) => (
+                          <span key={k} className="tabular-nums">
+                            {s.byStatus[k]} {k}
+                          </span>
+                        ))}
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </CardContent>
+            </Card>
+          </div>
+
+          <p className="text-[11px] text-muted-foreground">
+            Latency percentiles cover executed calls only (ok + error) —
+            refused (denied / invalid / limited) and lane-declined (skipped)
+            outcomes never measured a handler. Aggregated {data.totals.invocations}{" "}
+            row{data.totals.invocations === 1 ? "" : "s"}
+            {data.truncated ? " (latest 20,000 in window)" : ""} as of{" "}
+            {timeAgo(data.generatedAt)}.
+          </p>
+        </>
+      )}
+    </div>
+  );
+}
+
+function StatCard({
+  label,
+  value,
+  hint,
+  icon,
+  tone,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  icon?: React.ReactNode;
+  tone?: "ok" | "warn";
+}) {
+  return (
+    <Card>
+      <CardContent className="p-4">
+        <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+          {icon}
+          {label}
+        </p>
+        <p
+          className={cn(
+            "mt-1 text-2xl font-semibold tabular-nums tracking-tight",
+            tone === "warn"
+              ? "text-amber-600 dark:text-amber-400"
+              : "text-foreground",
+          )}
+        >
+          {value}
+        </p>
+        {hint && (
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{hint}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function StatusBar({
+  counts,
+  total,
+}: {
+  counts: StatusCounts;
+  total: number;
+}) {
+  const segments = STATUS_BAR_ORDER.map((k) => ({
+    key: k,
+    count: counts[k],
+  })).filter((s) => s.count > 0);
+
+  if (segments.length === 0) {
+    return <p className="text-xs text-muted-foreground">No outcomes yet.</p>;
+  }
+
+  return (
+    <div className="space-y-2">
+      {/* Stacked proportion bar. */}
+      <div
+        className="flex h-3 w-full overflow-hidden rounded-full"
+        role="img"
+        aria-label={`Outcome distribution of ${total} invocations: ${segments
+          .map((s) => `${s.count} ${s.key}`)
+          .join(", ")}`}
+      >
+        {segments.map((s) => (
+          <div
+            key={s.key}
+            className={cn("h-full", STATUS_BAR_COLORS[s.key])}
+            style={{ width: `${(s.count / total) * 100}%` }}
+          />
+        ))}
+      </div>
+      {/* Legend with counts. */}
+      <div className="flex flex-wrap gap-x-3 gap-y-1">
+        {segments.map((s) => (
+          <span
+            key={s.key}
+            className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground"
+          >
+            <span
+              className={cn("size-2 rounded-[2px]", STATUS_BAR_COLORS[s.key])}
+              aria-hidden
+            />
+            {s.key}
+            <span className="tabular-nums text-foreground">{s.count}</span>
+            <span className="tabular-nums">
+              ({Math.round((s.count / total) * 100)}%)
+            </span>
+          </span>
+        ))}
+      </div>
+    </div>
   );
 }

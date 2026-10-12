@@ -4084,3 +4084,20 @@ Stage Summary:
 - I 线两项全部落地：I-1 RMSD 轴三件套（磁盘预检/补算提示/域排除+REF 徽标）+ I-6 执行令牌（#47 迟到泳道覆盖窗口封死——确定性围栏 + 反差对照 + 真实 LLM 双泳道竞态三重实证）。QA 29/29（i6 冒烟）+ 26/26（I-1 冒烟）+ 集群 e2e 51/51 基础 + 76/76 ceiling + 浏览器级金路径（真实键盘停止/真实击杀/真实引擎重跑 + RMSD UI 双输入路径 + 移动端 + VLM 双截图）。
 - 最重要的过程发现：**L 线漏跑集群 e2e 导致 6 条陈旧断言潜伏**（#48：改共享语义必须全通道重跑，含 fixture 期望值审计）——已修复并固化进验收标准；另有 VLM 视口折叠假性 FAIL（#49）与令牌生成位模式（#50：生成位与写入位同一次原子写）两条新工程结论。
 - 后续开发计划（基于测试结果）：**K 线 Skill 层运营化升级为 P1 下一阶段主推**（K1 聚合分析 → K2 denied 直达 → K3 速率配额先行；K5 异步入队与执行令牌天然亲和），I 线余项降级（Escape 成文/叠合深化 P2、认证独立分支、真实集群通道待真实环境）；新发现小项（cancelled 行 Retry 直达、file missing 进筛选列）入低优先池。
+
+---
+Task ID: 44 (K lane: K1+K2+K3+K5 — planning)
+Agent: main-orchestrator (Z.ai Code)
+Task: 下一阶段开发（K 线 Skill 层运营化四项）+ QA 测试 + E2E 测试 + 按测试结果规划后续开发
+
+Work Log:
+- 读 worklog 尾部（Task 42/43 L/I 线成果）+ ROADMAP K 线规划（K1 聚合分析 → K2 denied 直达 → K3 速率配额 → K5 异步入队为 P1 主推）+ git 状态核对（main 干净，I 线提交后无未提交改动，dev server 运行中零错误）。
+- 代码勘察：skills 层全链路（types/registry/runner/catalog/queue 缺位）、chat-stream 慢技能 skipSkill 分支、runAgentTurn 全部 6 个调用点（chat 非流式/workflow agent 节点/meeting×2/research×2/task）、tools/run 与 tools-jobs-stop 的 ToolJob 底座、ACTIVE_PROCS runKey 注册表 + pre-spawn 守卫（isStopRequested）、instrumentation 启动清扫、skills-panel/agents-panel/store 深链模式（pendingScreeningId 先例）。
+
+Stage Summary:
+- K 线四项实施计划定型：
+  - K1 = GET /api/skills/insights（window 聚合：totals/byStatus/P50/P95 + per-skill/agent/source）+ 面板第三 tab "Insights"。
+  - K2 = store.pendingAgentEdit 深链（镜像 pendingScreeningId）+ Activity denied 卡 "Fix agent access" 按钮 → Agents 面板开编辑对话框（知识开关闭环）。
+  - K3 = skills/rate-limit.ts（family 默认 + per-skill 覆盖 + per-agent 滑动窗口）+ runSkill 步骤 3.5 + 新终态 "limited"；附带 POST /api/skills/invoke（bio/web REST 直调，QA 面 + api source 补全）。
+  - K5 = skills/queue.ts runSkillQueued（resolve→validate→gate→limit→ToolJob 行 + SkillInvocation "queued" 行→fire-and-forget 真引擎 runKey=jobId→条件终写 ok/error/cancelled）+ chat 两泳道与 meeting/research/task 泳道接入（workflow agent 节点保持同步——节点即异步底座）；新终态 "queued"/"cancelled"；tools-jobs stop 路由加 requestStop+killActiveProcess 真杀；instrumentation 启动清扫孤儿 queued 行。
+- 状态并集最终形态：ok | error | denied | invalid | skipped | limited | queued | cancelled（String 列零迁移）。

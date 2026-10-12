@@ -416,7 +416,9 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
         : call.status === "running"
           ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-          : "bg-muted text-muted-foreground";
+          : call.status === "queued"
+            ? "bg-teal-500/10 text-teal-700 dark:text-teal-400"
+            : "bg-muted text-muted-foreground";
   return (
     <div className="rounded-md border bg-card p-2 text-xs">
       <div className="mb-1 flex items-center gap-1.5 font-medium">
@@ -440,6 +442,13 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]">
           {truncated}
         </pre>
+      )}
+      {call.status === "queued" && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Running in the background — watch the Tools panel or the Skills
+          Activity tab; this card is a snapshot from when the chat message was
+          sent.
+        </p>
       )}
     </div>
   );

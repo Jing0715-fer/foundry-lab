@@ -89,7 +89,9 @@ export async function POST(
       const { text } = await runAgentTurn(
         agent,
         [{ role: "user", content: task.prompt }],
-        { temperature: 0.7, maxRounds: 2, source: "task" },
+        // K5: engine fences queue as background ToolJobs — the task lane
+        // never blocks on a multi-minute engine run.
+        { temperature: 0.7, maxRounds: 2, source: "task", slowSkillPolicy: "queue" },
       );
       responses.push({ name: agent.title, text });
     }

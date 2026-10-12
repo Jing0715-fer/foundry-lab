@@ -20,7 +20,17 @@ const VALID_SOURCES = new Set([
   "meeting",
   "research",
 ]);
-const VALID_STATUSES = new Set(["ok", "error", "denied", "invalid", "skipped"]);
+const VALID_STATUSES = new Set([
+  "ok",
+  "error",
+  "denied",
+  "invalid",
+  "skipped",
+  // K lane additions.
+  "limited",
+  "queued",
+  "cancelled",
+]);
 
 export interface SkillInvocationDTO {
   id: string;
