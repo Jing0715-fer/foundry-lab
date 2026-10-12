@@ -35,6 +35,7 @@ const STATUS_HEX: Record<NodeDTO["status"], string> = {
   running: "#14b8a6", // teal-500
   completed: "#10b981", // emerald-500
   failed: "#f43f5e", // rose-500
+  cancelled: "#a1a1aa", // zinc-400
 };
 
 const MINI_W = 180;

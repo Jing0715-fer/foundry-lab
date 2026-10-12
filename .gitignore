@@ -72,3 +72,10 @@ data/cluster-*.json
 
 # transient tool outputs
 tool-results/
+
+# local runtime state — never commit the binary DB or agent scratch notes
+db/*.db
+db/*.db-journal
+agent-ctx/
+*.pid
+outputs/

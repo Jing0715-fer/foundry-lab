@@ -3412,3 +3412,117 @@ Work Log:
 
 Stage Summary:
 - B 线（画布与执行引擎）全部交付并三重验证（API 冒烟/QA 审查/浏览器 e2e 含真实执行）；下一阶段方向以本轮 9 项实测结论为据：C 线（数据与可信度）与 E 线（执行健壮性）并行推进。
+
+---
+Task ID: 22-s1
+Agent: main-orchestrator (Z.ai Code)
+Task: S 线基础设施：Agent Skill 标准化协议（用户方向「所有 agent 操作用 skill 标准化」）
+
+Work Log:
+- 调研结论：agent 层此前无 skill 机制——工具调用（comp/bio 两分支）硬编码在 runAgentTurn；webSearchEnabled 配置项形同虚设（从未接线）。
+- 新建 `src/lib/skills/`：types.ts（SkillDefinition/参数 schema/权限门/超时/审计类型）、registry.ts（注册表 + describeSkillsForPrompt 从注册表自动生成系统提示词文档——单一事实来源）、executor.ts（统一执行管线：查找→权限门→参数校验→看门狗超时→DB 审计→规范化 LLM 反馈）、compute-skills.ts（11 个 comp.* 包装 executeCompToolReal，参数 schema 从 COMP_TOOLS 派生）、bio-skills.ts（4 个 bio.* 包装 runBio）、search-skills.ts（search.websearch——z-ai SDK functions.invoke("web_search") 真实联网搜索）、parse.ts（三协议 fence 解析：```skill 前向 + ```tool/```bio 遗留归一化）、index.ts。
+- Prisma：新增 SkillInvocation 审计模型（skillId/caller/agentId/status/durationMs/params/resultSummary/error + 三索引）；db:push 完成；dev server 重启（stale Prisma client 教训 C4）。
+- API：GET /api/skills（目录 + groupBy 状态统计）、GET /api/skills/invocations?agentId=&limit=（审计 feed）。
+- 冒烟：16 skill 注册（11 compute + 4 bio + 1 search）；解析/门控/校验/denied/unknown 全通过；bio.pubmed live 746ms、search.websearch live 1455ms 返回真实结果；审计行落库。
+
+Stage Summary:
+- Skill 基础设施就绪：注册表（16 skills）+ 统一执行器 + 审计 + 目录 API；web search 从「无效配置」变为真实能力。
+
+---
+Task ID: 22-s2
+Agent: main-orchestrator (Z.ai Code)
+Task: Agent 循环 skill 化：runAgentTurn 统一 invokeSkill + 系统提示词 registry 生成
+
+Work Log:
+- run-utils.ts：runAgentTurn 的 comp/bio 双分支删除，改为统一 skill lane（extractSkillCalls → invokeSkill → ToolCall + 规范化 feedback 入 convo）；AgentRunOptions 新增 skillCaller 审计维度（agent-chat/agent-chat-stream/agent-node/meeting/research/manual，6 个调用点全部标注）。
+- agents.ts：generateAgentSystemPrompt(agent, skillsDoc?) 接受 registry 渲染的技能文档（客户端无 registry 时的静态回退保留）；run-utils buildAgentSystemPrompt 与流式路由均传入 describeSkillsForPrompt(agent.knowledge)（按 bioToolsEnabled/webSearchEnabled 门控过滤）。
+- 流式 chat 路由：tool round 重构为 skill 协议（bio/search 走 invokeSkill 即时执行；compute 保持延迟提示——真实引擎可能跑数分钟）；系统提示词接 registry。
+- types.ts：ToolCall.kind 增加 "search"。
+- LLM 驱动实测：Immunologist agent 一轮对话自主发出 5 次 skill 调用（bio.pubmed ×4 + search.websearch ×1）全部 live 完成，最终回复引用结果（PMID 与 URL 真实）。
+- tsc src/ 零错误。
+
+Stage Summary:
+- agent 层全部操作统一走 skill 标准化协议（校验/门控/超时/审计/反馈五环节）；遗留 fence 协议向后兼容；LLM 实测全链路真实执行。
+
+---
+Task ID: 22-e
+Agent: main-orchestrator (Z.ai Code)
+Task: E 线执行健壮性：E1 看门狗 + E2 Retry 异步化 + E4 运行中止
+
+Work Log:
+- E1：新建 src/lib/node-run-control.ts（STOP 注册表 + nodeWatchdogMs 预算函数 + executeNodeGuarded：Promise.race 看门狗 + stop 守卫）；workflow-runner.runNode 与单节点 run 路由均改走守卫执行。预算：默认 15min；cluster 工具节点 = 轮询上限（30/120min）+ 5min 缓冲（绝不先于轮询上限触发）。看门狗触发→failed+看门狗横幅+下游解锁（worker pool 不再被挂起引擎楔死）。
+- E2：POST /api/workflow/nodes/:id/run 新增 ?async=1 模式（claim→立即响应 running 节点→后台执行+级联，catch 兜底落 failed 行）。实测响应 0.06s、后台 2s 完成。
+- E4：NodeStatus 新增 "cancelled"；real-executor 新增 ACTIVE_PROCS 进程注册表（runKey=节点 id，SIGTERM+2s 后 SIGKILL）贯穿全部 6 个 runProcess 调用点（native/foundry/builtin 引擎进程全部可击杀）；executeCompTool 接受 runKey（本地 lane 传 executeCompToolReal；cluster lane triggeredBy="node:<id>" 供 stop 查找）；新建 POST /api/workflow/nodes/:id/stop（注册 stop + 杀本地进程 + stopClusterJob 取消集群作业 + 行立即翻 cancelled）；executeNodeGuarded 的 stop 守卫使迟到的自然结果永不覆盖用户中止；单节点路由 reclaimer 纳入 cancelled（可重跑）。
+- 消费面适配：runs 路由 recent 纳入 cancelled（排序置顶）；stream 路由 terminal 检查纳入 cancelled；minimap STATUS_HEX 补 cancelled（zinc）；PATCH 状态白名单补 cancelled。
+- 实测：rfdiffusion 节点（num_designs=24）异步运行 1.5s 后 stop → HTTP 200 "local engine process killed"（SIGTERM 真实击杀）→ 终态 cancelled + 'Stopped by user'；看门狗竞速机制 300ms 预算 301ms 触发 failed 横幅；tsc/lint 零错误零告警。
+
+Stage Summary:
+- 「看得见也管得住」闭环：运行队列可视化（B4）+ 真实进程级中止（E4）+ 挂起防护（E1）+ 即时 Retry（E2）；cancelled 成为全链路一等状态。
+
+---
+Task ID: 22-u
+Agent: full-stack-developer (Z.ai Code)
+Task: S/E 线 UI：Skills 面板 + RunsSheet Stop/异步 Retry + node-card cancelled + chat search 图标 + sweep 语义提示
+
+Work Log:
+- 通读 worklog.md 22-s1/s2/e 三节 + skills 类型/路由源码（/api/skills、/api/skills/invocations、stop route 的 {ok,detail}/409 语义），curl 实测两个端点的真实返回形状后才开始写 UI。
+- 新建 `src/components/panels/skills-panel.tsx`：Header（标题+协议描述+Skills/Invocations/Success rate 三格统计+Refresh）；Catalog 按 Compute/Bio/Search 三段分组（Cpu/Dna/Globe 图标 + 每段计数），每 skill 一张 Card（mono id+名称、gate Badge tools→secondary "Agent tools"/search→outline "Web search"/none→default "Always on"、描述、人性化 timeout、紧凑 params 表 name/type/required*/default（semantic <table>+sr-only caption，仅在有参数时渲染）、```skill 围栏示例行 pre、stats 非空时 invocations·success%·avg 的小字）；Recent invocations feed（status pill completed=emerald/failed=rose/timeout=amber/denied=slate、skillId mono、agentTitle、caller outline badge、时长+相对时间、resultSummary/error line-clamp-2，max-h-96 overflow-y-auto 走全局细滚动条样式）；Promise.allSettled 双端点独立容错（目录挂→Skeleton→EmptyState+Retry，feed 单挂→内联灰字不毁目录）；空态文案 "No skill invocations yet — chat with an agent…"；移动端单列、sm: 双列。
+- 接线：store.ts activePanel union 加 "skills"；sidebar NAV_ITEMS 在 Agents 后加 { key:"skills", label:"Skills", icon: Puzzle }（Puzzle 全仓未用过）；page.tsx 在 agents 行后渲染 SkillsPanel；顺手把 command-palette NAV_TARGETS 补 "Go to Skills"（保持导航一致性，超范围小改）。
+- runs-sheet.tsx：Retry 改 POST …/run?async=1（E2，res.ok 即成功，spinner 只覆盖秒级 fetch，3s 轮询接管进度）；Active lane 每行尾加真实 <Button> Stop（Square 图标、outline/sm、e.stopPropagation()，与 ChevronRight 并列——行根是 div[role=button]，不能嵌套交互元素）→ POST …/stop → toast "Stop requested"+detail，409 走 destructive toast，stoppingId 每行 spinner；Active 段头加 "Stop all"（仅 active 行存在时显示，按钮放在 h3 之外保住 heading 可访问名）Promise.allSettled 批停→"Stopped N nodes" 汇总；Row 状态枚举补 cancelled：zinc 图标圈+Ban 图标+名称 line-through 置灰（Recent lane 的 cancelled 行由此正确渲染）。
+- node-card.tsx：STATUS_PILL/STATUS_STRIP 补 cancelled（zinc）；卡身 ring 补 ring-1 ring-zinc-500/30；右上角补 zinc Ban 圆徽标；第三行补 cancelled 分支（result 截断展示，默认 "Stopped"）；running 行改 flex（进度条 flex-1 + 尾部 h-7 真实 <button> Stop：Square/Loader2 切换、stopPropagation、依赖 pointer-capture 守卫已排除 button 所以真实点击可达——B 线 e2e 教训不重演）；上下文菜单 Run 本就无条件显示，cancelled 节点重跑通道天然可用（reclaimer 已接受 cancelled）。stopping 局部 state，memo 比较器不受影响。
+- agent-chat-drawer.tsx ToolCallCard：kind=search → Globe 图标（此前 Wrench/Database 二分）；kind label 加 per-lane 微色调（search=emerald、bio=teal、comp 保持 muted）。
+- sweep-dialog.tsx：preview 盒（data-sweep-preview）内主提示行下补 C5 语义提示行（text-[11px] muted）："Variants inherit the source node's incoming edges — variants without upstream dependencies start immediately and run in parallel with the source."
+- 复验：`bun run lint` 零输出零告警；`bunx tsc --noEmit | grep ^src/` 零错误；GET / 200 且 SSR HTML 含 "Skills" 导航项；GET /api/skills 200；dev.log 无新运行时错误（仅一条编辑中途 Fast Refresh 全量重载告警，恢复后干净）。未触碰任何后端/API 代码，未建测试文件。
+
+Stage Summary:
+- S/E 线五项 UI 全部落地：Skills 面板（目录+审计 feed+统计）、RunsSheet 看得见也管得住（单行 Stop/Stop all/异步 Retry）、cancelled 成为 canvas 与 Runs 双面一等状态（pill/strip/ring/徽标/行样式）、chat 工具卡 search 车道有专属图标、sweep 依赖语义就地文档化。lint/tsc/页面冒烟三绿。
+
+---
+Task ID: 22-qa
+Agent: qa-code-reviewer (Z.ai Code)
+Task: S/E/U 线深度代码审查（skill 标准化 + 执行健壮性 + UI）
+
+Work Log:
+- 读 worklog 尾部（22-s1/s2/e/u）+ 全量 git diff（23 文件）+ 8 个新文件逐行（skills/*、node-run-control、skills/stop API、skills-panel）。
+- 逐项推演 13 个指定正确性问题：executor never-throws 全路径（timer 在 finally 于胜负两种结局都会清除——skill 层无泄漏）；fence 注入（只解析 assistant 回复 + maxRounds 封顶 → P2）；registry 客户端隔离（@/lib/skills 仅两个 server route 引用，agents.ts 纯类型导入，skills-panel 只 fetch）；runAgentTurn 回归对比（旧版 bio 失败/未知工具静默——新版规范反馈是改进）；E1 看门狗（node 层 timer 不清不 unref → 泄漏 15/35/125min → P2）；E4 停止语义（runNode 正常路径 cancelled 得以保留；claim 失败仍经 pump finally 解锁下游——验证正确）；E2 异步（claim 先于 async 分支，双 POST → 409）；cancelled 全消费面清单（PATCH/stream/minimap/runs/node-card/screening/scheduler/instrumentation 均适配或正确排除）；skills 面板（groupBy 容错、双端点 allSettled 降级、375px 单列）；Prisma（迁移已推、审计 fire-and-forget .catch 无未处理拒绝）；node-card Stop 为裸 <button> 且被 pointer-capture 排除覆盖（B 线教训未重演）。
+- 竞态专项：stopNodeRun 的 row flip 排在 cluster cancel 之后 + stream 路由 reconcile 把 cancelled 作业映射为 failed（:144）→ 打开的 inspector SSE 在窗口内会把用户停止的集群节点落成红色 failed；poll-ceiling 节点停止后 STOP_REQUESTED 标志无人消费 → 下一次重跑完整执行后才落 cancelled（烧掉整次计算）。
+- 复验：bunx tsc --noEmit（src/ 零错误）、bun run lint（零告警）、curl /api/skills 与 /api/skills/invocations（200 + 真实审计行）；未改任何代码。
+
+Stage Summary:
+- P0×0 / P1×4 / P2×14。P1：①停用标志滞留毒化下一次重跑（node-run-control，建议 guard 入口 clearStop）；②停止与 SSE reconcile 竞态（cancelled 作业→failed 映射 + flip 排序，含 sub-ms 复活 running 窗口）；③流式 chat 延迟执行的 compute skill 记为 failed ToolCall（红色误导卡，建议 "deferred" 状态）；④RunsSheet 行 onKeyDown 吞掉内部 Stop/Retry 按钮的 Enter（键盘用户触发跳转而非停止）。P2 要点：E1 看门狗 timer 泄漏、unknown-skill 未审计、反馈围栏转义加固、异步 catch 覆写 cancelled、排队中被停节点从 Runs 视图消失、BFS 级联 completed-only 不对称（failed 语义继承）、extractToolCalls 死代码、本地击杀无进程组、重启后集群停止仅翻行、db/custom.db 被 git 追踪等。已验证正确清单（executor 契约/管道六环、parse 三协议、registry 纯净、runKey 六处 spawn 贯通、runner finally 解锁、双 POST 409、cancelled 消费面 14 处、面板容错、tsc/lint/API 冒烟三绿）全文见 qa-review-s-e-lane.md。修复顺序建议：P1-2 → P1-1 → P1-4 → P1-3 →（顺手 P2-1）。
+
+---
+Task ID: 22-f
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P1×4 + P2×9 + lint/tsc/实测复验
+
+Work Log:
+- P1-1（stale stop 标志烧掉下一次运行）：executeNodeGuarded 入口 clearStop——新执行丢弃旧 stop（执行期间的 stop 仍被赛后检查捕获）；poll-ceiling 集群节点 stop 后重跑不再"白跑几分钟然后 cancelled"。
+- P1-2（stop vs SSE reconcile 竞态三连修）：①stream 路由 job cancelled→node cancelled（原先一律 failed，用户按 Stop 得红 FAILED）；②stopNodeRun 行翻转提前到集群取消之前（reconciler 只处理 running 行，先翻 cancelled 即不可再竞态）；③runner/runOne 的 running 与终态写全部改条件 updateMany（where status="running"）——迟到 lane 永不复活已取消行。
+- P1-3（流式 lane 延迟 compute skill 误标 failed）：ToolCall.status 增加 "deferred"；stream 路由改用之；chat drawer 中性 zinc pill（非失败语义）。
+- P1-4（RunsSheet 行键盘被内嵌按钮冒泡劫持）：Row onKeyDown 对源自 button/a/[role=button] 内部的按键早退——键盘用户 Enter 到 Stop/Retry 按钮现在触发按钮而非行跳转。
+- P2 修复：P2-1 看门狗 timer finally 清理（消 15/35/125min 残留）；P2-2 unknown-skill 补审计行（category="unknown"，面板可见——提示词调优信号）；P2-3 feedback 中 ``` fence 零宽转义（防模型回声执行）；P2-4/7 async/runner catch 条件写（不覆盖 cancelled）；P2-5 排队即停节点 runs 查询 OR completedAt 匹配（不再从队列消失）；P2-6 summary 新增 cancelled 计数（RunsSheet 显示 "N stopped"）；P2-13 .gitignore 补 db/*.db+agent-ctx/(*.pid/outputs/)+git rm --cached（seed 路由可恢复演示基线，安全）；P2-14 面板细节（Timer 图标/NaN 守卫/审计真实总数）。
+- 修复过程发现并修复 1 处编辑损坏（node-run-control 反引号错配致 Turbopack 语法错误，重启 dev server 恢复）。
+- 复验：E4 实测（rfdiffusion 异步运行 1.5s→stop→"local engine process killed"→cancelled）；runs API summary 含 cancelled 计数；tsc src/ 零错误、lint 零告警。
+
+Stage Summary:
+- QA 全部 P1 闭环（4/4）+ P2 修 9 项（其余 5 项为体验/加固项已记 ROADMAP）；E4 链路复测保持真实进程级中止。
+
+---
+Task ID: 22-e2e
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 浏览器测试：S/E/U 线全链路 + 回归 + 演示 DB 零污染（agent-browser + VLM）
+
+Work Log:
+- **Skills 面板**：sidebar Skills 导航 → 面板渲染（统计条 SKILLS 16 / INVOCATIONS 9 / SUCCESS RATE 78% 为真实审计数；Compute 11 + Bio 4 + Search 1 三组目录卡片：mono id/gate badge/params 表/```skill 示例行/超时/用量统计；审计 feed 状态 pill + 时长 + caller badge + 真实结果摘要；P2-14b 真实总数修复生效 "audit trail · 9 total"）。VLM 视口复核零缺陷。
+- **Agent chat 全链路（流式）**：Immunologist chat 发消息 → LLM 自主发出 skill 调用 → bio.pubmed + search.websearch live 执行（nature.com 真实结果）→ follow-up 流式回复含真实引用（PMID/Liu et al. 2024）→ ToolCall 卡片渲染（kind=bio/search 正确、completed 状态、Globe 图标）→ 审计行 caller=agent-chat-stream 正确归因。
+- **前向 fence 协议实测**：LLM 在后续轮次自主使用 ```skill {"id":"comp.rfdiffusion",...} 新协议（非遗留 ```tool）——registry 生成的系统提示词文档被真实模型正确遵循。
+- **deferred 路径（生产数据级验证）**：流式 lane 的 comp.rfdiffusion 调用持久化为 status="deferred" + 诚实延迟文案（不内联执行分钟级引擎）；渲染为中性 zinc pill（代码级验证 + 类型检查；浏览器视觉依赖 LLM 自主发 fence，本轮已触发并落库）。
+- **E4 stop 浏览器全链路（真实指针点击——B 线 P0 教训复测）**：隔离测试工作流 rfdiffusion 节点（num_designs=24）→ Inspector Run → 卡片 RUNNING → 物理点击卡片内 Stop 按钮（aria-label "Stop Stop-Target"）→ 卡片即时 CANCELLED（zinc）→ 服务端 cancelled + 'Stopped by user' → 引擎进程真实 SIGTERM。RunsSheet 摘要显示 "1 stopped (48h)" + Recent 行含 Ban 图标。
+- **E2 异步 Retry**：失败节点（proteinmpnn 无 pdb_path 快速失败）→ RunsSheet Failed lane 物理点击 Retry → 秒级响应（不再贯穿整执行）→ 后台重跑（startedAt 更新为新时间戳）→ 3s 轮询呈现。
+- **回归**：移动端 375px（Skills 面板无横向溢出、footer sticky-at-bottom、单列布局）；演示 DB 基线完好（My First Workflow 14 节点 + Antibody Campaign 5 节点）；跨工作流操作后无撤销串图（历史栈修复保持）；页面错误零（一条合成 PointerEvent 测试产物 setPointerCapture 报错——非真实用户路径，真实指针事件无此问题）；控制台零告警。
+- **清理**：E2E Stop Test 工作流删除；manual 冒烟审计行清除（保留 7 条真实 agent-chat 历史——Skills 面板演示价值）；僵尸测试工作流（E4/E-Line，崩溃脚本遗留）清除。
+- 发现并处置：工作流切换菜单在页面加载后创建/删除的工作流上数据过期（需 reload）——轻微 UX 项记入 ROADMAP。
+
+Stage Summary:
+- S/E/U 三线浏览器全链路通过：skill 协议（LLM 真实遵循前向 fence）+ 真实进程级中止（物理点击）+ 异步 Retry + 移动端 + 演示 DB 零污染。

@@ -1,99 +1,101 @@
 # Foundry Lab — Roadmap
 
-> 下一阶段开发方向。基于 2026-10-05（Sweep 系统）、2026-10-06（A 线闭环）与
-> 2026-10-07（B 线画布与执行引擎）三轮测试结论滚动更新，随每个阶段交付后重写。
+> 下一阶段开发方向。基于 2026-10-07（B 线画布与执行引擎）与 2026-10-12（S 线 skill 标准化
+> + E 线执行健壮性）两轮 QA/e2e 实测结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
-- **参数扫描（Parameter Sweep / Campaign Mode）**：Inspector 的 Sweep 按钮一键把工具节点
-  参数网格（笛卡尔积，≤24 组合）展开为变体节点——继承上游连线、命名带 `k=v` 标签、
-  单次 Ctrl+Z 整组撤销。全链路 e2e 验证：`num_designs` / `total_length` 真实反映到
-  输出文件数与残基数，输出进入 Screening 评估。
-- **A 线 · Campaign 体验深化**：Sweep 结果对比视图（Best 榜冠/列内最优高亮）、
-  Sweep → Screening 一键衔接（参数轴权重预设/变体名溯源）、6 个参数轴阶梯模板、
-  sweepGroup 数据链路（undo/redo 保组）。
-- **B 线 · 画布与执行引擎（本轮交付）**：
-  - **B1 自动布局防重叠**：sweep 变体网格锚点做块级 AABB 占用检测，冲突整块下移
-    （两次 sweep 同源实测 y=310/640 完全错开）；`findFreeSpot` 螺旋搜索统一到
-    `canvas-utils.ts` 共享（palette/command-palette/canvas 三个 drop 入口 + 出界候选
-    过滤），9 节点程序化 AABB 验证零重叠。
-  - **B2 并行执行通道**：`workflow-runner.ts` 重写为 Kahn 入度调度 + 事件驱动
-    worker pool（MAX_CONCURRENCY=3），保留原子 claim / poll-ceiling 诚实语义 /
-    失败不剪枝（与串行版语义对齐）。`POST /api/workflow/run` 响应新增
-    `peakConcurrency`（header toast 展示 "N parallel lanes"）。实测：3 节点同毫秒
-    启动、peakConcurrency=3、墙钟 17.3s（串行需 ~35s）、num_designs 1–8 全部真实
-    反映到 PDB 文件数。
-  - **B3 Sweep 聚合组卡**：变体卡 sweep 徽标点击 → 整组折叠为一张组卡（进度条 =
-    完成数/总数、状态 pill、Compare 入口、Expand），点击组卡展开；折叠时
-    EdgesLayer/LiveWire/minimap 成员位置映射到组卡锚点（边视觉聚合、无悬空线）。
-    纯 UI 状态（不进 DB），undo/redo 零影响。
-  - **B4 运行队列可视化**：`GET /api/runs` 跨工作流队列（active/failed/recent/
-    summary，查询级 select 防 3s 轮询读放大）+ header Runs 按钮（running 徽标）+
-    RunsSheet（打开时 3s 轮询、失败行 Retry 复用单节点 run lane 的 claim+级联、
-    行点击跳转工作流并选中节点）。
-- **QA 修复（本轮实测发现）**：
-  - **卡片交互元素被拖拽 pointer-capture 吞掉（严重，e2e 实测）**：node-card 的
-    `onCardPointerDown` 无差别 `setPointerCapture`，导致卡内任何 button（sweep 折叠
-    徽标等）的 click 被重定向到卡片永不触发。修复：pointerdown 时排除交互元素
-    （button/a/input/select/[role=button]）。
-  - sweep 网格上界从"事后 Math.min 截断"改为搜索循环条件（防把找到的空位拉回
-    重叠区）；runs 查询 trim 到 select 级；RunsSheet 行改 div[role=button]（消
-    button 嵌套）；框选只命中可见节点（防折叠组暗选+浮空删除条）。
-  - 跨工作流撤销污染（上轮修复）回归验证通过；minimap 折叠一致性 + 悬空边修复。
+- **S 线 · Agent Skill 标准化（用户架构方向：「所有 agent 操作用 skill 标准化」）**：
+  - **Skill 基础设施**：`src/lib/skills/` —— 注册表（16 skills：11 compute + 4 bio +
+    1 search）、统一执行器（查找 → 权限门 → 参数校验/类型收敛 → 看门狗超时 →
+    DB 审计 → 规范化 LLM 反馈，永不抛错）、三协议 fence 解析（前向 `​```skill`
+    + 遗留 `​```tool`/`​```bio` 归一化）。SkillInvocation 审计模型（caller 归因 ×6
+    面）+ `GET /api/skills`（目录+统计）/`GET /api/skills/invocations`（审计 feed）。
+  - **Agent 循环统一**：runAgentTurn 的 comp/bio 双分支删除，全部走 invokeSkill；
+    系统提示词的技能文档由 registry 自动生成（单一事实来源，按 knowledge 配置门控）。
+    **webSearchEnabled 首次真实生效**——`search.websearch`（z-ai SDK live 搜索）。
+  - **Skills 面板**：目录（分组/门控 badge/参数表/示例/用量统计）+ 审计 feed
+    （状态 pill/时长/caller/真实结果）+ 统计条（成功率真实审计计算）。
+  - **实测**：LLM 自主遵循前向 ```skill 协议调用 bio.pubmed/search.websearch
+    （live 执行、真实引用）；deferred compute skill 以中性状态落库（流式 lane
+    不内联分钟级引擎）。
+- **E 线 · 执行健壮性（B 线 ROADMAP P1.5 全部落地）**：
+  - **E1 看门狗**：executeNodeGuarded（Promise.race 超时，15min 默认；cluster
+    工具节点 = 轮询上限+5min 缓冲）—— 挂起引擎不再楔死 worker pool。
+  - **E2 异步 Retry**：`POST /nodes/:id/run?async=1`（claim→秒回→后台执行+级联）；
+    Retry 按钮不再贯穿整个节点执行（实测 0.06s 响应）。
+  - **E4 真实进程级中止**：ACTIVE_PROCS 注册表贯穿全部 6 个引擎 spawn 点
+    （SIGTERM→2s→SIGKILL）；集群作业 `triggeredBy="node:<id>"` 可查杀；
+    `POST /nodes/:id/stop` + 卡片/RunsSheet Stop 按钮 + Stop all；
+    `cancelled` 成为全链路一等状态（条件写守卫：迟到的自然结果永不覆盖用户中止）。
+- **QA 修复（本轮实测/审查发现）**：stale stop 标志烧下一次运行（入口 clearStop）；
+  stop vs SSE reconcile 竞态三连修（cancelled 映射/翻转提前/条件写）；deferred
+  状态误标 failed；RunsSheet 键盘冒泡劫持；看门狗定时器泄漏；unknown-skill 审计；
+  feedback fence 转义加固；排队即停节点从 Runs 队列消失；.gitignore 治理
+  （db/agent-ctx/outputs/pid 不再入库）。
+- **C5（顺手）**：sweep 对话框语义提示（变体继承入边——无上游变体立即并行执行）。
 
 ## 测试结论（驱动后续优先级）
 
 | # | 发现 | 影响 | 对应方向 |
 |---|------|------|----------|
-| 1 | B2 并行实测 peakConcurrency=3、无依赖变体与源同毫秒启动 | 大 sweep 等待时间减半成立 | 已交付 B2 |
-| 2 | sweep 变体只继承源节点入边：无上游源的变体是无依赖节点（并行执行） | 语义正确但用户可能误以为变体会等源输出 | C5（文档化） |
-| 3 | 卡片内交互元素（button）被 pointer-capture 吞 click | 任何卡内按钮都点不动（本轮 sweep 徽标触发） | 已修复，验收新增"卡内 button 必须实测点击" |
-| 4 | executeNode 无超时看门狗：单个引擎挂起会楔死整个 worker pool | 长会话可靠性 | E1 |
-| 5 | RunsSheet Retry 的 await 贯穿整个节点执行（长任务按钮长时间 spinner） | 可接受但体验欠佳 | E2 |
-| 6 | 组卡不可拖拽；NodeSearch/NodeGroupLayer 未过滤折叠成员 | 轻微不一致 | E3 |
-| 7 | 演示 DB（14 节点）与 README 文档（6 节点）不一致 | 文档可信度 | C1（延续） |
-| 8 | undo 恢复的删除节点在服务器端为 idle 状态 | 轻微状态偏差 | C3（延续） |
-| 9 | 首次 db:push 后 dev server 需重启（stale Prisma client） | 部署/运维体验 | C4（延续） |
+| 1 | LLM 真实遵循 registry 生成的 ```skill 前向协议（无需 function-calling API） | fence 协议路线对任意模型可行 | 已交付 |
+| 2 | webSearchEnabled 此前形同虚设——skill 化后才真实执行 | 配置可信度 | 已修复 |
+| 3 | stop 的进程级击杀在本地 lane 真实生效（SIGTERM 后引擎终止、行落 cancelled） | 「看得见也管得住」闭环 | 已交付 |
+| 4 | 流式 lane 的 compute skill deferred 是诚实语义（不内联分钟级引擎） | 长任务路由正确 | 已交付 |
+| 5 | 工作流切换菜单对页面加载后新增/删除的工作流数据过期（需 reload） | 轻微 UX | C6 |
+| 6 | 本地 kill 不杀进程组（python 多进程孙进程可能存活） | 极端情况下残留计算 | E5 |
+| 7 | dev server 重启后集群 poll-ceiling 节点的 stop 只能行级（内存 run 记录丢失） | 运维边界 | E6 |
+| 8 | RunsSheet「Stop all」对竞态完成行 409 汇总的措辞可再打磨 | 体验 | E7 |
+| 9 | agent chat 中 skill 反馈的 fence 回声已被转义 + maxRounds 封顶 | 注入面收窄 | 已加固 |
+| 10 | skill 审计 feed 无分页/筛选（agentId 参数已有，UI 未暴露） | 观测性 | C7 |
 
 ## C 线 — 数据与可信度（P1，下一阶段建议）
 
 1. **演示数据治理**：IL-7Rα 战役整理为正式演示工作流（更新 README 界面一览与教程
-   截图），或提供 "Reset demo data" 种子脚本。
-2. **实验溯源（Provenance）深化**：变体 → 输出文件 → 筛选候选 → promote 节点的完整
-   血缘链（补 promote 回写与参数来源徽标）。
-3. **undo 状态语义补齐**：create API 接受可选 status 字段，使 undo 恢复的节点保留
-   快照状态而非恒为 idle。
-4. **运维文档**：schema 变更后需重启 dev server（stale Prisma client）写入贡献指南。
-5. **sweep 依赖语义文档化**：变体继承源的入边——无上游源时变体作为独立根并行执行；
-   在 Sweep 对话框与教程中明示（测试结论 #2）。
+   截图——截图需补 Skills 面板与 Stop 交互两张）。
+2. **实验溯源（Provenance）深化**：变体 → 输出文件 → 筛选候选 → promote 节点血缘；
+   SkillInvocation 审计与 promote 事件关联。
+3. **undo 状态语义补齐**：create API 接受可选 status 字段。
+4. **运维文档**：schema 变更后需重启 dev server；db 已 untrack——贡献指南写明
+   db:push + /api/seed 恢复演示基线的步骤。
+5. ~~sweep 依赖语义文档化~~ 已随 C5 交付（对话框提示）。
+6. **工作流切换菜单数据过期**：切换器打开时重取工作流列表（C6，测试结论 #5）。
+7. **审计 feed 增强**：agentId 筛选器 + 分页（C7，后端参数已就绪）。
 
-## E 线 — 执行健壮性与交互打磨（P1.5，本轮新增）
+## S2 线 — Skill 体系深化（P1.5，本轮新增）
 
-1. **executeNode 看门狗**：每节点执行超时（如 15min）标记 failed 并解锁下游，
-   防 worker pool 被挂起引擎楔死（测试结论 #4）。
-2. **RunsSheet Retry 即时反馈**：Retry 改 fire-and-forget（toast 已即时，spinner
-   只覆盖 claim 阶段），依赖 3s 轮询呈现执行态（测试结论 #5）。
-3. **组卡可拖拽 + 折叠一致性收尾**：组卡拖拽平移整组成员；NodeSearch 与
-   NodeGroupLayer 过滤折叠成员（测试结论 #6）。
-4. **全局运行中止**：Runs 视图 active 行加 Stop（节点级 + workflow 级），补齐
-   "看得见也管得住"。
+1. **Workflow 工具节点 skill 化**：comptool 节点的执行 lane（executeCompTool）与
+   agent skill 协议合流——同一套校验/审计/超时覆盖画布节点（当前仅 agent 层接入）。
+2. **Skill 配置化**：超时/门控/启用按 agent 或全局可配（配 inspector 设置面）。
+3. **Skill 测试台**：Skills 面板卡片一键「试运行」（manual caller 已支持）。
+4. **更多 skill**：page_reader（SDK 已支持）、代码解释器、文件读写工具。
+
+## E 线 — 执行健壮性收尾（P2，延续）
+
+1. **E5 进程组击杀**：本地引擎 spawn detached + `kill(-pid)`（测试结论 #6）。
+2. **E6 重启后集群 stop 重建**：从 ToolJob 行重建取消路径（测试结论 #7）。
+3. **E7 Stop all 汇总打磨**：区分「已停止/已完成（竞态）」措辞（测试结论 #8）。
+4. **组卡可拖拽 + NodeSearch/NodeGroupLayer 过滤折叠成员**（B 线遗留 E3）。
 
 ## D 线 — 科研深度（P2，探索性）
 
-1. **3D 叠合比较**：筛选详情支持两候选叠合（RMSD + 差异着色），复用 molecular/
-   superpose；对比视图行选两列 → 直接叠合。
-2. **抗体亲和力成熟链路**：RFantibody → MPNN 串联的 shotgunning + 阶梯式 CDR
-   突变扫描。
-3. **认证与团队协作**（NextAuth）：工作流 / campaign 共享，操作审计。
-4. **Sweep 结果导出**：对比表 CSV / 报告（复用 screening CSV 底座）。
+1. **3D 叠合比较**：两候选叠合（RMSD + 差异着色），复用 molecular/superpose。
+2. **抗体亲和力成熟链路**：RFantibody → MPNN 串联 shotgunning + CDR 阶梯扫描。
+3. **认证与团队协作**（NextAuth）：工作流/campaign 共享，操作审计。
+4. **Sweep 结果导出**：对比表 CSV / 报告。
 
 ## 验收标准（延续本阶段做法）
 
 - 每项新功能必须：API 冒烟（无效输入全 400）+ 浏览器 e2e（真实引擎、真实输出、
   可用文件级证据验证）+ undo/redo DB 一致性检查。
-- **卡内交互元素（button/链接）必须用真实指针事件实测点击**（本轮教训 #3：
-  setPointerCapture 会吞掉派生 click，JS click() 测试不出这个问题）。
-- 跨工作流操作（切换 / 导入 / 恢复快照）后必须显式验证撤销栈不串图。
+- **卡内交互元素（button/链接）必须用真实指针事件实测点击**（B 线教训：JS click()
+  测不出 setPointerCapture 吞 click；本轮 Stop 按钮已按此标准实测）。
+- **涉及运行状态的竞态路径必须条件写守卫**（本轮教训：stop/reconcile/迟到 lane
+  三方竞态——终态只能由持有 running 行的 lane 或显式 stop 落笔）。
+- 跨工作流操作（切换/导入/恢复快照）后必须显式验证撤销栈不串图。
 - 移动端 375px 必查：无横向溢出、Sheet 全宽、触控目标 ≥44px。
+- agent 层新能力必须走 skill 协议（registry 注册 + 统一执行器 + 审计）——不再
+  接受 ad-hoc 工具分支。
 - 收尾必查：`bun run lint` 零告警、`tsc --noEmit`（src/）零错误、dev.log 无运行时
   错误、演示 DB 与文档一致。

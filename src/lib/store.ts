@@ -75,7 +75,16 @@ interface AppState {
   dirtyNodeIds: string[];
 
   // ui
-  activePanel: "canvas" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "screening" | "dashboard";
+  activePanel:
+    | "canvas"
+    | "agents"
+    | "skills"
+    | "tasks"
+    | "meetings"
+    | "research"
+    | "alphafold"
+    | "screening"
+    | "dashboard";
   paletteQuery: string;
   /** Mobile-only: node palette shown as an overlay over the canvas (<md). */
   mobilePaletteOpen: boolean;

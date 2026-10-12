@@ -35,8 +35,8 @@ import {
   toNodeDTO,
   toEdgeDTO,
   gatherInputs,
-  executeNode,
 } from "@/lib/workflow-engine";
+import { executeNodeGuarded } from "@/lib/node-run-control";
 import { topologicalOrder } from "@/lib/canvas-utils";
 
 export interface WorkflowRunResult {
@@ -178,7 +178,7 @@ export async function runWorkflowById(
     if (!currentNode) return;
     const inputs = gatherInputs(nodeId, freshNodes, freshEdges);
 
-    const { result, logs, status } = await executeNode(
+    const { result, logs, status } = await executeNodeGuarded(
       currentNode,
       inputs,
       workflowId,
@@ -187,24 +187,34 @@ export async function runWorkflowById(
     if (status === "running") {
       // Poll-ceiling outcome (cluster job still running remotely): persist
       // the honest in-progress result/logs but NO completedAt and NO
-      // progress-100 — the node legitimately stays running.
-      await db.node.update({
-        where: { id: nodeId },
-        data: { status, result, logs, progress: 90 },
-      });
+      // progress-100 — the node legitimately stays running. CONDITIONAL
+      // write (status still running): a user Stop may have flipped the row
+      // terminal between the guard's check and now — never resurrect (QA
+      // P1-2).
+      await db.node
+        .updateMany({
+          where: { id: nodeId, status: "running" },
+          data: { status, result, logs, progress: 90 },
+        })
+        .catch(() => {});
       return;
     }
 
-    await db.node.update({
-      where: { id: nodeId },
-      data: {
-        status,
-        result,
-        logs,
-        progress: 100,
-        completedAt: new Date(),
-      },
-    });
+    // CONDITIONAL terminal write (row still "running" = this lane owns it):
+    // a stop that landed in the micro-window after the guard's check must
+    // win — the row stays cancelled instead of being overwritten (QA P1-2).
+    await db.node
+      .updateMany({
+        where: { id: nodeId, status: "running" },
+        data: {
+          status,
+          result,
+          logs,
+          progress: 100,
+          completedAt: new Date(),
+        },
+      })
+      .catch(() => {});
     if (status === "completed") completedCount++;
   }
 
@@ -223,10 +233,12 @@ export async function runWorkflowById(
           .catch(() => {
             // runNode's own failure paths persist a failed status; a
             // thrown exception (DB hiccup) marks the node failed so the
-            // pool never wedges on a phantom "running" lane.
+            // pool never wedges on a phantom "running" lane. CONDITIONAL
+            // write: a stopped (cancelled) row must not be overwritten
+            // (QA P2-7).
             void db.node
-              .update({
-                where: { id: nodeId },
+              .updateMany({
+                where: { id: nodeId, status: "running" },
                 data: { status: "failed", completedAt: new Date() },
               })
               .catch(() => {});

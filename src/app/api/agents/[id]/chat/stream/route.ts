@@ -3,8 +3,7 @@ import { db } from "@/lib/db";
 import { toAgentDTO } from "@/lib/run-utils";
 import { generateAgentSystemPrompt } from "@/lib/agents";
 import { chatStream, type ChatMessage } from "@/lib/llm";
-import { extractToolCalls } from "@/lib/tools";
-import { runBio } from "@/lib/bio-tools";
+import { describeSkillsForPrompt, extractSkillCalls, invokeSkill, getSkill } from "@/lib/skills";
 import type { ToolCall } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -69,8 +68,12 @@ export async function POST(
   });
 
   const agentDTO = toAgentDTO(agent);
-  // System prompt = agent persona + the fine-tune dialog's saved suffix.
-  const baseSystem = generateAgentSystemPrompt(agentDTO);
+  // System prompt = agent persona + registry-rendered skill docs + the
+  // fine-tune dialog's saved suffix.
+  const baseSystem = generateAgentSystemPrompt(
+    agentDTO,
+    describeSkillsForPrompt(agentDTO.knowledge),
+  );
   const suffix = agentDTO.runtime?.systemPromptSuffix?.trim();
   const system = suffix
     ? `${baseSystem}\n\n--- Additional operator instructions ---\n${suffix}`
@@ -150,60 +153,61 @@ export async function POST(
         return;
       }
 
-      // ── Tool-calling round (pragmatic streaming version) ────────────────
-      // Parse the streamed reply with the same fence parser the non-stream
-      // lane uses; execute the FAST bio tools and run ONE follow-up streamed
-      // completion folding the results in. Everything streamed into this SSE
-      // response is what gets persisted (content === what the user saw).
+      // ── Skill-calling round (pragmatic streaming version) ────────────────
+      // Parse the streamed reply with the UNIFIED fence parser (```skill +
+      // legacy ```tool/```bio); execute the FAST skills (bio / search) via
+      // the standardized executor and run ONE follow-up streamed completion
+      // folding the results in. Compute skills are NOT executed inline (they
+      // can run for minutes — the model is told to point the user at the
+      // canvas/Tools panel). Everything streamed into this SSE response is
+      // what gets persisted (content === what the user saw).
       const toolCalls: ToolCall[] = [];
       let content = fullText;
       try {
-        const { comp, bio } = extractToolCalls(fullText);
-        if (bio.length > 0 || comp.length > 0) {
+        const calls = extractSkillCalls(fullText);
+        if (calls.length > 0) {
+          const skillCtx = {
+            caller: "agent-chat-stream" as const,
+            agentId: agentDTO.id,
+            agentTitle: agentDTO.title,
+            knowledge: agentDTO.knowledge,
+          };
           const followUps: string[] = [];
-          for (const b of bio) {
-            try {
-              const res = await runBio(
-                b.type as "blast" | "pdb" | "pubmed" | "uniprot",
-                b as Record<string, unknown>,
-              );
-              const summary = res.hits
-                .map((h) => `- ${h.id}: ${h.title}`)
-                .join("\n");
+          for (const c of calls) {
+            const def = getSkill(c.skillId);
+            if (def?.category === "compute") {
+              // Compute skills (real engines) can run for minutes — they are
+              // NOT executed inline in the streaming lane. Tell the model
+              // honestly so its revised answer points the user at the right
+              // surface.
               toolCalls.push({
-                kind: "bio",
-                tool: b.type,
-                params: b as Record<string, unknown>,
-                result: summary,
-                status: "completed",
+                kind: "comp",
+                tool: c.skillId,
+                params: c.params,
+                // NOT a failure — a deliberate deferral to the canvas lane;
+                // rendered neutral (QA P1-3).
+                status: "deferred",
+                result:
+                  "Deferred to the canvas: computational skills run real engines (minutes) — use the workflow canvas or the Tools panel to execute this design.",
               });
               followUps.push(
-                `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,
+                `[Note: ${c.skillId} cannot be executed in the streaming chat lane — ` +
+                  "tell the user to run it via the workflow canvas or the Tools panel.]",
               );
-            } catch (e) {
-              toolCalls.push({
-                kind: "bio",
-                tool: b.type,
-                params: b as Record<string, unknown>,
-                result: `Error: ${(e as Error).message}`,
-                status: "failed",
-              });
-              followUps.push(
-                `[Bio tool ${b.type} failed: ${(e as Error).message}]`,
-              );
+              continue;
             }
-          }
-          if (comp.length > 0) {
-            // Comp tools (real engines) can run for minutes — they are NOT
-            // executed inline in the streaming lane. Tell the model honestly
-            // so its revised answer points the user at the right surface.
-            followUps.push(
-              `[Note: ${comp.length} computational tool request(s) cannot be executed in the streaming chat lane — ` +
-                "tell the user to run them via the workflow canvas or the Tools panel.]",
-            );
+            const inv = await invokeSkill(c.skillId, c.params, skillCtx);
+            toolCalls.push({
+              kind: inv.category === "compute" ? "comp" : inv.category,
+              tool: inv.skillId,
+              params: c.params,
+              result: inv.result,
+              status: inv.status === "completed" ? "completed" : "failed",
+            });
+            followUps.push(inv.feedback);
           }
 
-          // ONE follow-up streamed completion with the tool results appended.
+          // ONE follow-up streamed completion with the skill results appended.
           const followUpMessages: ChatMessage[] = [
             ...messages,
             { role: "assistant", content: fullText },
@@ -224,9 +228,9 @@ export async function POST(
             : fullText;
         }
       } catch (err) {
-        // Tool round failed — the first reply is still complete and useful;
+        // Skill round failed — the first reply is still complete and useful;
         // persist it without toolCalls and note the error on the stream.
-        send("error", { error: `Tool round failed: ${(err as Error).message}` });
+        send("error", { error: `Skill round failed: ${(err as Error).message}` });
       }
 
       // Save the final assistant message (with the parsed/executed tool calls).

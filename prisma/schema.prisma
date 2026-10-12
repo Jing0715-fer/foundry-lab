@@ -144,6 +144,31 @@ model ToolJob {
   updatedAt   DateTime @updatedAt
 }
 
+// ─── Skill layer (agent operations standardized) ─────────────────────────────
+// Every agent skill invocation flows through the standardized executor
+// (src/lib/skills/executor.ts) which persists one audit row per call —
+// observability for the Skills panel + per-skill success stats.
+
+model SkillInvocation {
+  id            String   @id @default(cuid())
+  skillId       String   // e.g. comp.rfdiffusion | bio.blast | search.websearch
+  skillName     String
+  category      String   // compute | bio | search
+  caller        String   @default("agent-chat") // agent-chat | agent-chat-stream | agent-node | meeting | research | manual
+  agentId       String?
+  agentTitle    String?
+  status        String   // completed | failed | timeout | denied
+  durationMs    Int?
+  params        String   @default("{}") // JSON (validated)
+  resultSummary String?
+  error         String?
+  createdAt     DateTime @default(now())
+
+  @@index([skillId])
+  @@index([agentId])
+  @@index([createdAt])
+}
+
 // ─── Workflow canvas (cryoflow-style) ────────────────────────────────────────
 
 model Workflow {

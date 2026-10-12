@@ -80,10 +80,12 @@ export async function POST(
     // otherwise never see the message it must answer — append it explicitly.
     history.push({ role: "user", content: message });
 
-    // Run the agent turn (tool-calling loop). No explicit temperature —
-    // the agent's saved runtime config (fine-tune dialog) is the default.
+    // Run the agent turn (standardized skill-calling loop). No explicit
+    // temperature — the agent's saved runtime config (fine-tune dialog) is
+    // the default.
     const result = await runAgentTurn(agent, history, {
       maxRounds: 3,
+      skillCaller: "agent-chat",
     });
 
     // Persist the assistant message.

@@ -61,11 +61,18 @@ export interface ChatMessageDTO {
 }
 
 export interface ToolCall {
-  kind: "comp" | "bio";
-  tool: string; // rfdiffusion | proteinmpnn | alphafold | blast | pdb | ...
+  kind: "comp" | "bio" | "search";
+  /** Skill id — "comp.rfdiffusion" / "bio.blast" / "search.websearch"
+   *  (historical rows store bare keys: "rfdiffusion", "blast", …). */
+  tool: string;
   params: Record<string, unknown>;
   result?: string;
-  status?: "pending" | "running" | "completed" | "failed";
+  /**
+   * "deferred" — the streaming chat lane deliberately did NOT execute a
+   * compute skill (real engines can run for minutes); rendered as a neutral
+   * pill, NOT a failure (QA P1-3).
+   */
+  status?: "pending" | "running" | "completed" | "failed" | "deferred";
   jobId?: string;
 }
 
@@ -145,7 +152,7 @@ export type NodeType =
   | "rf3" | "esmfold" | "colabfold";
 
 export type NodeStatus =
-  | "idle" | "pending" | "running" | "completed" | "failed";
+  | "idle" | "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type PortKind =
   | "agent" | "text" | "context" | "summary"

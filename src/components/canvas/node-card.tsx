@@ -12,10 +12,12 @@ import {
   ArrowRightToLine,
   Flag,
   Box,
+  Ban,
   Check,
   Loader2,
   Play,
   Copy,
+  Square,
   Trash2,
   Grid3X3,
 } from "lucide-react";
@@ -71,6 +73,7 @@ const STATUS_STRIP: Record<string, string> = {
   running: "bg-teal-500",
   completed: "bg-emerald-500",
   failed: "bg-rose-500",
+  cancelled: "bg-zinc-500",
 };
 
 const STATUS_PILL: Record<string, string> = {
@@ -79,6 +82,7 @@ const STATUS_PILL: Record<string, string> = {
   running: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
   completed: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   failed: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  cancelled: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400",
 };
 
 // --- Edge DOM patching (cryoflow pattern) ----------------------------------
@@ -197,6 +201,41 @@ function NodeCardImpl({ node }: NodeCardProps) {
   const toast = useAppStore((s) => s.toast);
 
   const [confirmDelete, setConfirmDelete] = React.useState(false);
+  // E4: per-card stop request in flight — swaps the Stop button's Square for
+  // a spinner. The stop route flips the row to `cancelled` server-side; the
+  // 3s status poll (page.tsx) lands it here, so no local node patch is needed.
+  const [stopping, setStopping] = React.useState(false);
+
+  // E4: stop THIS running node — kills the local engine process
+  // (SIGTERM→SIGKILL) / cancels the cluster job and flips the row to
+  // cancelled. 409 = already terminal (nothing to stop).
+  const handleStop = React.useCallback(async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      const res = await fetch(`/api/workflow/nodes/${node.id}/stop`, {
+        method: "POST",
+      });
+      const body: { detail?: string; error?: string } = await res
+        .json()
+        .catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(body.error || `HTTP ${res.status}`);
+      }
+      toast({
+        title: "Stop requested",
+        description: body.detail || `${node.name || node.type} is being stopped`,
+      });
+    } catch (e) {
+      toast({
+        title: "Stop failed",
+        description: e instanceof Error ? e.message : "Unknown error",
+        variant: "destructive",
+      });
+    } finally {
+      setStopping(false);
+    }
+  }, [node.id, node.name, node.type, stopping, toast]);
 
   const colorKey = (spec?.color ?? "slate") as keyof typeof NODE_COLORS;
   const color = NODE_COLORS[colorKey] ?? NODE_COLORS.slate;
@@ -583,6 +622,8 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 status === "completed" && "ring-1 ring-emerald-500/30",
                 // Subtle red glow for failed nodes.
                 status === "failed" && "ring-1 ring-rose-500/30",
+                // Subtle zinc ring for cancelled nodes (user-stopped).
+                status === "cancelled" && "ring-1 ring-zinc-500/30",
               )}
             >
               {/* Left color bar */}
@@ -603,6 +644,14 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   title="Failed"
                 >
                   !
+                </span>
+              )}
+              {status === "cancelled" && (
+                <span
+                  className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-zinc-500 text-white shadow-sm"
+                  title="Cancelled"
+                >
+                  <Ban className="size-3" />
                 </span>
               )}
               {status === "running" && (
@@ -666,11 +715,37 @@ function NodeCardImpl({ node }: NodeCardProps) {
               {/* Third row: progress / result / ready */}
               <div className="px-3 pt-1.5">
                 {status === "running" && (
-                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                    <div
-                      className="h-full bg-teal-500 shimmer transition-[width] duration-200"
-                      style={{ width: `${Math.max(4, Math.min(100, node.progress || 0))}%` }}
-                    />
+                  <div className="flex items-center gap-1.5">
+                    <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-muted">
+                      <div
+                        className="h-full bg-teal-500 shimmer transition-[width] duration-200"
+                        style={{ width: `${Math.max(4, Math.min(100, node.progress || 0))}%` }}
+                      />
+                    </div>
+                    {/* E4 stop control — a REAL <button> (the card's pointer
+                        capture guard excludes buttons, so this receives genuine
+                        clicks; wrapping it in anything interactive would
+                        re-trigger the B-line pointer-capture bug). Plain button,
+                        same pattern as the sweep-collapse badge above. */}
+                    <button
+                      type="button"
+                      aria-label={`Stop ${node.name || node.type}`}
+                      title="Stop this run — kills the engine process and marks the node cancelled"
+                      disabled={stopping}
+                      onClick={(e) => {
+                        // Keep the canvas from deselecting / the card from
+                        // treating this as a select attempt.
+                        e.stopPropagation();
+                        void handleStop();
+                      }}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border text-zinc-600 transition-colors hover:bg-accent hover:text-zinc-700 disabled:opacity-60 dark:text-zinc-400 dark:hover:text-zinc-300"
+                    >
+                      {stopping ? (
+                        <Loader2 className="size-3.5 animate-spin" />
+                      ) : (
+                        <Square className="size-3" />
+                      )}
+                    </button>
                   </div>
                 )}
                 {status === "completed" && (
@@ -687,6 +762,14 @@ function NodeCardImpl({ node }: NodeCardProps) {
                     title={node.result || undefined}
                   >
                     {node.result ? node.result.slice(0, 80) : "Error"}
+                  </div>
+                )}
+                {status === "cancelled" && (
+                  <div
+                    className="max-w-full truncate text-[11px] text-zinc-500 dark:text-zinc-400"
+                    title={node.result || undefined}
+                  >
+                    {node.result ? node.result.slice(0, 80) : "Stopped"}
                   </div>
                 )}
                 {(status === "idle" || status === "pending") && (

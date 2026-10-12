@@ -247,8 +247,19 @@ export const QUICK_START_AGENDA =
   "Design a SARS-CoV-2 nanobody that binds the receptor-binding domain (RBD) and neutralizes Omicron BA.5. " +
   "Consider affinity, stability, and manufacturability. Propose a 4-step computational pipeline and 2 wet-lab validation experiments.";
 
-/** Build a system prompt from an agent persona. */
-export function generateAgentSystemPrompt(agent: AgentDTO): string {
+/** Build a system prompt from an agent persona.
+ *
+ * `skillsDoc` — the skill-invocation section rendered by the skill registry
+ * (describeSkillsForPrompt). When omitted (client-side calls that can't
+ * import the server-only registry), a minimal static fallback documents the
+ * legacy fence protocol. Server callers (run-utils) always pass the
+ * registry-rendered docs so every registered skill documents itself from
+ * one source of truth.
+ */
+export function generateAgentSystemPrompt(
+  agent: AgentDTO,
+  skillsDoc?: string,
+): string {
   const k = agent.knowledge;
   const lines: string[] = [];
   lines.push(`You are ${agent.title}, a scientific research agent.`);
@@ -266,15 +277,23 @@ export function generateAgentSystemPrompt(agent: AgentDTO): string {
     for (const c of k.capabilities) lines.push(`- ${c}`);
     lines.push("");
   }
-  if (k.bioToolsEnabled || k.webSearchEnabled) {
+  if (skillsDoc !== undefined) {
+    if (skillsDoc.trim()) {
+      lines.push("── Skill invocation protocol ──");
+      lines.push("");
+      lines.push(skillsDoc.trim());
+      lines.push("");
+    }
+  } else if (k.bioToolsEnabled || k.webSearchEnabled) {
+    // Static fallback (client contexts without the registry).
     lines.push("You may invoke tools by emitting fenced code blocks:");
     if (k.bioToolsEnabled) {
-      lines.push("  ```tool");
-      lines.push('  {"tool":"rfdiffusion|rfantibody|proteinmpnn|rosetta|alphafold","params":{...}}');
+      lines.push("  ```skill");
+      lines.push('  {"id":"<skillId>","params":{...}}');
       lines.push("  ```");
-      lines.push("  ```bio");
-      lines.push('  {"type":"blast|pdb|pubmed|uniprot","query":"..."}');
-      lines.push("  ```");
+    }
+    if (k.webSearchEnabled) {
+      lines.push('  Skill ids include "search.websearch" (live web search).');
     }
     lines.push("After each tool call, wait for the system to return results, then revise your answer.");
     lines.push("");

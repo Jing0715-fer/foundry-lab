@@ -465,6 +465,16 @@ export function SweepDialog({
                   : `${combinations} variant${combinations === 1 ? "" : "s"} will be created${combinations > MAX_COMBINATIONS ? " — over the limit of " + MAX_COMBINATIONS : ""}.`}
             </span>
           </div>
+          {/* C5: dependency semantics, documented right where the preview
+              promises "N variants". Without this line, users expect variants
+              to wait for the source run; actually only its incoming edges are
+              inherited, so upstream-free variants are independent roots and
+              the parallel runner starts them immediately. */}
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            Variants inherit the source node&rsquo;s incoming edges — variants
+            without upstream dependencies start immediately and run in parallel
+            with the source.
+          </p>
           {preview.length > 0 && errorCount === 0 && (
             <ul className="mt-2 flex flex-col gap-1 pl-5 font-mono text-[11px] text-muted-foreground">
               {preview.map((c, i) => (

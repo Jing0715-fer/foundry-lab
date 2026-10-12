@@ -43,10 +43,18 @@
 每个节点自带检查器（右侧）：参数面板、运行日志（实时流式）、任务历史、
 产物文件入口，一键跳转 3D 查看器。
 
-### 🤖 智能体层
+### 🤖 智能体层（Skill 标准化协议）
 
 - **9 个预置专家人格**（PI、计算生物学家、免疫学家、结构生物学家……），每个智能体带
   知识域配置与系统提示词。
+- **Skill 标准化协议**：智能体的全部操作（11 个计算引擎 + 4 个生物信息查询 +
+  联网搜索）统一走注册表化 skill 管线——**参数校验 → 权限门控 → 看门狗超时 →
+  审计落库 → 规范化反馈**。系统提示词的技能文档由注册表自动生成（单一事实来源，
+  按智能体知识配置门控）；`​```skill` 前向 fence 协议 + 遗留 ```tool/```bio 兼容解析。
+- **真实联网搜索**：`webSearchEnabled` 配置首次真实生效——`search.websearch`
+  live 搜索（引用 URL 回答）。
+- **Skills 面板**：skill 目录（分组/门控/参数 schema/示例/用量统计）+ 审计
+  feed（每次调用的状态/时长/归属/结果——智能体操作全可观测）。
 - **工具调用循环**（最多 5 轮，并行 bio + comp 工具调用）：智能体聊天中可自主调用
   BLAST / PDB / PubMed / UniProt 等真实 API。
 - **持久化运行时参数**：微调对话框可配置 temperature / max-tokens / top-p /
@@ -107,6 +115,14 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   的实时队列：运行中/排队（3 秒轮询 + 进度条）、近 48h 失败节点一键
   **重试**（单节点重跑并级联下游）、最近完成（时长统计）；行点击直接
   跳到对应工作流并选中该节点。
+- **真实进程级中止（看得见也管得住）**：运行中的节点可在卡片 / Runs 队列
+  一键 **Stop**（或 Stop all）——本地引擎进程 SIGTERM 击杀、集群作业远程
+  取消、节点落 `cancelled` 状态；迟到的执行结果永不覆盖用户中止。
+- **执行看门狗**：每个节点的执行有超时预算（本地默认 15 分钟；集群节点
+  为轮询上限 + 缓冲）——挂起的引擎被标记失败并解锁下游，运行队列不再
+  被单个卡死任务楔住。
+- **异步重试**：Retry 即时返回（claim 后后台执行），进度由 3 秒轮询呈现
+  ——长任务的按钮不再长时间转圈。
 
 ### 🖼️ 3D 结构查看器
 
@@ -287,6 +303,9 @@ bun run dev            # http://localhost:3000
 | POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
 | GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
 | POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
+| GET | `/api/skills` | Skill 目录 + 用量统计（成功/失败/超时/拒绝 + 均耗时） |
+| GET | `/api/skills/invocations?agentId=` | skill 审计 feed（状态/时长/归属/结果） |
+| POST | `/api/workflow/nodes/:id/stop` | 停止运行中/排队中的节点（进程击杀 + 集群取消） |
 | GET | `/api/runs` | 全局运行队列（跨工作流 active/failed/recent + 汇总） |
 | POST | `/api/workflows/:id/versions/:v/restore` | 恢复版本快照 |
 | POST | `/api/workflows/:id/schedule` | 预约定时运行 |

@@ -128,10 +128,11 @@ function pickJSONFile(onText: (text: string, fileName: string) => void) {
   input.click();
 }
 
-const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "tasks" | "meetings" | "research" | "alphafold" | "screening"; label: string }[] = [
+const NAV_TARGETS: { panel: "canvas" | "dashboard" | "agents" | "skills" | "tasks" | "meetings" | "research" | "alphafold" | "screening"; label: string }[] = [
   { panel: "canvas", label: "Go to Canvas" },
   { panel: "dashboard", label: "Go to Dashboard" },
   { panel: "agents", label: "Go to Agents" },
+  { panel: "skills", label: "Go to Skills" },
   { panel: "tasks", label: "Go to Tasks" },
   { panel: "meetings", label: "Go to Meetings" },
   { panel: "research", label: "Go to Research" },

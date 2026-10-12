@@ -23,7 +23,7 @@ import type {
 export type NodeExecResult = {
   result: string;
   logs: string;
-  status: "completed" | "failed" | "running";
+  status: "completed" | "failed" | "running" | "cancelled";
 };
 
 /**
@@ -355,7 +355,9 @@ export async function executeNode(
           : [{ role: "user" as const, content: fallbackPrompt }];
         // No explicit temperature — the agent's saved runtime config
         // (fine-tune dialog) supplies the default inside runAgentTurn.
-        const { text, toolCalls } = await runAgentTurn(agent, history, {});
+        const { text, toolCalls } = await runAgentTurn(agent, history, {
+          skillCaller: "agent-node",
+        });
         const verbose = agent.runtime?.verbose;
         const logs = toolCalls.length > 0
           ? (verbose
@@ -469,6 +471,7 @@ export async function executeNode(
             toolKey,
             filtered,
             clusterTarget ? { cluster: clusterTarget } : {},
+            node.id,
           );
         // ##OUTPUTS## trailer: the built-in engines print it themselves, native
         // upstream tools do not — append it from the executor's file list so
@@ -536,6 +539,7 @@ export async function executeNode(
             toolKey,
             filtered,
             clusterTarget ? { cluster: clusterTarget } : {},
+            node.id,
           );
         // Same ##OUTPUTS## trailer + honest status as the alphafold branch above.
         const body = files.length

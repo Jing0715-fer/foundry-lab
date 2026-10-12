@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
-import { Loader2, Send, Trash2, Wrench, Database, type LucideIcon } from "lucide-react";
+import { Loader2, Send, Trash2, Wrench, Database, Globe, type LucideIcon } from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -397,7 +397,21 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
 
 function ToolCallCard({ call }: { call: ToolCall }) {
   const isComp = call.kind === "comp";
-  const Icon: LucideIcon = isComp ? Wrench : Database;
+  // Kind → icon: compute = wrench, search = globe (S-line web search is a
+  // first-class skill lane now, not a comp/bio side effect), bio = database.
+  const Icon: LucideIcon = isComp
+    ? Wrench
+    : call.kind === "search"
+      ? Globe
+      : Database;
+  // Subtle per-lane tint on the kind label so a scan of the transcript can
+  // tell compute / bio / search calls apart without reading the tool id.
+  const kindTint =
+    call.kind === "search"
+      ? "text-emerald-600 dark:text-emerald-400"
+      : call.kind === "bio"
+        ? "text-teal-600 dark:text-teal-400"
+        : "text-muted-foreground";
   const resultText = call.result ?? "";
   const truncated = resultText.length > 240 ? resultText.slice(0, 240) + "…" : resultText;
   const statusPill =
@@ -407,12 +421,14 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
         : call.status === "running"
           ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-          : "bg-muted text-muted-foreground";
+          : call.status === "deferred"
+            ? "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400"
+            : "bg-muted text-muted-foreground";
   return (
     <div className="rounded-md border bg-card p-2 text-xs">
       <div className="mb-1 flex items-center gap-1.5 font-medium">
         <Icon className="size-3.5 text-muted-foreground" />
-        <span className="uppercase tracking-wide text-muted-foreground">{call.kind}</span>
+        <span className={`uppercase tracking-wide ${kindTint}`}>{call.kind}</span>
         <span className="font-mono">{call.tool}</span>
         {call.status && (
           <span

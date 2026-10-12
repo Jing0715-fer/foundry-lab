@@ -214,11 +214,15 @@ function normalizePathParams(
 /**
  * Execute a comp tool — native upstream tool if installed, otherwise the
  * built-in real algorithm engine. NEVER simulates.
+ * opts.runKey — an opaque stop-lane key (the canvas node id): the spawned
+ * child process is registered under it so killActiveProcess(runKey) can
+ * terminate a running node's engine (E4).
  */
 export async function executeCompToolReal(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
+  opts: { runKey?: string } = {},
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey);
   if (!def) {
@@ -234,6 +238,7 @@ export async function executeCompToolReal(
   }
   // Relative input paths → project-root absolute (see normalizePathParams).
   params = normalizePathParams(def, params);
+  const runKey = opts.runKey;
 
   // FOUNDRY TIER — the official RosettaCommons foundry platform
   // (rc-foundry wheel: the MPNN re-implementation maintained by the IPD).
@@ -242,19 +247,50 @@ export async function executeCompToolReal(
   // family jobs run the REAL trained network.
   if (FOUNDRY_MPNN_TOOLS.has(toolKey) && isFoundryMpnnReady()) {
     try {
-      return await runFoundryMpnn(toolKey, params, workDir, Date.now());
+      return await runFoundryMpnn(toolKey, params, workDir, Date.now(), runKey);
     } catch (e) {
       // Foundry failed to spawn (never a tool-level result) — fall through
       // to the native/built-in tiers with a clear notice.
       const notice =
         `[FOUNDRY UNAVAILABLE — ${e instanceof Error ? e.message : String(e)}]\n` +
         `Falling back to native/built-in execution.\n\n`;
-      const next = await executeNativeOrEngine(toolKey, params, workDir);
+      const next = await executeNativeOrEngine(toolKey, params, workDir, runKey);
       return { ...next, stdout: notice + next.stdout };
     }
   }
 
-  return executeNativeOrEngine(toolKey, params, workDir);
+  return executeNativeOrEngine(toolKey, params, workDir, runKey);
+}
+
+// ── Active process registry (E4 stop lane) ──────────────────────────────────
+// runKey (the canvas node id) → the currently-spawned engine process. The
+// stop route looks the node's process up here and kills it; entries are
+// removed by the process's own close handler.
+
+const ACTIVE_PROCS = new Map<string, ReturnType<typeof spawn>>();
+
+function registerProc(runKey: string | undefined, proc: ReturnType<typeof spawn>): void {
+  if (!runKey) return;
+  ACTIVE_PROCS.set(runKey, proc);
+}
+
+function unregisterProc(runKey: string | undefined, proc: ReturnType<typeof spawn>): void {
+  if (!runKey) return;
+  if (ACTIVE_PROCS.get(runKey) === proc) ACTIVE_PROCS.delete(runKey);
+}
+
+/** Kill the process registered under runKey (E4 stop). Returns true when a
+ * process was found and signalled. */
+export function killActiveProcess(runKey: string): boolean {
+  const proc = ACTIVE_PROCS.get(runKey);
+  if (!proc) return false;
+  ACTIVE_PROCS.delete(runKey);
+  try { proc.kill("SIGTERM"); } catch { /* already gone */ }
+  // Escalation: SIGKILL after a 2s grace window (best-effort).
+  setTimeout(() => {
+    try { proc.kill("SIGKILL"); } catch { /* already gone */ }
+  }, 2000).unref?.();
+  return true;
 }
 
 /** Native-then-builtin dispatch (the pre-foundry execution flow). */
@@ -262,6 +298,7 @@ async function executeNativeOrEngine(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const entry = getToolRegistryEntry(toolKey);
   const installed = isToolInstalled(toolKey);
@@ -273,7 +310,7 @@ async function executeNativeOrEngine(
     if (entry.nativeExecution) {
       // NATIVE: run the real upstream tool.
       try {
-        const native = await runNativeTool(toolKey, params, workDir);
+        const native = await runNativeTool(toolKey, params, workDir, runKey);
         // Environment-level failures (missing python deps, missing script)
         // fall back to the built-in engine; genuine tool errors (bad input
         // etc.) are reported honestly as native failures.
@@ -286,7 +323,7 @@ async function executeNativeOrEngine(
         const notice =
           `[NATIVE TOOL UNAVAILABLE — falling back to the built-in real algorithm engine]\n` +
           `Reason: ${native.stderr.trim().split("\n").slice(-1)[0]?.slice(0, 300) || `exit ${native.exitCode}`}\n\n`;
-        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
         return { ...engine, stdout: notice + engine.stdout };
       } catch (e) {
         // Native tool failed to spawn — fall through to the built-in engine
@@ -294,14 +331,14 @@ async function executeNativeOrEngine(
         const notice =
           `[NATIVE TOOL FAILED — falling back to the built-in real algorithm engine]\n` +
           `Error: ${(e as Error).message ?? String(e)}\n\n`;
-        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
         return { ...engine, stdout: notice + engine.stdout };
       }
     }
     // Installed but engine-executed (no CLI entry point — e.g. pip packages
     // used via their Python API). Run the built-in real algorithm engine and
     // surface that the package is present.
-    const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+    const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
     return {
       ...engine,
       stdout:
@@ -311,7 +348,7 @@ async function executeNativeOrEngine(
   }
 
   // BUILT-IN ENGINE (real algorithm, no upstream tool needed).
-  return runBuiltinEngine(toolKey, params, workDir, startedAt);
+  return runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
 }
 
 /**
@@ -324,6 +361,7 @@ async function runFoundryMpnn(
   params: Record<string, unknown>,
   workDir: string,
   startedAt: number,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const py = resolveFoundryPython();
   if (!py) throw new Error("foundry python not resolvable");
@@ -376,6 +414,8 @@ async function runFoundryMpnn(
     displayCommand,
     startedAt,
     10 * 60 * 1000,
+    undefined,
+    runKey,
   );
   return {
     ...res,
@@ -399,6 +439,7 @@ async function runNativeTool(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey)!;
   const entry = getToolRegistryEntry(toolKey)!;
@@ -457,6 +498,7 @@ async function runNativeTool(
       Date.now(),
       mode.timeoutMs,
       childEnv,
+      runKey,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -470,6 +512,7 @@ async function runNativeTool(
       Date.now(),
       mode.timeoutMs,
       childEnv,
+      runKey,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -484,6 +527,7 @@ async function runNativeTool(
       Date.now(),
       mode.timeoutMs,
       childEnv,
+      runKey,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -497,6 +541,7 @@ async function runNativeTool(
     Date.now(),
     mode.timeoutMs,
     childEnv,
+    runKey,
   );
   return { ...res, executor: "native", realToolUsed: true };
 }
@@ -507,6 +552,7 @@ async function runBuiltinEngine(
   params: Record<string, unknown>,
   workDir: string,
   startedAt: number,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey)!;
   const engine = engineForTool(toolKey);
@@ -542,6 +588,8 @@ async function runBuiltinEngine(
     displayCommand,
     startedAt,
     10 * 60 * 1000,
+    undefined,
+    runKey,
   );
   return {
     ...res,
@@ -550,7 +598,8 @@ async function runBuiltinEngine(
   };
 }
 
-/** Run a process and capture stdout/stderr/exit code + output files. */
+/** Run a process and capture stdout/stderr/exit code + output files.
+ *  runKey registers the child in the E4 stop registry while it lives. */
 async function runProcess(
   cmd: string,
   args: string[],
@@ -559,6 +608,7 @@ async function runProcess(
   startedAt: number,
   timeoutMs = 5 * 60 * 1000,
   env?: NodeJS.ProcessEnv,
+  runKey?: string,
 ): Promise<Omit<ExecutionResult, "executor" | "realToolUsed">> {
   return new Promise((resolvePromise) => {
     const stdoutChunks: string[] = [];
@@ -573,6 +623,7 @@ async function runProcess(
         shell: false,
         env,
       });
+      registerProc(runKey, proc);
     } catch (e) {
       resolvePromise({
         stdout: "",
@@ -594,6 +645,7 @@ async function runProcess(
 
     const finish = async (code: number | null) => {
       clearTimeout(timer);
+      unregisterProc(runKey, proc);
       // Collect output files created during this run (real artifacts only).
       // Scans two levels deep — native tools often write into subfolders
       // (e.g. ProteinMPNN writes to <out>/seqs/…).

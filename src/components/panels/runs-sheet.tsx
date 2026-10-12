@@ -4,11 +4,14 @@
 //
 // Cross-workflow execution view, opened from the header's Runs button:
 //   - Running & Queued: live progress bars per node (+ its workflow), polled
-//     every 3s while the sheet is open.
-//   - Failed (last 48h): each row has Retry → POST /api/workflow/nodes/:id/run
-//     (single-node lane: claims the terminal node conditionally and cascades
-//     downstream whose upstreams are completed).
-//   - Recent (last 48h): terminal runs with duration.
+//     every 3s while the sheet is open. Each row carries a Stop button →
+//     POST /api/workflow/nodes/:id/stop (E4: kills the local engine process
+//     / cancels the cluster job and flips the row to cancelled).
+//   - Failed (last 48h): each row has Retry → POST /api/workflow/nodes/:id/run?async=1
+//     (E2: claims + responds immediately; execution continues in the
+//     background and the 3s poll surfaces progress — the button spinner no
+//     longer spins for the whole engine run).
+//   - Recent (last 48h): terminal runs (incl. cancelled) with duration.
 //
 // Row click → loads that workflow (switcher contract: fetch by id →
 // setWorkflow), selects the node, jumps to the canvas.
@@ -16,6 +19,7 @@
 import * as React from "react";
 import {
   Activity,
+  Ban,
   CheckCircle2,
   ChevronRight,
   CircleDashed,
@@ -23,6 +27,7 @@ import {
   ListVideo,
   Loader2,
   RotateCw,
+  Square,
   TriangleAlert,
 } from "lucide-react";
 
@@ -57,6 +62,7 @@ interface RunsPayload {
     running: number;
     queued: number;
     failed: number;
+    cancelled: number;
     completedInWindow: number;
   };
 }
@@ -105,6 +111,13 @@ function Row({
       aria-label={`${run.name} — ${run.status}. Activate to open on the canvas.`}
       onClick={onClick}
       onKeyDown={(e) => {
+        // Keyboard activation for the ROW only: keydowns originating inside
+        // an embedded button (Stop / Retry) must bubble to that button, not
+        // trigger the row jump — the old unconditional handler stole Enter
+        // from keyboard users (QA P1-4).
+        if ((e.target as HTMLElement).closest("button, a, [role='button']")) {
+          return;
+        }
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onClick?.();
@@ -121,7 +134,9 @@ function Row({
               ? "bg-slate-500/15 text-slate-600 dark:text-slate-400"
               : run.status === "failed"
                 ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
-                : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+                : run.status === "cancelled"
+                  ? "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400"
+                  : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
         )}
       >
         {run.status === "running" ? (
@@ -130,12 +145,22 @@ function Row({
           <CircleDashed className="size-4" />
         ) : run.status === "failed" ? (
           <TriangleAlert className="size-4" />
+        ) : run.status === "cancelled" ? (
+          <Ban className="size-4" />
         ) : (
           <CheckCircle2 className="size-4" />
         )}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium leading-tight">
+        <span
+          className={cn(
+            "block truncate text-sm font-medium leading-tight",
+            // Cancelled runs are dead, not done — strike them through so the
+            // lane visually separates "produced output" from "aborted".
+            run.status === "cancelled" &&
+              "text-muted-foreground line-through",
+          )}
+        >
           {run.name}
         </span>
         <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
@@ -168,6 +193,10 @@ export function RunsSheet() {
   const [loading, setLoading] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [retryingId, setRetryingId] = React.useState<string | null>(null);
+  // Per-row stop in flight (spinner replaces the Square icon on that row).
+  const [stoppingId, setStoppingId] = React.useState<string | null>(null);
+  // "Stop all" in flight — disables the header button while requests land.
+  const [stoppingAll, setStoppingAll] = React.useState(false);
 
   // Poll while the sheet is open (3s), stop on close.
   React.useEffect(() => {
@@ -226,15 +255,20 @@ export function RunsSheet() {
     [setRunsSheetOpen, toast],
   );
 
-  // Retry a failed node via the single-node run lane (claims terminal
-  // nodes conditionally + BFS-cascades completed-upstream descendants).
+  // Retry a failed node via the single-node async run lane (E2): the route
+  // claims the terminal node and responds with { async, node } immediately,
+  // then executes in the background — so this fetch is sub-second and the
+  // existing 3s poll takes over progress reporting. Cascade semantics are
+  // unchanged (reclaimer accepts completed/failed/cancelled; downstream
+  // nodes with completed upstreams run too).
   const retry = React.useCallback(
     async (run: RunRow) => {
       setRetryingId(run.nodeId);
       try {
-        const res = await fetch(`/api/workflow/nodes/${run.nodeId}/run`, {
-          method: "POST",
-        });
+        const res = await fetch(
+          `/api/workflow/nodes/${run.nodeId}/run?async=1`,
+          { method: "POST" },
+        );
         if (!res.ok) {
           const err = await res.json().catch(() => ({}));
           throw new Error(err.error || `HTTP ${res.status}`);
@@ -259,9 +293,83 @@ export function RunsSheet() {
     [toast],
   );
 
+  // Stop a running/queued node (E4). The route kills the local engine
+  // process (SIGTERM→SIGKILL) or cancels the cluster job, flips the row to
+  // cancelled, and guards against late natural results overwriting the
+  // user's intent. 409 = already terminal — surfaced as a destructive toast.
+  const stop = React.useCallback(
+    async (run: RunRow) => {
+      setStoppingId(run.nodeId);
+      try {
+        const res = await fetch(`/api/workflow/nodes/${run.nodeId}/stop`, {
+          method: "POST",
+        });
+        const body: { detail?: string; error?: string } = await res
+          .json()
+          .catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(body.error || `HTTP ${res.status}`);
+        }
+        toast({
+          title: "Stop requested",
+          description: body.detail || `${run.name} is being stopped`,
+        });
+        // Immediate refresh so the row moves to Recent (cancelled) right away.
+        const fresh = await fetch("/api/runs");
+        if (fresh.ok) setData(await fresh.json());
+      } catch (e) {
+        toast({
+          title: "Stop failed",
+          description: e instanceof Error ? e.message : "Unknown error",
+          variant: "destructive",
+        });
+      } finally {
+        setStoppingId(null);
+      }
+    },
+    [toast],
+  );
+
+  // Stop EVERY running+queued row at once. allSettled because individual 409s
+  // (a row that finished between render and click) must not abort the batch —
+  // the summary toast reports how many actually stopped.
+  const stopAll = React.useCallback(
+    async (rows: RunRow[]) => {
+      if (rows.length === 0 || stoppingAll) return;
+      setStoppingAll(true);
+      try {
+        const results = await Promise.allSettled(
+          rows.map((r) =>
+            fetch(`/api/workflow/nodes/${r.nodeId}/stop`, {
+              method: "POST",
+            }),
+          ),
+        );
+        const stopped = results.filter(
+          (r) => r.status === "fulfilled" && r.value.ok,
+        ).length;
+        if (stopped === rows.length) {
+          toast({ title: `Stopped ${stopped} nodes`, variant: "success" });
+        } else {
+          toast({
+            title: `Stopped ${stopped} nodes`,
+            description: `${rows.length - stopped} already finished — nothing to stop.`,
+          });
+        }
+        const fresh = await fetch("/api/runs");
+        if (fresh.ok) setData(await fresh.json());
+      } finally {
+        setStoppingAll(false);
+      }
+    },
+    [stoppingAll, toast],
+  );
+
   const summary = data?.summary;
   const running = data?.active.filter((r) => r.status === "running") ?? [];
   const queued = data?.active.filter((r) => r.status === "pending") ?? [];
+  // The rows the Active lane renders (and what "Stop all" targets).
+  const activeRows = [...running, ...queued];
 
   return (
     <Sheet open={open} onOpenChange={setRunsSheetOpen}>
@@ -278,7 +386,11 @@ export function RunsSheet() {
             {loading && !data
               ? "Loading run queue…"
               : summary
-                ? `${summary.running} running · ${summary.queued} queued · ${summary.failed} failed (48h) · ${summary.completedInWindow} completed (48h)`
+                ? `${summary.running} running · ${summary.queued} queued · ${summary.failed} failed (48h)` +
+                  (summary.cancelled > 0
+                    ? ` · ${summary.cancelled} stopped (48h)`
+                    : "") +
+                  ` · ${summary.completedInWindow} completed (48h)`
                 : "Global run queue across all workflows"}
           </SheetDescription>
         </SheetHeader>
@@ -292,17 +404,67 @@ export function RunsSheet() {
             <>
           {/* Active lane */}
           <section aria-label="Running and queued nodes">
-            <h3 className="px-2 pb-1 pt-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-              Running &amp; Queued
-            </h3>
+            {/* Header row: label + "Stop all" (kept OUTSIDE the h3 so the
+                heading's accessible name stays just "Running & Queued"). */}
+            <div className="flex items-center gap-2 px-2 pb-1 pt-1">
+              <h3 className="min-w-0 flex-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Running &amp; Queued
+              </h3>
+              {activeRows.length > 0 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-6 shrink-0 gap-1 px-2 text-[10px] font-medium uppercase tracking-wide"
+                  disabled={stoppingAll}
+                  onClick={() => void stopAll(activeRows)}
+                >
+                  {stoppingAll ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : (
+                    <Square className="size-3" />
+                  )}
+                  Stop all
+                </Button>
+              )}
+            </div>
             {running.length === 0 && queued.length === 0 ? (
               <p className="px-2 py-3 text-sm text-muted-foreground">
                 Nothing executing right now.
               </p>
             ) : (
               <div className="max-h-72 space-y-0.5 overflow-y-auto">
-                {[...running, ...queued].map((r) => (
-                  <Row key={r.nodeId} run={r} onClick={() => void jumpTo(r)} trailing={<ChevronRight className="size-4 shrink-0 text-muted-foreground" />} />
+                {activeRows.map((r) => (
+                  <Row
+                    key={r.nodeId}
+                    run={r}
+                    onClick={() => void jumpTo(r)}
+                    trailing={
+                      <span className="flex shrink-0 items-center gap-1">
+                        {/* Real <button> (sibling of the ChevronRight, not
+                            wrapped in anything interactive): the row root is
+                            div[role=button], and stopPropagation keeps the
+                            click from triggering the row's jump-to-canvas. */}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-7 shrink-0 gap-1 px-2.5 text-xs"
+                          disabled={stoppingId === r.nodeId}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void stop(r);
+                          }}
+                        >
+                          {stoppingId === r.nodeId ? (
+                            <Loader2 className="size-3.5 animate-spin" />
+                          ) : (
+                            <Square className="size-3" />
+                          )}
+                          Stop
+                        </Button>
+                        <ChevronRight className="size-4 shrink-0 text-muted-foreground" />
+                      </span>
+                    }
+                  />
                 ))}
               </div>
             )}

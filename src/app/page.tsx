@@ -14,6 +14,7 @@ import { NodePalette } from "@/components/canvas/palette";
 import { NodeInspector } from "@/components/canvas/inspector";
 import { CanvasToolbar } from "@/components/canvas/canvas-toolbar";
 import { AgentsPanel } from "@/components/panels/agents-panel";
+import { SkillsPanel } from "@/components/panels/skills-panel";
 import { TasksPanel } from "@/components/panels/tasks-panel";
 import { MeetingsPanel } from "@/components/panels/meetings-panel";
 import { ResearchPanel } from "@/components/panels/research-panel";
@@ -352,6 +353,7 @@ export default function Home() {
           )}
           {activePanel === "dashboard" && <div className="min-h-0 flex-1 overflow-y-auto"><DashboardPanel /></div>}
           {activePanel === "agents" && <div className="min-h-0 flex-1 overflow-y-auto"><AgentsPanel /></div>}
+          {activePanel === "skills" && <div className="min-h-0 flex-1 overflow-y-auto"><SkillsPanel /></div>}
           {activePanel === "tasks" && <div className="min-h-0 flex-1 overflow-y-auto"><TasksPanel /></div>}
           {activePanel === "meetings" && <div className="min-h-0 flex-1 overflow-y-auto"><MeetingsPanel /></div>}
           {activePanel === "research" && <div className="min-h-0 flex-1 overflow-y-auto"><ResearchPanel /></div>}

@@ -8,15 +8,20 @@ import {
   roundPrompt,
   summaryPrompt,
 } from "./agents";
-import { getCompTool, buildCommand, extractToolCalls, type CompToolDef } from "./tools";
+import { getCompTool, buildCommand, type CompToolDef } from "./tools";
 import { materializeSequence } from "./alphafold";
 import { executeCompToolReal } from "./real-executor";
+import {
+  describeSkillsForPrompt,
+  extractSkillCalls,
+  invokeSkill,
+  type SkillCaller,
+} from "./skills";
 import { db } from "@/lib/db";
 import { startClusterToolRun, reconcileClusterJobs, getRun } from "./cluster/cluster-run";
 import type { ClusterRunTarget } from "./cluster/types";
 import { resolve } from "path";
 import { mkdirSync } from "fs";
-import { runBio } from "./bio-tools";
 import type {
   AgentDTO,
   AgentRuntimeConfig,
@@ -36,6 +41,9 @@ export interface AgentRunOptions {
   temperature?: number;
   /** Max tool-calling rounds (default 3). */
   maxRounds?: number;
+  /** Audit dimension — which surface invoked the agent (skill invocations
+   *  are attributed to this caller). Default "agent-chat". */
+  skillCaller?: SkillCaller;
   /**
    * When true, after the tool-calling loop completes, run one more LLM call
    * asking the agent to review + improve its answer (deepseek-harness reflect step).
@@ -146,18 +154,27 @@ function resolveAgentLLMOptions(
 }
 
 /** Build the agent's system prompt, appending the fine-tune dialog's
- *  systemPromptSuffix when the agent has one saved. */
+ *  systemPromptSuffix when the agent has one saved. The skill-invocation
+ *  section is rendered by the skill REGISTRY (single source of truth —
+ *  every registered skill documents itself, gated by the agent's
+ *  knowledge config). */
 function buildAgentSystemPrompt(agent: AgentDTO): string {
-  const base = generateAgentSystemPrompt(agent);
+  const base = generateAgentSystemPrompt(
+    agent,
+    describeSkillsForPrompt(agent.knowledge),
+  );
   const suffix = agent.runtime?.systemPromptSuffix?.trim();
   if (!suffix) return base;
   return `${base}\n\n--- Additional operator instructions ---\n${suffix}`;
 }
 
 /**
- * Run a single agent turn with a tool-calling loop (up to `maxRounds`).
- * Each round: call LLM → extract tool fences → execute tools → feed results back.
- * When `opts.reflect` is true, run one final self-critique pass (deepseek-harness reflect).
+ * Run a single agent turn with the standardized SKILL-calling loop (up to
+ * `maxRounds`). Each round: call LLM → parse skill fences (```skill plus
+ * legacy ```tool / ```bio) → invoke every call through the unified skill
+ * executor (validation → gate → timeout → audit) → feed the canonical
+ * feedback back. When `opts.reflect` is true, run one final self-critique
+ * pass (deepseek-harness reflect).
  * Temperature / maxTokens / topP default to the agent's saved runtime config
  * (fine-tune dialog) when the caller doesn't specify them.
  */
@@ -180,75 +197,40 @@ export async function runAgentTurn(
     { role: "system", content: system },
     ...history.map((m) => ({ role: m.role, content: m.content }) as ChatMessage),
   ];
+  const skillCtx = {
+    caller: opts.skillCaller ?? "agent-chat",
+    agentId: agent.id,
+    agentTitle: agent.title,
+    knowledge: agent.knowledge,
+  };
 
   let lastText = "";
   for (let round = 0; round < maxRounds; round++) {
     const reply = await chat(convo, llmOpts);
     lastText = reply;
-    const { comp, bio } = extractToolCalls(reply);
-    if (comp.length === 0 && bio.length === 0) break;
+    const calls = extractSkillCalls(reply);
+    if (calls.length === 0) break;
 
     // Push the assistant reply ONCE per round (not once per tool call — the
     // old duplicated pushes made the in-convo history grow N copies of the
     // same reply whenever several fences appeared in one round).
     convo.push({ role: "assistant", content: reply });
 
-    // Execute comp tool calls (real algorithms via the execution engine).
-    for (const c of comp) {
-      const def = getCompTool(c.tool);
-      if (!def) continue;
-      const workDir = resolve(process.cwd(), "outputs", c.tool, `agent-${Date.now()}`);
-      let resultText = "";
-      let status: ToolCall["status"] = "completed";
-      try {
-        const res = await executeCompToolReal(c.tool, c.params, workDir);
-        resultText = res.stdout || res.stderr;
-        status = res.exitCode === 0 ? "completed" : "failed";
-      } catch (e) {
-        resultText = `Error: ${(e as Error).message}`;
-        status = "failed";
-      }
+    // Unified skill lane: every call (compute / bio / search, any fence
+    // protocol) flows through the ONE standardized executor — validated,
+    // gate-checked, watchdog-bounded, audited, and fed back in the
+    // canonical format.
+    for (const c of calls) {
+      const inv = await invokeSkill(c.skillId, c.params, skillCtx);
       const tc: ToolCall = {
-        kind: "comp",
-        tool: c.tool,
+        kind: inv.category === "compute" ? "comp" : inv.category,
+        tool: inv.skillId,
         params: c.params,
-        result: resultText,
-        status,
+        result: inv.result,
+        status: inv.status === "completed" ? "completed" : "failed",
       };
       toolCalls.push(tc);
-      convo.push({
-        role: "user",
-        content: `[Tool result for ${c.tool}]\n${resultText}\n\nRevise your answer using these results.`,
-      });
-    }
-    // Execute bio tool calls.
-    for (const b of bio) {
-      try {
-        const res = await runBio(b.type as "blast" | "pdb" | "pubmed" | "uniprot", b as Record<string, unknown>);
-        const summary = res.hits
-          .map((h) => `- ${h.id}: ${h.title}`)
-          .join("\n");
-        const tc: ToolCall = {
-          kind: "bio",
-          tool: b.type,
-          params: b as Record<string, unknown>,
-          result: summary,
-          status: "completed",
-        };
-        toolCalls.push(tc);
-        convo.push({
-          role: "user",
-          content: `[Bio tool ${b.type} returned ${res.count} hits]\n${summary}\n\nIncorporate these into your answer.`,
-        });
-      } catch (e) {
-        toolCalls.push({
-          kind: "bio",
-          tool: b.type,
-          params: b as Record<string, unknown>,
-          result: `Error: ${(e as Error).message}`,
-          status: "failed",
-        });
-      }
+      convo.push({ role: "user", content: inv.feedback });
     }
   }
 
@@ -304,7 +286,11 @@ export async function runTeamMeeting(
           content: `${m.agentName}: ${m.message}`,
         })),
       ];
-      const { text, toolCalls } = await runAgentTurn(agent, history, { temperature, maxRounds: 1 });
+      const { text, toolCalls } = await runAgentTurn(agent, history, {
+        temperature,
+        maxRounds: 1,
+        skillCaller: "meeting",
+      });
       messages.push({
         agentName: agent.title,
         agentColor: agent.color,
@@ -361,7 +347,11 @@ export async function runIndividualMeeting(
         content: `${m.agentName}: ${m.message}`,
       })),
     ];
-    const { text } = await runAgentTurn(agent, agentHistory, { temperature, maxRounds: 1 });
+    const { text } = await runAgentTurn(agent, agentHistory, {
+      temperature,
+      maxRounds: 1,
+      skillCaller: "meeting",
+    });
     messages.push({ agentName: agent.title, agentColor: agent.color, message: text, roundIndex: r });
 
     const criticPrompt =
@@ -418,7 +408,7 @@ export async function runResearch(
       [
         { role: "user", content: `[Planning phase] Propose a research plan for: ${topic}. ${description ?? ""} (≤200 words)` },
       ],
-      { temperature, maxRounds: 1 },
+      { temperature, maxRounds: 1, skillCaller: "research" },
     );
     messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: 0, phase: "planning" });
   }
@@ -433,7 +423,11 @@ export async function runResearch(
           content: `${m.agentName}: ${m.message}`,
         })),
       ];
-      const { text } = await runAgentTurn(a, history, { temperature, maxRounds: 1 });
+      const { text } = await runAgentTurn(a, history, {
+        temperature,
+        maxRounds: 1,
+        skillCaller: "research",
+      });
       messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: r, phase: "researching" });
     }
   }
@@ -518,11 +512,14 @@ export function extractClusterTarget(raw: unknown): ClusterRunTarget | null {
  *  until the remote job finishes. Returns {summary, stdout, files, command}.
  *  `exitCode` is null + `pollCeiling: true` when the cluster poll ceiling
  *  was reached while the remote job was still running (NOT a failure and NOT
- *  a success — callers must keep the node running and reconcile later). */
+ *  a success — callers must keep the node running and reconcile later).
+ *  `runKey` (the canvas node id) registers the spawned local process /
+ *  tags the cluster ToolJob row so POST /nodes/:id/stop can kill it. */
 export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
   opts: { cluster?: ClusterRunTarget } = {},
+  runKey?: string,
 ): Promise<{
   summary: string;
   stdout: string;
@@ -536,10 +533,12 @@ export async function executeCompTool(
     return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "", exitCode: 1 };
   }
   if (opts.cluster) {
-    return executeCompToolOnCluster(def, toolKey, params, opts.cluster);
+    return executeCompToolOnCluster(def, toolKey, params, opts.cluster, runKey);
   }
   const workDir = resolve(process.cwd(), "outputs", toolKey, `wf-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
-  const res = await executeCompToolReal(toolKey, params, workDir);
+  const res = await executeCompToolReal(toolKey, params, workDir, {
+    runKey,
+  });
   const summary = def.resultSummary(params, res.stdout);
   // Honest failure surfacing: non-zero exits carry stderr + a clear banner
   // so the node logs show the REAL error (never a silent success).
@@ -565,6 +564,7 @@ async function executeCompToolOnCluster(
   toolKey: string,
   params: Record<string, unknown>,
   target: ClusterRunTarget,
+  runKey?: string,
 ): Promise<{
   summary: string;
   stdout: string;
@@ -593,7 +593,9 @@ async function executeCompToolOnCluster(
         stdout: "",
         stderr: "",
         outputFiles: JSON.stringify([]),
-        triggeredBy: "workflow",
+        // E4 stop lane: node-keyed triggeredBy lets POST /nodes/:id/stop find
+        // and cancel this job; non-node callers keep the historical value.
+        triggeredBy: runKey ? `node:${runKey}` : "workflow",
         startedAt: new Date(),
       },
     });

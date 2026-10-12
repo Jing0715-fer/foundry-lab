@@ -70,11 +70,18 @@ export async function GET() {
       select: SELECT,
     })) as RunNode[];
 
-    // Terminal lanes from the window, newest first.
+    // Terminal lanes from the window, newest first (cancelled included —
+    // stopped runs land in the recent feed with their status visible).
+    // Queued-then-stopped rows have startedAt NULL (never claimed) — a
+    // cancelled row also matches on completedAt so it stays visible instead
+    // of vanishing between the active and recent lanes (QA P2-5).
     const terminalRows = (await db.node.findMany({
       where: {
-        status: { in: ["completed", "failed"] },
-        startedAt: { gte: since },
+        status: { in: ["completed", "failed", "cancelled"] },
+        OR: [
+          { startedAt: { gte: since } },
+          { AND: [{ status: "cancelled" }, { completedAt: { gte: since } }] },
+        ],
       },
       orderBy: { startedAt: "desc" },
       take: MAX_RECENT * 2, // over-fetch once, split after (failed wins the cap)
@@ -82,12 +89,21 @@ export async function GET() {
     })) as RunNode[];
 
     // Exact window counts (independent of the display caps above).
-    const [failedCount, completedCount] = await Promise.all([
+    const [failedCount, completedCount, cancelledCount] = await Promise.all([
       db.node.count({
         where: { status: "failed", startedAt: { gte: since } },
       }),
       db.node.count({
         where: { status: "completed", startedAt: { gte: since } },
+      }),
+      db.node.count({
+        where: {
+          status: "cancelled",
+          OR: [
+            { startedAt: { gte: since } },
+            { completedAt: { gte: since } },
+          ],
+        },
       }),
     ]);
 
@@ -95,7 +111,13 @@ export async function GET() {
       .filter((n) => n.status === "failed")
       .slice(0, MAX_RECENT)
       .map(trim);
-    const recent = terminalRows.slice(0, MAX_RECENT).map(trim);
+    const recent = terminalRows
+      // Cancelled runs first-class in recent (before completed — a stop is
+      // fresher news than a finish).
+      .sort((a, b) =>
+        (a.status === "cancelled" ? -1 : 0) - (b.status === "cancelled" ? -1 : 0))
+      .slice(0, MAX_RECENT)
+      .map(trim);
 
     return NextResponse.json({
       scannedAt: new Date().toISOString(),
@@ -106,6 +128,7 @@ export async function GET() {
         running: activeRows.filter((n) => n.status === "running").length,
         queued: activeRows.filter((n) => n.status === "pending").length,
         failed: failedCount,
+        cancelled: cancelledCount,
         completedInWindow: completedCount,
       },
     });

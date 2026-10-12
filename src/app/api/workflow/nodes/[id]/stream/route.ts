@@ -112,7 +112,7 @@ export async function GET(
       });
 
       // Short-circuit if the node is already terminal on connection.
-      if (initial.status === "completed" || initial.status === "failed") {
+      if (initial.status === "completed" || initial.status === "failed" || initial.status === "cancelled") {
         send("done", { status: initial.status });
         close();
         return;
@@ -140,8 +140,11 @@ export async function GET(
           return null; // still running remotely — nothing to settle yet
         }
 
-        // Map the ToolJob outcome onto node semantics.
-        const nodeStatus = job.status === "completed" ? "completed" : "failed";
+        // Map the ToolJob outcome onto node semantics. A CANCELLED job
+        // (user stop) must land the node CANCELLED — mapping it to failed
+        // would paint a red failure for a deliberate stop (QA P1-2).
+        const nodeStatus =
+          job.status === "completed" ? "completed" : job.status === "cancelled" ? "cancelled" : "failed";
         let files: string[] = [];
         try {
           const parsed = job.outputFiles ? JSON.parse(job.outputFiles) : [];
@@ -160,9 +163,12 @@ export async function GET(
           (job.stderr ? `[stderr]\n${job.stderr.slice(-2000)}\n` : "") +
           (files.length ? `##OUTPUTS## ${JSON.stringify(files)}\n` : "");
 
+        // Conditional write (status still "running"): a user Stop (or any
+        // other lane) may have flipped the row terminal between our read at
+        // the top of this function and now — never resurrect it (QA P1-2).
         await db.node
-          .update({
-            where: { id: nodeRow.id },
+          .updateMany({
+            where: { id: nodeRow.id, status: "running" },
             data: {
               status: nodeStatus,
               result,
@@ -195,7 +201,7 @@ export async function GET(
           const result = settled?.result ?? current.result ?? "";
 
           send("status", { status, progress, logs, result });
-          if (status === "completed" || status === "failed") {
+          if (status === "completed" || status === "failed" || status === "cancelled") {
             send("done", { status });
             close();
             return;
