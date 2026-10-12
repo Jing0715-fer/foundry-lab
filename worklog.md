@@ -4005,3 +4005,17 @@ Work Log:
 
 Stage Summary:
 - 用户问题的答案从"没有"变为"有"：18 技能 4 族单一注册表 + 单一执行管道 + 单一审计表 + 单一 prompt 清单，8 条历史协议全部收敛（旧围栏向后兼容），web.search 假能力补真。三门控语义全部执行层强制；流式泳道策略拒绝可见化（skipped 状态）；幻觉技能名进审计。浏览器级金路径（真模型+真 API+真审计+真 UI 卡片）+ 移动端 + console 零告警全过；基线纪律遵守（重冻+恢复+字段级核对）。新工程教训 2 条（barrel 副作用注册、db push 后必须重启）固化于本条目。
+
+---
+Task ID: 22-merge
+Agent: main-orchestrator (Z.ai Code)
+Task: 并行会话合并决议：本地 S/E 线（22-*）与远端 main（D→C+E→F→G→H→J）的双实现冲突处置
+
+Work Log:
+- 冲突发现：本地 2 commits（56f5b19/b0d17b1，S 线 skill 标准化 + E 线执行健壮性，含 QA/e2e 全验证）与远端 main 5+ lanes 并行演化——远端 C+E 线（7423d95）同样交付 watchdog/run-stop，J 线（1f9f187）同样交付 skill 标准化（且收敛面更广：canvas 变更/PI/REST bio-tools/workflow 节点/ToolJob 队列全部入审计）。rebase 冲突 24 文件（同名新文件 AA×5：skills 两个 API、stop 路由、skills-panel、SkillInvocation schema）。
+- 决议：远端 main 为活跃主线（多 lane 领先 + 历史上已有并行合并先例）；本地完整实现（含独有能力：ACTIVE_PROCS 本地进程真实 SIGTERM 击杀、cancelled 一等状态、?async=1 异步 Retry、E 线 4×P1 竞态修复）**整体保留为参考分支 `parallel/s-e-lane-22` 并推送**，本地 reset --hard origin/main。
+- 环境恢复：db/custom.db 从 main 冻结基线（demo-baseline.db）恢复 + prisma db push 重生成 client + dev server 重启——app/skills/invocations/runs 全 200，演示基线完好（Antibody Campaign 5 + My First Workflow 14），lint/tsc 零错误零告警。
+- 后续合并建议（下个会话执行）：以 main 的 J 线 skill 层为基座，从 `parallel/s-e-lane-22` 移植三块独有改进——①本地引擎进程真实击杀（runKey 贯穿 6 个 spawn 点 + ACTIVE_PROCS 注册表，替代 J 线「JS 无法取消」的行级 stop）；②cancelled 终态 + 条件写守卫族（stop/reconcile/迟到 lane 三方竞态的系统性修复，QA 22-f P1×4）；③RunsSheet 异步 Retry + Stop-all 键盘冒泡修复。移植后需按验收标准重跑 QA + 浏览器 e2e。
+
+Stage Summary:
+- 双实现冲突以「保留参考分支 + 回归主线」收口，零工作丢失；三块可移植改进已在参考分支上经完整 QA/e2e 验证；main 恢复干净运行（全 API 200 + 基线完好）。
