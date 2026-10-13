@@ -344,12 +344,58 @@ function safeJson(v: unknown): string {
   }
 }
 
+// ── Q1: response snippet grounding ──────────────────────────────────────────
+
+/** Cap for the raw-response snippet fed back to the model. Large enough to
+ *  carry a real webhook echo or a bio-search result list verbatim; small
+ *  enough that a tool loop with several calls cannot bloat the conversation
+ *  history (P-line E2E evidence: models fabricate around 1-line summaries,
+ *  not around real payloads). */
+const MAX_SNIPPET_CHARS = 800;
+
+/** Render the handler payload as a compact, capped, honest snippet.
+ *  - undefined / null / empty → null (no snippet section — nothing to ground).
+ *  - JSON-compact (no indent): the wire shape is what the model should quote.
+ *  - Truncation is EXPLICIT (`… +N chars`) so the model knows the payload
+ *    continues and says so instead of treating the cut as the whole story. */
+export function dataSnippet(data: unknown): string | null {
+  if (data === undefined || data === null) return null;
+  let text: string;
+  try {
+    text = JSON.stringify(data);
+  } catch {
+    text = String(data);
+  }
+  if (!text || text === "null" || text === "{}" || text === "[]") return null;
+  if (text.length <= MAX_SNIPPET_CHARS) return text;
+  const omitted = text.length - MAX_SNIPPET_CHARS;
+  return `${text.slice(0, MAX_SNIPPET_CHARS)} … (+${omitted} chars truncated — the payload continues; do not guess the remainder)`;
+}
+
 /** Build the feedback message the LLM sees after an invocation — honest for
- *  every terminal status (the old lanes only fed back successes/exceptions). */
+ *  every terminal status (the old lanes only fed back successes/exceptions).
+ *
+ *  Q1 (feedback grounding): the ok branch now carries a TRUNCATED RAW
+ *  RESPONSE SNIPPET. P-lane E2E proved the model will fabricate response
+ *  details when the feedback is a single summary line — it invented a
+ *  `data: [...]` array for a webhook that returned a flat object. Feeding
+ *  the real payload back (capped, JSON-compact) is the shortest path to
+ *  grounded rendering: the model can quote what actually came back
+ *  instead of improvising around a one-line summary. */
 export function skillFeedback(res: SkillRunResult): string {
   switch (res.status) {
-    case "ok":
-      return `[Skill ${res.skillId} succeeded]\n${res.summary}\n\nRevise your answer using these results.`;
+    case "ok": {
+      const snippet = dataSnippet(res.data);
+      return (
+        `[Skill ${res.skillId} succeeded]\n${res.summary}\n` +
+        (snippet
+          ? `\nRaw response (truncated to ${MAX_SNIPPET_CHARS} chars):\n${snippet}\n`
+          : "\n") +
+        "\nRevise your answer using ONLY these results — when you describe " +
+        "the response, use exactly the fields and values shown above; do " +
+        "not invent fields, values, or structure the response does not have."
+      );
+    }
     case "error":
       return `[Skill ${res.skillId} failed]\n${res.error}\n\nReport the failure honestly and suggest an alternative.`;
     case "denied":

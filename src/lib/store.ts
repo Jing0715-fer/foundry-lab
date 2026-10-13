@@ -105,8 +105,10 @@ interface AppState {
   pendingAgentEdit: { id: string; title: string | null } | null;
   /** M1 deep-link: the Skills panel tab another surface asked to open
    * (e.g. a chat QUEUED card's "Watch progress" button → "activity").
-   * Consumed by the Skills panel on mount, then cleared. */
-  pendingSkillTab: "registry" | "activity" | "insights" | null;
+   * Q3: "templates" targets the curated skill-pack tab (the pack cards'
+   * "View in Registry" deep-link's sibling). Consumed by the Skills panel
+   * on mount, then cleared. */
+  pendingSkillTab: "registry" | "activity" | "insights" | "templates" | null;
   /** M1 deep-link: a specific SkillInvocation row the Skills panel's
    * Activity tab should load, expand, and scroll to (e.g. the audit row
    * behind a chat QUEUED card). invocationId is the precise target;

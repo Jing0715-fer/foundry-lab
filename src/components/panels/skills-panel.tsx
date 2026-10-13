@@ -43,6 +43,7 @@ import {
   KeyRound,
   ListChecks,
   Loader2,
+  Package,
   Pencil,
   Plus,
   Power,
@@ -89,6 +90,13 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 import { useAppStore } from "@/lib/store";
 import { useSkillEvents, type SkillInvocationEvent } from "@/hooks/use-skill-events";
+// Q3: curated template packs — PURE DATA module (zero server imports; the
+// skills barrel must never cross into the client bundle).
+import {
+  SKILL_TEMPLATE_PACKS,
+  packToBundleDoc,
+  type SkillTemplatePack,
+} from "@/lib/skill-templates";
 import { cn } from "@/lib/utils";
 
 // --- Wire types (mirror the /api/skills + /api/skills/invocations +
@@ -405,7 +413,7 @@ function Pill({ label, className }: { label: string; className?: string }) {
 // Panel
 // ==========================================================================
 
-type TabKey = "registry" | "activity" | "insights";
+type TabKey = "registry" | "activity" | "insights" | "templates";
 
 export function SkillsPanel() {
   // M1: controlled tabs. The initial tab may be requested by another
@@ -449,6 +457,10 @@ export function SkillsPanel() {
             <BarChart3 className="size-3.5" />
             Insights
           </TabsTrigger>
+          <TabsTrigger value="templates" className="gap-1.5">
+            <Package className="size-3.5" />
+            Templates
+          </TabsTrigger>
         </TabsList>
 
         <TabsContent value="registry" className="space-y-4">
@@ -459,6 +471,9 @@ export function SkillsPanel() {
         </TabsContent>
         <TabsContent value="insights" className="space-y-4">
           <InsightsTab />
+        </TabsContent>
+        <TabsContent value="templates" className="space-y-4">
+          <TemplatesTab />
         </TabsContent>
       </Tabs>
     </div>
@@ -500,11 +515,19 @@ function RegistryTab() {
     /** The original bundle doc — the retry action re-submits it with
      *  renames, no second file read needed. */
     retryDoc?: Record<string, unknown>;
+    /** Q3: the pack identity echoed by the import lane (bundle-v2
+     *  metadata) — titles the report for template-pack imports. */
+    bundleName?: string;
   } | null>(null);
   // P3a: whitelist deep-link target (a chat card denied by a skill's
   // whitelist points here — consumed after the catalog loads).
   const pendingSkillEdit = useAppStore((s) => s.pendingSkillEdit);
   const setPendingSkillEdit = useAppStore((s) => s.setPendingSkillEdit);
+  // Q3: the pack-metadata dialog for "Export selected" — name/description/
+  //  tags turn the selection into a shareable version-2 skill pack.
+  const [packDialogFor, setPackDialogFor] = React.useState<{
+    ids: string[];
+  } | null>(null);
   const toast = useAppStore((s) => s.toast);
 
   const loadCatalog = React.useCallback(async () => {
@@ -701,12 +724,21 @@ function RegistryTab() {
   // P1: bundle export — the same download flow for a LISTED set or all
   //  customs. The report toast names the count + the filename so the
   //  user can tell a 1-skill bundle from an everything bundle.
-  const exportBundle = async (ids: string[] | "all") => {
+  //  Q3: optional pack METADATA turns the selected-set export into a
+  //  version-2 "skill pack" document (name/description/tags ride along
+  //  and the marketplace / import report can render them).
+  const exportBundle = async (
+    ids: string[] | "all",
+    meta?: { name?: string; description?: string; tags?: string },
+  ) => {
     try {
-      const url =
-        ids === "all"
-          ? "/api/skills/export?all=1"
-          : `/api/skills/export?ids=${encodeURIComponent(ids.join(","))}`;
+      const sp = new URLSearchParams(
+        ids === "all" ? { all: "1" } : { ids: ids.join(",") },
+      );
+      if (meta?.name?.trim()) sp.set("name", meta.name.trim());
+      if (meta?.description?.trim()) sp.set("description", meta.description.trim());
+      if (meta?.tags?.trim()) sp.set("tags", meta.tags.trim());
+      const url = `/api/skills/export?${sp.toString()}`;
       const res = await fetch(url);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -718,7 +750,17 @@ function RegistryTab() {
         return;
       }
       const count = Array.isArray(data?.skills) ? data.skills.length : 0;
-      const filename = `foundry-lab-skills-${count}-bundle.json`;
+      const isPack = data?.version === 2;
+      // Mirror the server's filename logic so the toast names the exact file.
+      const filename = isPack
+        ? `foundry-lab-${(
+            data?.metadata?.name ?? "skill-pack"
+          )
+            .toLowerCase()
+            .replace(/[^a-z0-9]+/g, "-")
+            .replace(/^-+|-+$/g, "")
+            .slice(0, 40)}.json`
+        : `foundry-lab-skills-${count}-bundle.json`;
       const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {
         type: "application/json",
       });
@@ -729,8 +771,10 @@ function RegistryTab() {
       a.click();
       URL.revokeObjectURL(url2);
       toast({
-        title: "Skill bundle exported",
-        description: `${filename} — ${count} skill${count === 1 ? "" : "s"}. Import the file on another Foundry Lab instance (collisions are skipped with a rename offer, not a rollback).`,
+        title: isPack ? "Skill pack exported" : "Skill bundle exported",
+        description: isPack
+          ? `${filename} — ${count} skill${count === 1 ? "" : "s"} with pack metadata (version 2). The Templates tab on another instance renders this card; imports keep working on v1-only instances.`
+          : `${filename} — ${count} skill${count === 1 ? "" : "s"}. Import the file on another Foundry Lab instance (collisions are skipped with a rename offer, not a rollback).`,
         variant: "default",
       });
     } catch (e) {
@@ -804,6 +848,9 @@ function RegistryTab() {
           skipped: Array.isArray(data?.skipped) ? data.skipped : [],
           failed: Array.isArray(data?.failed) ? data.failed : [],
           retryDoc: doc,
+          ...(typeof data?.bundle?.name === "string"
+            ? { bundleName: data.bundle.name }
+            : {}),
         });
         if (Array.isArray(data?.imported) && data.imported.length > 0) {
           await loadCatalog();
@@ -966,7 +1013,7 @@ function RegistryTab() {
                 type="button"
                 size="sm"
                 variant="outline"
-                onClick={() => exportBundle(selectedArray)}
+                onClick={() => setPackDialogFor({ ids: selectedArray })}
                 disabled={selectedArray.length === 0}
                 className="h-11 gap-1.5 sm:h-8"
               >
@@ -1112,6 +1159,23 @@ function RegistryTab() {
         aria-label="Import skill document"
       />
 
+      {/* Q3: pack metadata dialog — "Export selected" lands here first;
+          name/description/tags turn the selection into a shareable
+          version-2 skill pack (the Templates tab's format). */}
+      <PackMetaDialog
+        open={packDialogFor !== null}
+        count={packDialogFor?.ids.length ?? 0}
+        onOpenChange={(open) => {
+          if (!open) setPackDialogFor(null);
+        }}
+        onExport={(meta) => {
+          if (packDialogFor) {
+            void exportBundle(packDialogFor.ids, meta);
+          }
+          setPackDialogFor(null);
+        }}
+      />
+
       {/* O3: rename-on-collision confirm — the import lane's deterministic
           suggestion offered as a one-click re-submit. */}
       <AlertDialog
@@ -1167,7 +1231,11 @@ function RegistryTab() {
       >
         <AlertDialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
           <AlertDialogHeader>
-            <AlertDialogTitle>Bundle import report</AlertDialogTitle>
+            <AlertDialogTitle>
+              {importReport?.bundleName
+                ? `Pack import report — ${importReport.bundleName}`
+                : "Bundle import report"}
+            </AlertDialogTitle>
             <AlertDialogDescription>
               {importReport &&
                 `${importReport.imported.length} of ${importReport.requested} skill${
@@ -2728,6 +2796,535 @@ function StatusBar({
         ))}
       </div>
     </div>
+  );
+}
+
+// ==========================================================================
+// Tab 4 — Templates (Q3: curated skill packs + one-click import)
+// ==========================================================================
+
+/** The import-lane report for a template-pack import (same shape the
+ *  Registry's file-import report uses, plus the echoed pack identity). */
+interface PackImportReport {
+  packName: string;
+  requested: number;
+  imported: { id: string; label: string }[];
+  skipped: { skillId: string; suggestion: string | null }[];
+  failed: { skillId: string | null; index: number; error: string }[];
+  /** The bundle doc behind the report — the retry action re-submits it
+   *  with a renames map built from the suggestions. */
+  retryDoc?: Record<string, unknown>;
+}
+
+function TemplatesTab() {
+  const toast = useAppStore((s) => s.toast);
+  const setPendingSkillTab = useAppStore((s) => s.setPendingSkillTab);
+  // The live catalog (ids only) — powers the "already imported" badges.
+  const [catalogIds, setCatalogIds] = React.useState<Set<string> | null>(null);
+  const [importingPackId, setImportingPackId] = React.useState<string | null>(null);
+  const [expanded, setExpanded] = React.useState<string | null>(null);
+  const [report, setReport] = React.useState<PackImportReport | null>(null);
+
+  const loadCatalogIds = React.useCallback(async () => {
+    try {
+      const res = await fetch("/api/skills");
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const ids = Array.isArray(data?.skills)
+        ? (data.skills as { id: string }[]).map((s) => s.id)
+        : [];
+      setCatalogIds(new Set(ids));
+    } catch {
+      setCatalogIds(new Set()); // badges degrade to "not loaded" = none shown
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadCatalogIds();
+  }, [loadCatalogIds]);
+
+  // Q3: one pack import = ONE bundle-v2 POST through the SAME import lane a
+  // downloaded file takes (same validators, same collision semantics with
+  // rename suggestions, same audit story). The report lands in a dialog
+  // that mirrors the Registry's file-import report.
+  const importPack = async (pack: SkillTemplatePack) => {
+    setImportingPackId(pack.id);
+    try {
+      const doc = packToBundleDoc(pack);
+      const res = await fetch("/api/skills/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(doc),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: "Pack import failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      setReport({
+        packName: pack.name,
+        requested: typeof data?.requested === "number" ? data.requested : 0,
+        imported: Array.isArray(data?.imported) ? data.imported : [],
+        skipped: Array.isArray(data?.skipped) ? data.skipped : [],
+        failed: Array.isArray(data?.failed) ? data.failed : [],
+        retryDoc: doc,
+      });
+      if (Array.isArray(data?.imported) && data.imported.length > 0) {
+        await loadCatalogIds();
+      }
+    } catch (e) {
+      toast({
+        title: "Pack import failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setImportingPackId(null);
+    }
+  };
+
+  // The report dialog's retry — re-submit the SAME pack with a renames map
+  // covering every skipped skill that got a suggestion (identical to the
+  // Registry's file-import retry semantics).
+  const retrySkippedPackImport = async () => {
+    if (!report?.retryDoc) return;
+    const renames: Record<string, string> = {};
+    for (const s of report.skipped) {
+      if (s.suggestion) renames[s.skillId] = s.suggestion;
+    }
+    setImportingPackId("retry");
+    try {
+      const res = await fetch("/api/skills/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...report.retryDoc, renames }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: "Retry failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      setReport({
+        packName: report.packName,
+        requested: typeof data?.requested === "number" ? data.requested : 0,
+        imported: Array.isArray(data?.imported) ? data.imported : [],
+        skipped: Array.isArray(data?.skipped) ? data.skipped : [],
+        failed: Array.isArray(data?.failed) ? data.failed : [],
+        retryDoc: report.retryDoc,
+      });
+      if (Array.isArray(data?.imported) && data.imported.length > 0) {
+        await loadCatalogIds();
+      }
+    } catch (e) {
+      toast({
+        title: "Retry failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setImportingPackId(null);
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <p className="text-sm text-muted-foreground">
+        Curated skill packs — shareable bundles with a name, README, and tags
+        (bundle format version 2). One click imports the pack through the same
+        lane a downloaded bundle file takes: identical validation, collision
+        handling with rename offers, and audit story. Your own packs come from{" "}
+        <em>Select → Export selected</em> in the Registry.
+      </p>
+
+      {catalogIds === null && <PanelSkeleton count={3} />}
+
+      {catalogIds !== null && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {SKILL_TEMPLATE_PACKS.map((pack) => {
+            const owned = pack.skills.filter((s) => catalogIds.has(s.skillId)).length;
+            const fullyImported = owned === pack.skills.length;
+            const isOpen = expanded === pack.id;
+            return (
+              <Card
+                key={pack.id}
+                className={cn(
+                  "gap-3 py-4 transition-colors",
+                  isOpen && "border-primary/40",
+                )}
+                data-testid={`template-pack-${pack.id}`}
+              >
+                <CardContent className="space-y-3 px-4">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="truncate text-sm font-semibold">{pack.name}</h3>
+                        {fullyImported && (
+                          <Badge
+                            variant="secondary"
+                            className="gap-1 text-[9px] uppercase"
+                            title="Every skill in this pack is registered on this instance"
+                          >
+                            Imported
+                          </Badge>
+                        )}
+                        {!fullyImported && owned > 0 && (
+                          <Badge
+                            variant="outline"
+                            className="text-[9px] uppercase"
+                          >
+                            {owned}/{pack.skills.length} imported
+                          </Badge>
+                        )}
+                      </div>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        {pack.description}
+                      </p>
+                    </div>
+                    <Package className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+                  </div>
+
+                  {pack.tags.length > 0 && (
+                    <div className="flex flex-wrap gap-1">
+                      {pack.tags.map((t) => (
+                        <Badge
+                          key={t}
+                          variant="secondary"
+                          className="text-[10px] font-normal"
+                        >
+                          {t}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    className="flex w-full items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => setExpanded(isOpen ? null : pack.id)}
+                    aria-expanded={isOpen}
+                    data-testid={`template-pack-toggle-${pack.id}`}
+                  >
+                    {isOpen ? (
+                      <ChevronDown className="size-3.5" />
+                    ) : (
+                      <ChevronRight className="size-3.5" />
+                    )}
+                    {pack.skills.length} skill{pack.skills.length === 1 ? "" : "s"}
+                  </button>
+
+                  {isOpen && (
+                    <ul className="space-y-2 rounded-md border bg-muted/30 p-3">
+                      {pack.skills.map((s) => (
+                        <li key={s.skillId} className="space-y-1 text-xs">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className="font-mono text-[11px]"
+                              data-testid={`template-skill-${s.skillId}`}
+                            >
+                              {s.skillId}
+                            </span>
+                            {catalogIds.has(s.skillId) && (
+                              <Badge
+                                variant="secondary"
+                                className="text-[9px] uppercase"
+                              >
+                                registered
+                              </Badge>
+                            )}
+                            <Badge
+                              variant="outline"
+                              className={cn(
+                                "text-[9px] uppercase",
+                                s.latency === "slow"
+                                  ? "border-amber-500/40 text-amber-700 dark:text-amber-400"
+                                  : "border-emerald-500/40 text-emerald-700 dark:text-emerald-400",
+                              )}
+                            >
+                              {s.latency}
+                            </Badge>
+                          </div>
+                          <p className="text-muted-foreground">{s.description}</p>
+                          <p className="font-mono text-[10px] text-muted-foreground">
+                            → {s.endpoint}
+                          </p>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() => void importPack(pack)}
+                      disabled={importingPackId !== null}
+                      className="h-11 gap-1.5 sm:h-8"
+                      data-testid={`template-import-${pack.id}`}
+                    >
+                      {importingPackId === pack.id ? (
+                        <Loader2 className="size-4 animate-spin" />
+                      ) : (
+                        <Upload className="size-4" />
+                      )}
+                      {fullyImported ? "Re-import pack" : "Import pack"}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setPendingSkillTab("registry")}
+                      className="h-11 sm:h-8"
+                    >
+                      <BookOpen className="size-4" />
+                      View in Registry
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Pack import report — the same honest per-skill outcomes the file
+          import shows, titled with the pack name. */}
+      <AlertDialog
+        open={report !== null}
+        onOpenChange={(open) => {
+          if (!open) setReport(null);
+        }}
+      >
+        <AlertDialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle data-testid="pack-import-report-title">
+              Pack import report — {report?.packName}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {report &&
+                `${report.imported.length} of ${report.requested} skill${
+                  report.requested === 1 ? "" : "s"
+                } imported. Collisions are skipped with a rename offer (not a rollback); validation failures are reported per skill.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {report && (
+            <div className="space-y-3 text-xs">
+              {report.imported.length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-semibold text-emerald-700 dark:text-emerald-400">
+                    Imported ({report.imported.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {report.imported.map((s) => (
+                      <li key={s.id} className="font-mono text-[11px]">
+                        {s.id}
+                        <span className="ml-2 font-sans text-muted-foreground">
+                          {s.label}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {report.skipped.length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-semibold text-amber-700 dark:text-amber-400">
+                    Skipped — already registered ({report.skipped.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {report.skipped.map((s) => (
+                      <li key={s.skillId} className="font-mono text-[11px]">
+                        {s.skillId}
+                        {s.suggestion ? (
+                          <span className="ml-2 font-sans text-muted-foreground">
+                            rename offer: {s.suggestion}
+                          </span>
+                        ) : (
+                          <span className="ml-2 font-sans text-muted-foreground">
+                            no free rename id
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {report.failed.length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-semibold text-rose-700 dark:text-rose-400">
+                    Failed validation ({report.failed.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {report.failed.map((f, i) => (
+                      <li key={`${f.skillId ?? "unknown"}-${i}`} className="space-y-0.5">
+                        <span className="font-mono text-[11px]">{f.skillId ?? `(entry #${f.index})`}</span>
+                        <p className="text-muted-foreground">{f.error}</p>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={importingPackId !== null}>Close</AlertDialogCancel>
+            {report && report.skipped.some((s) => s.suggestion) && (
+              <AlertDialogAction
+                disabled={importingPackId !== null}
+                onClick={(e) => {
+                  // Keep the dialog open while the retry runs (Radix
+                  // auto-close would lose the pending state).
+                  e.preventDefault();
+                  void retrySkippedPackImport();
+                }}
+              >
+                {importingPackId === "retry" ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                Import skipped as suggested
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+// ==========================================================================
+// Q3: pack metadata dialog — "Export selected" turns a selection into a
+// shareable version-2 skill pack
+// ==========================================================================
+
+function PackMetaDialog({
+  open,
+  count,
+  onOpenChange,
+  onExport,
+}: {
+  open: boolean;
+  /** How many skills the pending selection carries (context in copy). */
+  count: number;
+  onOpenChange: (open: boolean) => void;
+  onExport: (meta: { name?: string; description?: string; tags?: string }) => void;
+}) {
+  const [name, setName] = React.useState("");
+  const [description, setDescription] = React.useState("");
+  const [tags, setTags] = React.useState("");
+
+  // Reset on open — a stale name from a cancelled export must not leak
+  // into the next one ([open] per the Radix dialog lifecycle).
+  React.useEffect(() => {
+    if (open) {
+      setName("");
+      setDescription("");
+      setTags("");
+    }
+  }, [open]);
+
+  const nameOk = name.trim().length > 0 && name.trim().length <= 80;
+  const tagsClean = tags
+    .split(",")
+    .map((t) => t.trim())
+    .filter(Boolean);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>Export as a skill pack</DialogTitle>
+          <DialogDescription>
+            {count} skill{count === 1 ? "" : "s"} travel inside a bundle
+            document. Give it a name and a README — the export becomes a{" "}
+            <span className="font-medium">version-2 pack</span> that the
+            Templates tab on any instance can render, while v1-only importers
+            still accept it.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label htmlFor="pack-name">Pack name</Label>
+            <Input
+              id="pack-name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Lab Sequence Ops"
+              maxLength={80}
+              data-testid="pack-name-input"
+            />
+            <p className="text-xs text-muted-foreground">
+              {name.trim().length}/80 — required for a pack.
+            </p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="pack-description">README / description</Label>
+            <Textarea
+              id="pack-description"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="What this pack is for, what the skills do, what a consumer needs running (e.g. a webhook target)…"
+              rows={3}
+              maxLength={500}
+              data-testid="pack-description-input"
+            />
+            <p className="text-xs text-muted-foreground">{description.length}/500</p>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="pack-tags">Tags</Label>
+            <Input
+              id="pack-tags"
+              value={tags}
+              onChange={(e) => setTags(e.target.value)}
+              placeholder="comma, separated, tags"
+              data-testid="pack-tags-input"
+            />
+            <p className="text-xs text-muted-foreground">
+              {tagsClean.length}/8 shown as pills (each ≤ 24 chars).
+            </p>
+          </div>
+        </div>
+
+        <div className="flex flex-col-reverse justify-end gap-2 sm:flex-row">
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => onExport({})} // no metadata → plain v1 bundle
+            data-testid="pack-export-plain"
+          >
+            Export plain bundle (v1)
+          </Button>
+          <Button
+            type="button"
+            onClick={() =>
+              onExport({
+                name: name.trim(),
+                description: description.trim() || undefined,
+                tags: tagsClean.join(", ") || undefined,
+              })
+            }
+            disabled={!nameOk}
+            className="gap-1.5"
+            data-testid="pack-export-v2"
+          >
+            <Package className="size-4" />
+            Export pack (v2)
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

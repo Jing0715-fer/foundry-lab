@@ -156,17 +156,39 @@
   `renames` 映射支持报告对话框“Import skipped as suggested”一键重提；
   UI：选择模式（custom 卡复选框 + Select/Export selected/Select all/
   Cancel 工具栏）+ Export all + 导入报告对话框；文件上限升至 512KB。
-- **推送式活性刷新（P2a）**：新增 `mini-services/skill-events`（:3031
-  socket.io，POST /emit + GET /health；engine 路径保持默认 /socket.io
-  ——path "/" 会让 engine.io 吃掉全部 HTTP 请求，实测）；runSkill 审计
-  落行 + K5 队列全部终态翻转（transitionInvocation 统一入口 = 条件写
+- **推送式活性刷新（P2a，Q2 房间化）**：新增 `mini-services/skill-events`
+  （:3031 socket.io，POST /emit + GET /health；engine 路径保持默认
+  /socket.io——path "/" 会让 engine.io 吃掉全部 HTTP 请求，实测）；runSkill
+  审计落行 + K5 队列全部终态翻转（transitionInvocation 统一入口 = 条件写
   + 广播）→ 服务广播 → 前端 `useSkillEvents` 单例连接
   （`io("/?XTransformPort=3031")`，引用计数、断线重连、重连即点查）
   → 聊天抽屉 QUEUED 卡**推送即翻转**（轮询降级为离线 4s / 在线 30s
   心跳）+ Skills Activity tab **新行免刷新实时插入**（过滤器匹配时
   置顶、已加载行原地翻转）；抽屉标题与 Activity 过滤行显示“live”
   呼吸灯指示（离线时隐藏）；事件与轮询同池 applyTerminalRows ——
-  谁先到都渲染同一真相。
+  谁先到都渲染同一真相。**Q2**：POST /emit 需共享 Bearer token
+  （服务首次 boot 生成 → gitignored `.token` 文件 → 应用侧 TTL 缓存读
+  同文件，浏览器经网关伪造 emit 被 401 挡住）；事件按 agentId /
+  workflowId 路由到封闭语法房间（`all` / `agent:<id>` /
+  `workflow:<id>`，全有或全无校验）；客户端订阅窄化——聊天抽屉只订
+  自己的 agent 房（**关闭态零订阅**），Activity tab 默认全量；health
+  携带房间计数。
+- **技能反馈接地（Q1）**：`skillFeedback` ok 分支携带**截断的真实响应
+  片段**（JSON-compact、800 字符上限、截断显式标注）+ 逐字保真指令
+  ——P 线 E2E 实证模型会为一行摘要编造 data 数组，把真实载荷喳回去
+  后浏览器级金路径中模型逐字段引用真实响应（含真实时间戳），幻觉
+  渲染消除（denied/error 反馈本就诚实，不变）。
+- **技能模板库（Q3）**：bundle 文档升级 **version 2** 技能包（`metadata:
+  {name, description?, tags?}`——带叙事的可分享单元；v1 文档永久接受，
+  校验规则 export/import 双向镜像；导入报告回显包身份）；`GET
+  /api/skills/export?ids=…&name=…&description=…&tags=…` opt-in 升级为
+  v2（slug 文件名）；Skills 面板第四个 **Templates tab**：内置三个策展
+  包（Echo Diagnostics 快+慢双泳道 / Failure Lab 错误路径 / Trusted
+  Header Echo 自定义头验证）——已导入徽章（目录 id 交叉）、可展开
+  技能清单、一键导入（**与文件导入同一 /api/skills/import 泳道**：
+  同校验、同冲突重命名建议、同报告对话框含“Import skipped as
+  suggested” 一键重提）；Registry “Export selected” 升级为打包对话框
+  （name/README/tags → v2 pack，或保留 v1 裸备份）。
 
 ![技能面板](docs/images/28-skills-panel.png)
 ![聊天 QUEUED 卡深链](docs/images/40-m-queued-deeplink.png)
@@ -184,6 +206,9 @@
 ![Activity 实时插入与 live 指示（P2a）](docs/images/62-p-activity-live.png)
 ![推送翻转的 QUEUED 卡与 live 灯（P2a）](docs/images/63-p-queued-card-pushed.png)
 ![移动端白名单对话框（P3a）](docs/images/64-p-mobile-whitelist-dialog.png)
+![技能模板库（Q3）](docs/images/65-q-templates-tab.png)
+![Activity 实时插入与 live 指示（Q2 房间化推送）](docs/images/66-q-activity-live.png)
+![移动端模板库（Q3）](docs/images/67-q-mobile-templates.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -505,8 +530,8 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | DELETE | `/api/skills/:skillId` | 注销自定义技能（内置 400 / 未知 404；审计历史保留） |
 | POST | `/api/skills/invoke` | REST 调用快速技能（200 ok / 400 invalid / 403 denied / 429 limited / 500 error）；N1：slow custom 返回 202 queued（后台队列 + jobId）；O1：custom requires 门控同样生效（denied 403） |
 | GET | `/api/skills/invocations` | 统一调用审计日志（M2：keyset 分页 cursor + limit/skillId/source/status/agentId 过滤；O2：`?ids=` 点查通道 ≤ 50 id、忽略过滤器，供 QUEUED 卡刷新轮询） |
-| GET | `/api/skills/export` | O3/P1：导出可移植文档 —— `?skillId=` 单技能 / `?ids=a,b` 列表 bundle / `?all=1` 全量（三选择器互斥 400；内置 400、未知 404、重复 400；含 requires + P3a agents；Content-Disposition 附件） |
-| POST | `/api/skills/import` | O3/P1：导入 —— 单文档 201（复用注册校验管道，冲突 409 附确定性改名 suggestion，可选顶层 id 重命名）；bundle 文档 200 携带逐技能报告（imported/skipped+建议/failed 索引错误，部分失败不回滚；`renames` 映射重提）；均落 enabled=true |
+| GET | `/api/skills/export` | O3/P1/Q3：导出可移植文档 —— `?skillId=` 单技能 / `?ids=a,b` 列表 bundle / `?all=1` 全量（三选择器互斥 400；内置 400、未知 404、重复 400；含 requires + P3a agents；Content-Disposition 附件）；Q3：bundle 泳道附 `?name/description/tags=` → **version 2 技能包**（metadata 校验 name 1-80 / desc ≤500 / tags ≤8×≤24，超限 400；与 skillId 选择器并用 400） |
+| POST | `/api/skills/import` | O3/P1/Q3：导入 —— 单文档 201（复用注册校验管道，冲突 409 附确定性改名 suggestion，可选顶层 id 重命名）；bundle 文档（v1 ∪ v2）200 携带逐技能报告（imported/skipped+建议/failed 索引错误，部分失败不回滚；`renames` 映射重提；**Q3：v2 报告回显 bundle 元数据**；v2 缺 metadata 400）；均落 enabled=true |
 | GET/POST | `/api/skills/retention` | M2：审计保留策略预览（GET）/ 干跑与执行（POST：maxAgeDays/rowCap/dryRun） |
 
 ## 常见问题

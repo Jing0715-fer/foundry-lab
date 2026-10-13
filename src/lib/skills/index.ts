@@ -8,7 +8,7 @@ import "./catalog";
 
 export * from "./types";
 export { registerSkill, getSkill, listSkills, catalogEntries, resolveSkillId, skillsForAgent } from "./registry";
-export { runSkill, skipSkill, recordSkillInvocation, skillFeedback, validateParams } from "./runner";
+export { runSkill, skipSkill, recordSkillInvocation, skillFeedback, validateParams, dataSnippet } from "./runner";
 export { runSkillQueued } from "./queue";
 export {
   checkSkillRateLimit,

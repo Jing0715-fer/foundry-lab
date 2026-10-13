@@ -1,15 +1,24 @@
-// POST /api/skills/import — the O3 import lane, P1-extended to BUNDLES.
+// POST /api/skills/import — the O3 import lane, P1-extended to BUNDLES,
+// Q3-extended to TEMPLATE PACKS (bundle version 2 + metadata).
 //
-// Body: an EXPORT document — either shape:
+// Body: an EXPORT document — any shape:
 //   Single (O3):  { kind: "foundry-lab-skill", version: 1, skill: {…},
 //                   id?: "custom.renamed" }        // rename-on-collision
-//   Bundle (P1):  { kind: "foundry-lab-skill-bundle", version: 1,
-//                   skills: [ {…}, {…} ],
-//                   renames?: { "<original>": "custom.new-id" } }
+//   Bundle v1 (P1): { kind: "foundry-lab-skill-bundle", version: 1,
+//                   skills: [ {…}, {…} ], renames?: { … } }
+//   Bundle v2 (Q3): same + `metadata: { name, description?, tags? }` —
+//                   the shareable "skill pack" envelope. Metadata is
+//                   narrative only (never persisted — CustomSkill rows are
+//                   per-skill); the import REPORT echoes it so the UI can
+//                   title the result "Imported pack "<name>"".
 //
 // Contract:
 //   - kind/version are checked first (400 on mismatch — arbitrary JSON
-//     never registers as a skill).
+//     never registers as a skill). Bundle version must be 1 or 2; the
+//     single-skill document stays version 1.
+//   - Q3 metadata validation (when present): name required 1-80 (a v2
+//     doc without a name is a malformed pack → 400), description ≤ 500,
+//     tags ≤ 8 strings ≤ 24 chars each. Non-object metadata → 400.
 //   - Every skill field runs through the SAME validators POST /api/skills
 //     uses (label/description/endpoint/params/headers/latency/requires/
 //     agents) — an imported skill is indistinguishable from a freshly
@@ -24,7 +33,8 @@
 //     a bundle is a batch of independent registrations, so one collision
 //     must not void the others. Response 200 with the honest report:
 //       { requested, imported: [...], skipped: [{ skillId, suggestion? }],
-//         failed: [{ skillId?, index, error }] }
+//         failed: [{ skillId?, index, error }],
+//         bundle?: { name, description?, tags? } }   // Q3: echoed metadata
 //     (validation failures report per-skill; collisions report per-skill
 //     with a rename suggestion so the client can offer a one-click retry).
 //   - Imports land ENABLED (the document deliberately carries no enabled
@@ -52,6 +62,69 @@ export const dynamic = "force-dynamic";
 const SKILL_DOC_KIND = "foundry-lab-skill";
 const BUNDLE_DOC_KIND = "foundry-lab-skill-bundle";
 const SKILL_DOC_VERSION = 1;
+
+// Q3 metadata caps — mirror the export lane exactly.
+const PACK_NAME_MAX = 80;
+const PACK_DESC_MAX = 500;
+const PACK_TAGS_MAX = 8;
+const PACK_TAG_MAX = 24;
+
+interface PackMetadata {
+  name: string;
+  description?: string;
+  tags?: string[];
+}
+
+/** Validate a v2 bundle's metadata section. Returns { error } or the
+ *  normalized metadata. A v1 doc passing here means the field was
+ *  present anyway — treat it with the same rules (honest, not strict). */
+function validatePackMetadata(
+  raw: unknown,
+): { error?: string; metadata?: PackMetadata } {
+  if (raw === undefined || raw === null) return {};
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return { error: "bundle metadata must be an object { name, description?, tags? }" };
+  }
+  const m = raw as Record<string, unknown>;
+  const name = typeof m.name === "string" ? m.name.trim() : "";
+  if (!name) {
+    return { error: `bundle metadata.name must be a non-empty string (1-${PACK_NAME_MAX} chars)` };
+  }
+  if (name.length > PACK_NAME_MAX) {
+    return { error: `bundle metadata.name exceeds ${PACK_NAME_MAX} chars` };
+  }
+  const description =
+    typeof m.description === "string" ? m.description.trim() : undefined;
+  if (description && description.length > PACK_DESC_MAX) {
+    return { error: `bundle metadata.description exceeds ${PACK_DESC_MAX} chars` };
+  }
+  let tags: string[] | undefined;
+  if (m.tags !== undefined && m.tags !== null) {
+    if (!Array.isArray(m.tags)) {
+      return { error: `bundle metadata.tags must be an array of strings (max ${PACK_TAGS_MAX})` };
+    }
+    const clean = m.tags
+      .filter((t): t is string => typeof t === "string")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, PACK_TAGS_MAX);
+    if (clean.length !== m.tags.length) {
+      return { error: "bundle metadata.tags must contain only non-empty strings" };
+    }
+    const bad = clean.find((t) => t.length > PACK_TAG_MAX);
+    if (bad) {
+      return { error: `bundle metadata tag "${bad.slice(0, 40)}" exceeds ${PACK_TAG_MAX} chars` };
+    }
+    tags = clean;
+  }
+  return {
+    metadata: {
+      name,
+      ...(description ? { description } : {}),
+      ...(tags && tags.length > 0 ? { tags } : {}),
+    },
+  };
+}
 
 export async function POST(request: NextRequest) {
   let body: Record<string, unknown> = {};
@@ -184,16 +257,33 @@ interface BundleFail {
 }
 
 async function importBundle(body: Record<string, unknown>) {
-  if (body.version !== SKILL_DOC_VERSION) {
+  if (body.version !== 1 && body.version !== 2) {
     return NextResponse.json(
       {
         error:
           `Unsupported bundle document version ${JSON.stringify(body.version)} — ` +
-          `this import lane understands version ${SKILL_DOC_VERSION}.`,
+          `this import lane understands versions 1 and 2.`,
       },
       { status: 400 },
     );
   }
+  // Q3: validate the pack metadata when present (v2 requires it; a v1
+  // doc that carries metadata anyway is checked with the same rules).
+  const metaRes = validatePackMetadata(body.metadata);
+  if (metaRes.error) {
+    return NextResponse.json({ error: metaRes.error }, { status: 400 });
+  }
+  if (body.version === 2 && !metaRes.metadata) {
+    return NextResponse.json(
+      {
+        error:
+          "version-2 skill packs carry a metadata section — " +
+          "{ name (1-80 chars), description?, tags? } is required.",
+      },
+      { status: 400 },
+    );
+  }
+  const packMeta = metaRes.metadata;
   const skillsBody = body.skills;
   if (!Array.isArray(skillsBody)) {
     return NextResponse.json(
@@ -321,6 +411,9 @@ async function importBundle(body: Record<string, unknown>) {
     imported,
     skipped,
     failed,
+    // Q3: echo the pack identity so the report can title itself and the
+    // marketplace can link back to what was imported.
+    ...(packMeta ? { bundle: packMeta } : {}),
   });
 }
 

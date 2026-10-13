@@ -14,8 +14,10 @@
 > 10-21（O 线 Skill 层授权与协同：O1 requires 授权声明 + O2 QUEUED 卡活性刷新 +
 > O3 技能导入导出，QA 58/58 + 浏览器金路径全绿）、10-22（P 线 Skill 层权限细粒度
 > 与实时性：P1 技能集打包导出 + P2a 推送式活性刷新 + P3a 技能级 agent 白名单，
-> QA 66/66 + 浏览器金路径全绿）
-> 十七轮测试结论滚动更新，随每个阶段交付后重写。
+> QA 66/66 + 浏览器金路径全绿）、10-23（Q 线 Skill 层反幻觉与实时性收口：
+> Q1 反馈接地 + Q2 推送房间化与 emit 鉴权 + Q3 技能模板库，QA 60/60 +
+> 浏览器金路径含真 LLM 接地实证全绿）
+> 十八轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -180,6 +182,12 @@
 | 55 | **干跑与实施必须共用谓词**：retention 的 estimate 与 delete 走同一 where + 同一排序（estimate 无独立代码路径）；确认对话框引用干跑刚算出的数字。教训：**"预览 N 行将被删除"类 UI 的数字来源必须就是执行路径本身**——否则预览与实施漂移成两套真相 | 架构/UX | 已交付（F6 实证 applied==promised） |
 | 56 | **abort 竞态需要确定性终态判定**：webhook abort 抛错几乎瞬时（fetch reject 在微任务级），可能**跑赢**停止路由自身的 DB 行翻转——若执行器 catch 只写 "failed"，行会停在误导性 failed 而非用户要的 cancelled。修复模式：catch 里 `signal.aborted && isStopRequested(runKey)` 判定 + 执行器自己也写一次幂等 cancelled（双写条件化，先到者定终态，另一方零行命中）。教训：**"行先翻转"（#45）不是充分条件——凡 abort 类近零延迟失败路径，执行器必须自带 cancelled 判定** | 执行语义 | 已交付（N1 C1 实证） |
 | 57 | **进程内 kill 注册表用 globalThis 背书（#53 的运行时版）**：模块级 Map 在 Turbopack per-route bundle 下可能多实例——spawn/abort 注册方与 kill 方各持一份则 kill 静默失败。注册数据类用 DB 共享真相（#53）；**运行时句柄类（进程/AbortController）用 globalThis 挂载 Map**——同一 JS 堆内所有 bundle 实例必然共享同一 globalThis，是句柄注册表的零成本跨 bundle 桥 | 架构 | 已交付（ACTIVE_ABORTS） |
+| 58 | **反馈接地能修正但不能预防第一轮“预猜”（Q1 边界）**：接地后模型在第二轮逐字段引用真实响应（含真实时间戳），但第一轮仍会在围栏同轮写下先验猜测（“simple echo that returned exactly the message”）——工具循环的多轮拼接使最终回复同时含猜测段与修正段。接地消除的是“反馈之后仍编造”；要在源头抑制需 prompt 层“fence 后停笔等待反馈”指令（R2 候选） | LLM 语义 | Q 线已交付（边界已记录） |
+| 59 | **always-mounted 组件的默认订阅泄漏**：抽屉常驻挂载（open 仅控制可见）——未指定房间时默认 ["all"] 意味着**每个页面加载都在全量事件流上**。修复：空房间数组 = 显式清空（服务端 subscribe 空数组 = leave 全部；客户端 "" 联合键解析为无房间）。教训：**默认订阅面按“组件逻辑需要”而非“参数缺省”设计，常驻组件的关闭态必须是零订阅** | 架构 | 已修复（浏览器 health 实证：关阀 {} → 开抽屉 agent:X → 关阀归零） |
+| 60 | **沙箱后台进程的存活配方 = 子壳 + setsid**：`( setsid nohup cmd < /dev/null > log 2>&1 & )`——直接 `&`、`nohup &`、甚至 `setsid &` 都会被工具命令结束时的作业回收杀掉（同一会话内 health 检查通过、下一条命令连接拒绝）。**验证必须在“下一条命令”里做**（同命令内的健康检查会假性通过） | 运维/QA 工程 | 已遵守（重启验证法） |
+| 61 | **房间化是自愿订阅而非身份隔离（Q2 边界）**：服务端房间语法强制（all/agent:/workflow:），但任何客户端可声明任意 agentId 订阅任意房间；/emit token 挡住了伪造事件，挡不住偷听。单用户沙箱成立（audit 行本就全局可读）；多租户需 per-连接身份令牌 + 服务端强制房间映射（R1 候选） | 安全 | 边界已记录（R 线） |
+| 62 | **文件共享秘密模式（.token）**：服务首次 boot 生成随机 token 写 gitignored 文件（mode 0600），应用侧 TTL 缓存读同一文件、401 时弃缓存重读（服务重启换 token 自愈于一次 emit + 一条限流警告内）；秘密永不进 git、永不发给浏览器。代价：多实例部署需 env 化（R1） | 安全/架构 | 已交付（QA 401/202 + 网关 401 实证） |
+| 63 | **格式版本升级必须双向镜像 + 双版本共存**：bundle v2 的 metadata 校验规则（name 1-80/desc ≤500/tags ≤8×≤24）在 export 与 import 两侧常量镜像；导入接受 v1∪v2（v1 文档继续流动），v2 无 metadata 是 400（畸形包而非兼容输入）；导出 opt-in（无 metadata → v1 兼容档）。教训：**格式演进 = 新档可选产出 + 旧档永久接受 + 校验规则单源两用** | API 设计 | 已交付（QA 60/60） |
 
 ## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
@@ -340,6 +348,21 @@ AlphaFold 面板均有过滤不可见，见结论 #52）+ 截图 39 重拍。
   泳道同步）、目录 eligible、提示词清单过滤——三者任一缺失都会造成
   "广告了但拒绝"或"能执行但不展示"的漂移；拒因必须可区分（deniedBy）
   以便修复深链指向正确的编辑面。
+- **推送通道鉴权类改动的验收必须含伪造路径**（Q 线后）：401 断言三路——
+  直连无 token、坏 token、**经网关（浏览器可达的真实路径）**；正确 token
+  202；鉴权后仍要重跑推送金路径（app 链 token 附加回归）。
+- **订阅类功能的验收必须包含"零订阅态"**（#59，Q 线后）：常驻组件的关闭态
+  health 房间计数必须为空——"默认订阅面按组件逻辑需要设计"，参数缺省不得
+  等于全量流；房间窄化的浏览器级断言用服务 health 的房间计数（客户端订阅
+  状态在 DOM 上不可见）。
+- **LLM 反馈类（prompt/feedback 文案）改动的验收必须走真模型金路径**
+  （Q 线后）：断言回复中出现**只能在真实响应里出现的字段**（时间戳/来源
+  标签/请求 id 类）——API 级信封断言证明不了模型真的用了反馈。
+- **格式演进按"新档可选产出 + 旧档永久接受 + 校验规则单源两用"**（#63，
+  Q 线后）：版本升级不破坏旧文档流动；校验常量 export/import 双向镜像；
+  新档缺失必需段是 400（畸形）而非静默降级。
+- **沙箱后台进程（mini 服务/dev server 重启）一律用子壳 + setsid 启动，
+  并在下一条命令验证存活**（#60，Q 线后）：同命令内的健康检查假性通过。
 
 ## M 线 — Skill 层运营深化（已交付：M1+M2+M3 全三项）
 
@@ -562,27 +585,81 @@ O 线收口时识别的三个缺口（单技能可移植 / 拉模型刷新 / 闭
    ——直连 :3000 时 XTransformPort 相对解析落在 Next 进程（404），这正是
    用户预览的真实路径（预览面板即经网关）。
 
-## Q 线 — 下一阶段候选（基于 P 线测试结果排序）
+## Q 线 — Skill 层反幻觉与实时性收口（已交付：Q1+Q2+Q3 全三项；Task 49）
 
-P 线收口后，技能层四维授权（requires ∧ agents ∧ enabled ∧ 家族限流）、
-执行面双泳道（inline/queue）、可移植性（单文档/bundle/renames）、实时
-性（推送+轮询双保险）全部闭环。测试结果暴露的新排序依据：**推送通道是
-单点广播**（无鉴权、无房间隔离——多用户场景任何客户端都收到全部事件）；
-**反馈摘要只有一行**（E2E 观察到模型在 ok 反馈之外自由发挥渲染响应细节
-——summary 未携带真实响应片段时模型会编造）；**低优先池持续滚动**。按
-价值排序：
+- **Q1 反馈接地（已交付）**：`skillFeedback` ok 分支携带截断的真实响应片段
+  （`dataSnippet`：JSON-compact、800 字符上限、截断显式标注 `+N chars truncated —
+  the payload continues; do not guess the remainder`、空载荷无片段段）+
+  逐字保真指令（“use exactly the fields and values shown above; do not invent
+  fields, values, or structure”）。P 线 E2E 实证的幻觉渲染（模型为一行 summary
+  编造 `data` 数组）在最短路径上消除：**E2E 金路径（真 LLM + 真 webhook）中模型
+  逐字段引用真实响应**（ok / received{skillId, params, source:"chat-stream",
+  agent, at} / headers / at 含真实时间戳——这些字段只能在真实反馈里出现）。
+  边界（#58）：第一轮“预猜”仍会发生（多轮拼接后回复同时含猜测段与修正段）。
+- **Q2 推送通道房间化 + emit 鉴权（已交付）**：
+  - **房间**：socket.io 封闭语法房间（`all` / `agent:<id>` / `workflow:<id>`，
+    id 字符集强制，每 socket ≤32 房间，全有或全无校验——任一非法房间拒绝整
+    个 payload 且状态不变）；/emit 按 row 的 agentId/workflowId 路由 + all 房；
+    subscribe 空数组 = 显式清空（#59）；health 携带房间计数；重连重订阅
+    （connect 事件重发当前联合集）。
+  - **鉴权**：/emit 需共享 Bearer token（服务首次 boot 生成 → gitignored `.token`
+    0600 文件 → 应用侧 TTL 缓存读同文件 + 401 弃缓存重读自愈）——**浏览器经
+    网关伪造 emit 现在被 401 挡住**（QA 直连/坏 token/网关三路 401 + 正确
+    token 202）。
+  - **客户端订阅窄化**：`useSkillEvents` 第三参数 rooms（默认 ["all"]，空数组 =
+    零订阅）；聊天抽屉窄化到 `agent:<id>`（关闭态零订阅——抽屉常驻挂载，
+    修复前每个页面加载都在全量流上，#59）；单例 socket 承载全部订阅者的房间
+    **联合**；roomsKey 序列化去 identity 颤动。
+  - **App 链实证**：真 /api/skills/invoke（agent 归因）→ 事件恰好落在该 agent
+    房间 + all，不落其他 agent 房间（QA socket 双客户端隔离断言）；浏览器级
+    health 实证：关抽屉 {} → 开抽屉 `agent:<bio>:1`（无 all）→ 关抽屉归零。
+- **Q3 技能模板库（已交付）**：bundle **version 2**（`metadata: {name, description?,
+  tags?}`，校验规则 export/import 双向镜像 #63；v1 文档永久接受；v2 无 metadata
+  400；导入报告回显 bundle 身份）；export 三选择器 + `?name/description/tags=`
+  opt-in 升级为 v2 技能包（slug 文件名）；**Templates 第四 tab**：三个内置策展包
+  （Echo Diagnostics 快+慢双泳道 / Failure Lab 错误路径 / Trusted Header Echo
+  自定义头验证——目标端点为本地 skill-webhook 服务，卡内披露）+ 已导入徽章
+  （目录 id 交叉）+ 可展开技能清单（id/latency/端点）+ 一键导入（**走与文件
+  导入完全相同的 /api/skills/import 泳道**：同校验、同冲突重命名建议、同审计）
+  + 报告对话框（导入/跳过/失败三区 + “Import skipped as suggested” 一键重提）；
+  Registry “Export selected” 升级为**打包对话框**（name/README/tags → v2 pack
+  或保留 v1 裸备份导出）。
 
-1. **反馈接地（Q1）**：skillFeedback 的 ok 分支携带截断的真实响应片段
-   （custom webhook echo 500-1000 字符）——E2E 实证模型会为"Custom
-   webhook skill completed"一行编造 data 数组；把真实响应喂回去是消除
-   幻觉渲染的最短路径（denied/error 反馈已实证诚实）。
-2. **推送通道房间化（Q2）**：socket.io rooms（按 workflowId/agentId 订
-   阅）+ /emit 鉴权 token——当前设计在单用户沙箱成立（audit 行本就全
-   局可读），多租户前必须收口；测试面：跨房间隔离 + 越权 401。
-3. **技能模板库（Q3）**：把 bundle 文档升级为带 README/示例参数的
-   "技能包"格式（version 2 + metadata 段），市场面板接入导入——P1 的
-   bundle 是裸声明数组，模板是带叙事的可分享单元。
-4. **低优先池滚动（P2 遗留）**：stop 路由 detail 措辞打磨；Runs sheet
-   cancelled 行 Retry 直达；file-missing 筛选列；Escape 成文；Insights
-   服务端聚合；叠合深化；认证；真实集群通道。
+**QA/e2e 证据**：API 冒烟 **60/60**（A 反馈接地 16 例含真 webhook 回载荷逐字
+接地与 800 截断标记；B 鉴权与房间 17 例含网关 401 与 app 链 agent 房间隔离；
+C v2 格式 22 例含双向校验矩阵/双版本共存/冲突重试/模板包导入与慢速排队
+推送落地；D 清理归零与基线恢复）；浏览器级金路径全绿：模板导入 2/2 → 冲突
+0/2 + 重命名建议 → 重试 2/2 落地 -2 后缀 id → Imported 徽章；**Q1 真 LLM 接地
+金路径**（模型逐字段引用真实响应 + 真实时间戳，无编造字段）；**Q2 抽屉窄化
+浏览器实证**（health 房间计数）；**慢速模板技能排队→推送翻转闭环**（QUEUED
+卡 → 3s 后 COMPLETED + 真实时长 3.0s + “Updated from the Activity log” 披露）；
+Activity 免刷新行插入（data-inv-id）；Export selected 打包对话框全流程 +
+toast；移动端 375×812 零溢出 + footer 812/812 贴底；console/page errors 零；
+VLM 复核 3 截图全过。基线字段级核对：2/19/16/0/0/12/3/86/9/4 与冻结基线
+一致（含 4 条 e2e 聊天消息与 4 个模板技能的定点清除）。
+
+## R 线 — 下一阶段候选（基于 Q 线测试结果排序）
+
+Q 线后技能层的三块短板（反馈、传输、可移植性）全部闭环，测试结果暴露的
+新排序依据：**房间是自愿订阅**（客户端可声明任意 agentId 偷听任意房间，
+/emit token 只挡伪造不挡偷听——单用户沙箱成立，多租户前必须收口）；**接地
+不预防第一轮预猜**（#58：多轮拼接的回复同含猜测段与修正段，源头抑制需
+prompt 指令）；**包身份不入库**（导入即爆炸为散技能行，Templates 无法回溯
+“这个技能来自哪个包”）。按价值排序：
+
+1. **R1 推送通道身份化（Q2 的多租户前收口）**：socket 连接携带会话身份令牌
+   → 服务端按身份**强制**房间映射（客户端声明仅能窄化不能扩张）+ /emit
+   token 从共享文件升级为 env/secret 管理。测试面：越权订阅被拒、偷听
+   房间被服务端过滤、token 轮换不停服。
+2. **R2 工具循环预猜抑制（Q1 的源头补充）**：system prompt 加“fence 之后
+   立即停止生成、等待工具反馈”指令（配合现有的反馈接地双保险）——消除
+   第一轮先验幻觉段（#58 观察到的残留）。测试面：真 LLM 回复不含工具
+   反馈前的结果描述。
+3. **R3 包身份持久化**：CustomSkill 加 `packName` 列（导入时从 bundle
+   metadata 回填）→ Registry 显示“来自包 X”徽章 + Templates 已导入分组
+   与包级卸载（当前删除是逐技能的）。schema 变更 + 基线重冻同 commit 纪律。
+4. **低优先池滚动（历线遗留）**：stop 路由 detail 措辞打磨；Runs sheet
+   cancelled 行 Retry 直达；file-missing 筛选列；Escape 分层语义成文；
+   Insights 服务端聚合；叠合深化（多链/per-region RMSD/worker 对称性）；
+   NextAuth 认证；真实 SSH 集群通道。
 

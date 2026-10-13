@@ -1,4 +1,5 @@
-// GET /api/skills/export — the O3 export lane, P1-extended to BUNDLES.
+// GET /api/skills/export — the O3 export lane, P1-extended to BUNDLES,
+// Q3-extended to TEMPLATE PACKS (bundle version 2 + metadata).
 //
 // Three selectors (mutually exclusive — combining them is a 400):
 //   ?skillId=custom.<slug>   → ONE portable skill document (O3 shape)
@@ -10,14 +11,24 @@
 // Single document (unchanged O3 contract):
 //   { kind: "foundry-lab-skill", version: 1, exportedAt, skill: {…} }
 //
-// Bundle document (P1):
-//   {
-//     kind: "foundry-lab-skill-bundle",
-//     version: 1,
-//     exportedAt: "<ISO>",
-//     skills: [ { skillId, label, description, endpoint, params, headers,
-//                 latency, requires, agents } ]   // same per-skill shape
-//   }
+// Bundle document — TWO versions:
+//   version 1 (P1, the plain backup):
+//     { kind: "foundry-lab-skill-bundle", version: 1, exportedAt, skills: […] }
+//   version 2 (Q3, the shareable "skill pack" — emitted when ?name= and/or
+//   ?description= accompany a bundle selector):
+//     {
+//       kind: "foundry-lab-skill-bundle",
+//       version: 2,
+//       exportedAt: "<ISO>",
+//       metadata: { name, description, tags: ["…"] },  // narrative for
+//                                                       // the marketplace
+//                                                       // card / import
+//                                                       // report
+//       skills: [ … the same per-skill shape … ]
+//     }
+//   Metadata validation: name 1-80 chars (default "Foundry Lab skill pack"),
+//   description ≤ 500, tags ≤ 8 strings of ≤ 24 chars each — 400 on breach.
+//   Import understands BOTH versions (v1 documents keep flowing).
 //
 // Contract details:
 //   - Only custom.* skills are exportable (built-ins are part of the
@@ -38,12 +49,65 @@ export const dynamic = "force-dynamic";
 const SKILL_DOC_KIND = "foundry-lab-skill";
 const BUNDLE_DOC_KIND = "foundry-lab-skill-bundle";
 const SKILL_DOC_VERSION = 1;
+const BUNDLE_V1 = 1;
+const BUNDLE_V2 = 2;
+
+// Q3 metadata caps (mirrored by the import lane + the pack dialog).
+const PACK_NAME_MAX = 80;
+const PACK_DESC_MAX = 500;
+const PACK_TAGS_MAX = 8;
+const PACK_TAG_MAX = 24;
 
 export async function GET(request: NextRequest) {
   const sp = request.nextUrl.searchParams;
   const skillId = sp.get("skillId")?.trim() ?? "";
   const idsParam = sp.get("ids")?.trim() ?? "";
   const allParam = sp.get("all")?.trim().toLowerCase() ?? "";
+
+  // ── Q3: pack metadata (bundle lanes only — a single-skill document is
+  //    not a pack). Present together with ?skillId → 400 (the selector
+  //    boundary stays explicit).
+  const packName = sp.get("name")?.trim() ?? "";
+  const packDesc = sp.get("description")?.trim() ?? "";
+  const packTagsRaw = sp.get("tags")?.trim() ?? "";
+  const wantsMeta = packName !== "" || packDesc !== "" || packTagsRaw !== "";
+  if (wantsMeta && skillId) {
+    return NextResponse.json(
+      {
+        error:
+          "Pack metadata (name/description/tags) belongs to a BUNDLE export " +
+          "(?ids= or ?all=) — a single-skill document carries no metadata.",
+      },
+      { status: 400 },
+    );
+  }
+  let packTags: string[] = [];
+  if (packTagsRaw) {
+    packTags = packTagsRaw
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, PACK_TAGS_MAX);
+    const bad = packTags.find((t) => t.length > PACK_TAG_MAX);
+    if (bad) {
+      return NextResponse.json(
+        { error: `tag "${bad.slice(0, 40)}" exceeds ${PACK_TAG_MAX} chars` },
+        { status: 400 },
+      );
+    }
+  }
+  if (packName.length > PACK_NAME_MAX) {
+    return NextResponse.json(
+      { error: `pack name exceeds ${PACK_NAME_MAX} chars` },
+      { status: 400 },
+    );
+  }
+  if (packDesc.length > PACK_DESC_MAX) {
+    return NextResponse.json(
+      { error: `pack description exceeds ${PACK_DESC_MAX} chars` },
+      { status: 400 },
+    );
+  }
 
   const selectors = [
     skillId ? "skillId" : null,
@@ -171,16 +235,35 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const doc = {
-    kind: BUNDLE_DOC_KIND,
-    version: SKILL_DOC_VERSION,
-    exportedAt: new Date().toISOString(),
-    skills: rows.map(projectSkill),
-  };
-  return jsonResponse(
-    doc,
-    `foundry-lab-skills-${rows.length}-bundle.json`,
-  );
+  // Q3: metadata present → a version-2 "skill pack" document (the
+  // shareable unit the Templates tab renders); absent → the plain v1
+  // backup bundle (max compatibility with v1-only importers).
+  const doc = wantsMeta
+    ? {
+        kind: BUNDLE_DOC_KIND,
+        version: BUNDLE_V2,
+        exportedAt: new Date().toISOString(),
+        metadata: {
+          name: packName || "Foundry Lab skill pack",
+          ...(packDesc ? { description: packDesc } : {}),
+          ...(packTags.length > 0 ? { tags: packTags } : {}),
+        },
+        skills: rows.map(projectSkill),
+      }
+    : {
+        kind: BUNDLE_DOC_KIND,
+        version: BUNDLE_V1,
+        exportedAt: new Date().toISOString(),
+        skills: rows.map(projectSkill),
+      };
+  const slug = wantsMeta
+    ? (packName || "skill-pack")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 40)
+    : `skills-${rows.length}-bundle`;
+  return jsonResponse(doc, `foundry-lab-${slug || "pack"}.json`);
 }
 
 // ── helpers ─────────────────────────────────────────────────────────────────

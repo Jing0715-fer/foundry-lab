@@ -164,6 +164,12 @@ export function AgentChatDrawer({
   // drawer's tracked queued ids and flips immediately when terminal.
   // tickRef lets a reconnect trigger an immediate poll probe (the gap
   // missed events; declared first so the status callback can reach it).
+  // Q2: the subscription narrows to this agent's room — the drawer's
+  // queued cards are all invocations attributed to THIS agent, so other
+  // agents' rows never even arrive (the server routes by agentId).
+  // A CLOSED drawer (agentId null) subscribes to NOTHING — the drawer is
+  // always mounted, so defaulting to the firehose would put every page
+  // load on the full event stream.
   const tickRef = React.useRef<(() => void) | null>(null);
   const pushConnected = useSkillEvents(
     React.useCallback(
@@ -193,6 +199,7 @@ export function AgentChatDrawer({
         tickRef.current?.();
       }
     }, [queuedIdsKey]),
+    agentId ? [`agent:${agentId}`] : [],
   );
 
   // The poll fallback (O2's lane, now conditional on connectivity).
