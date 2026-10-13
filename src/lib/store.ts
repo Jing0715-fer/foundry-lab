@@ -113,6 +113,11 @@ interface AppState {
    * jobId is a fallback matcher when the invocation id wasn't persisted
    * on the card. Consumed after the invocations load, then cleared. */
   pendingSkillInvocation: { invocationId: string; jobId?: string | null } | null;
+  /** P3a deep-link: a custom skill the Skills panel's Registry tab should
+   *  open in the EDIT dialog (e.g. a chat card denied by that skill's
+   *  agent whitelist — the whitelist lives on the skill, not the agent).
+   *  Consumed after the catalog loads, then cleared. */
+  pendingSkillEdit: { skillId: string } | null;
 
   // actions: workflow
   setWorkflow: (w: WorkflowDTO | null) => void;
@@ -173,6 +178,9 @@ interface AppState {
   /** M1: request the Skills Activity tab to highlight a specific
    *  invocation row (deep-link). */
   setPendingSkillInvocation: (inv: { invocationId: string; jobId?: string | null } | null) => void;
+  /** P3a: request the Skills Registry tab to open a custom skill in the
+   *  edit dialog (deep-link). */
+  setPendingSkillEdit: (s: { skillId: string } | null) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
   dismissToast: (id: string) => void;
 }
@@ -208,6 +216,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingAgentEdit: null,
   pendingSkillTab: null,
   pendingSkillInvocation: null,
+  pendingSkillEdit: null,
 
   setWorkflow: (w) => {
     const switching = !!w && !!get().workflow && w.id !== get().workflow!.id;
@@ -493,6 +502,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPendingAgentEdit: (a) => set({ pendingAgentEdit: a }),
   setPendingSkillTab: (t) => set({ pendingSkillTab: t }),
   setPendingSkillInvocation: (inv) => set({ pendingSkillInvocation: inv }),
+  setPendingSkillEdit: (s) => set({ pendingSkillEdit: s }),
 
   toast: (t) => {
     const id = Math.random().toString(36).slice(2, 9);

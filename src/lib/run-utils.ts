@@ -187,7 +187,10 @@ function resolveAgentLLMOptions(
  *  the stream + non-stream chat lanes (single source of truth). */
 export function buildAgentSystemPrompt(agent: AgentDTO): string {
   const base = generateAgentSystemPrompt(agent);
-  const manifest = renderSkillManifest(catalogEntries(), agent.knowledge);
+  // P3a: the manifest also gates the per-skill agent whitelist — the same
+  // rule runSkill step 3.25 enforces, so a restricted skill is never
+  // advertised to an agent that would be refused for it.
+  const manifest = renderSkillManifest(catalogEntries(), agent.knowledge, agent.id);
   const withManifest = manifest ? `${base}\n\n${manifest}` : base;
   const suffix = agent.runtime?.systemPromptSuffix?.trim();
   if (!suffix) return withManifest;
@@ -325,6 +328,10 @@ export function skillCallToToolCall(call: SkillCall, res: SkillRunResult): ToolC
     params: call.params,
     ...(res.invocationId ? { invocationId: res.invocationId } : {}),
     ...(res.status ? { skillStatus: res.status } : {}),
+    // P3a: which authorization dimension refused a denied call — the
+    // chat card picks the right fix deep-link from it (whitelist → edit
+    // the SKILL; requires → edit the AGENT).
+    ...(res.deniedBy ? { deniedBy: res.deniedBy } : {}),
   };
   if (res.status === "queued") {
     const data = res.data as { jobId?: string } | undefined;

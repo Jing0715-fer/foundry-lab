@@ -9,8 +9,13 @@
 > 51/51 + 76/76 与陈旧断言修复）、10-17（K 线 Skill 层运营化：Insights 聚合 + denied
 > 深链 + per-agent 限流 + 慢技能异步入队，QA 51/52 容错重验 + 浏览器金路径全绿）、
 > 10-18（M 线 Skill 层运营深化：M1 聊天卡深链闭环 + M2 审计保留与分页 +
-> M3 动态技能注册，QA 42/42 + 浏览器金路径全绿）
-> 十四轮测试结论滚动更新，随每个阶段交付后重写。
+> M3 动态技能注册，QA 42/42 + 浏览器金路径全绿）、10-20（N 线 Skill 层扩展运营：
+> N1 慢 webhook 技能入队 + N2 custom 技能管理面，QA 17/17 + 浏览器金路径全绿）、
+> 10-21（O 线 Skill 层授权与协同：O1 requires 授权声明 + O2 QUEUED 卡活性刷新 +
+> O3 技能导入导出，QA 58/58 + 浏览器金路径全绿）、10-22（P 线 Skill 层权限细粒度
+> 与实时性：P1 技能集打包导出 + P2a 推送式活性刷新 + P3a 技能级 agent 白名单，
+> QA 66/66 + 浏览器金路径全绿）
+> 十七轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -319,6 +324,22 @@ AlphaFold 面板均有过滤不可见，见结论 #52）+ 截图 39 重拍。
 - **"预览将删除/将影响 N 行"类 UI 的数字必须与执行共用同一谓词代码**（#55，
   M 线后）：dry-run 与 apply 同一函数路径（estimate 不得有独立实现），
   确认对话框引用干跑结果而非重新计算。
+- **socket.io 服务端 engine path 不得设为 "/"**（P 线后）：engine.io 以
+  前缀匹配认领请求——path "/" 会吃掉该端口全部 HTTP 流量，与自定义 HTTP
+  端点共存必须保留默认 /socket.io；浏览器端 `io("/?XTransformPort=N")`
+  的 URL 路径是**命名空间**、query 随行进入每个 engine 请求，与网关的
+  查询转发天然兼容（路径无关）。
+- **推送/轮询双通道消费必须同池渲染**（P 线后）：事件与轮询翻卡走同一
+  applyXXX 函数——哪条泳道先到都渲染同一真相，通道身份不可泄漏到 UI；
+  在线心跳降频（30s）而非删除轮询（推送丢失的最坏代价 = 心跳周期，
+  永不是错误判决）。
+- **批量导入必须逐条独立、部分失败不回滚**（P 线后）：bundle 语义下
+  单条冲突/校验失败只报告不中止（failed[]/skipped[] 携带索引与建议），
+  全量回滚会让 1 个已存在 id 作废 N-1 个合法迁移。
+- **授权维度新增必须在三个面同时落地**（P 线后）：门控执行（含队列
+  泳道同步）、目录 eligible、提示词清单过滤——三者任一缺失都会造成
+  "广告了但拒绝"或"能执行但不展示"的漂移；拒因必须可区分（deniedBy）
+  以便修复深链指向正确的编辑面。
 
 ## M 线 — Skill 层运营深化（已交付：M1+M2+M3 全三项）
 
@@ -481,27 +502,87 @@ N 线收口后，custom 技能已是一等公民（注册/执行/停止/编辑/�
    端 requires 4/4）；移动端 375×812 零溢出 + footer 贴底 + 对话框 343px
    适配；console/page errors 零。
 
-## P 线 — 下一阶段候选（基于 O 线测试结果排序）
+## P 线 — Skill 层权限细粒度与实时性（已交付：P1+P2a+P3a 全三项；Task 48）
 
-O 线收口后，custom 技能的声明面（注册/编辑/授权/导入导出）与执行面
-（队列/停止/审计/刷新）均已闭环。测试结果暴露的新排序依据：**协同可移植
-性止步于单技能单文件**——多技能环境迁移是 N 手工操作；**刷新是拉模型**
-（4s 轮询，多抽屉/多标签页下有重复轮询）；O1 的闭合集（2 个知识开关）
-粒度粗于真实权限需求（例如"只允许特定 agent"）。按价值排序：
+O 线收口时识别的三个缺口（单技能可移植 / 拉模型刷新 / 闭合集粒度粗）
+全部落地：
 
-1. **技能集打包导出（P1）**：导出面从单技能扩展为"选中集/全量集"——
-   GET /api/skills/export?ids=a,b,c（或 bundle 文档 kind
-   foundry-lab-skill-bundle）+ 导入端多技能事务语义（部分失败报告，
-   非全回滚）。测试面：多技能往返 + 部分冲突矩阵。
-2. **推送式刷新（P2a）**：O2 拉模型升级为 SSE 广播（invocation 终态事件
-   推送到打开的抽屉/Activity tab）——多客户端一致性 + 消除空轮询。
-   依赖 job-events socket.io mini-service 扩展（skill-invocation 频道）。
-3. **技能级 agent 白名单（P3a）**：requires 闭合集之外的第三维——
-   CustomSkill.agents JSON 列（agent id 数组，空 = requires 决定），
-   目录 eligible 三级解析（requires ∧ 白名单），门控第 3.25 步。
-   谨慎：粒度收益 vs 管理复杂度（每技能手动维护名单）。
-4. **低优先池滚动（P2）**：stop 路由 detail 措辞打磨（abort 竞态下
-   "already finished" 语义可解释但欠精确）；Runs sheet cancelled 行
-   Retry 直达；file-missing 筛选列；Escape 成文；Insights 服务端聚合；
-   叠合深化；认证；真实集群通道。
+1. **技能级 agent 白名单（P3a）✅**：CustomSkill.agents 列（JSON agent-id
+   数组，`@default("[]")` 向后兼容——空 = requires 独自决定）+
+   validateAgents 共享校验（非数组/重复/空串/非字符串/超 32 条全 400，
+   **刻意不校验本地 Agent 表**：导出的白名单跨实例可移植，QA A8 实证
+   导入副本对局外 agent 依然 denied）+ registerCustomSkill 防御性解析 +
+   POST/PATCH/import/export 四面统一 + runSkill/runSkillQueued **第 3.25
+   步门控**（名单非空且不在其中 → denied，deniedBy: "whitelist" 区分
+   拒因维度）+ 目录 eligible = requires ∧ 白名单（含 disabled 行投影）+
+   提示词清单过滤（受限技能不再向非名单 agent 展示——广告与执行不可
+   漂移）+ 注册/编辑对话框 "Agent whitelist" 多选（未知 id 渲染为可移除
+   虚线行）+ denied 聊天卡 **"Edit skill whitelist" 深链**直达编辑对话框
+   （修复在技能侧而非 agent 侧——与 requires 拒因的 Fix agent access
+   按 deniedBy 分流）。QA：A9 实证合取语义（在名单但 bio 关 → requires
+   先拒，deniedBy=requires）。
+2. **技能集打包导出（P1）✅**：GET /api/skills/export 三选择器
+   （?skillId= 单文档（O3 不变）/?ids=a,b 列表 bundle/?all=1 全量含
+   disabled 行；互斥 400、内置 400 点名、未知 404 列举、重复 400、
+   ?all 零技能诚实 400）；bundle 文档 kind "foundry-lab-skill-bundle"
+   / version 1 / skills[]（每条 = 同一可移植声明形状，含 P3a agents）；
+   POST import 接受 bundle——**逐技能独立、部分失败不回滚**（一个冲突
+   不作废其余），响应 200 携带报告 imported[]/skipped[]（附确定性改名
+   建议）/failed[]（索引+错误）；`renames` 映射 + 报告对话框
+   "Import skipped as suggested" 一键重提；UI 选择模式（custom 卡前导
+   复选框 + Select/Export selected (N)/Select all/Cancel 工具栏）+
+   Export all + 导入报告对话框；文件上限 512KB。QA B：selectors/bundle
+   形状/部分失败/renames 往返/篡改条目/信封矩阵/单文档 201 回归。
+3. **推送式活性刷新（P2a）✅**：**新 mini-service skill-events（:3031
+   socket.io）**——POST /emit（服务端发射通道）+ GET /health；**关键实现
+   发现：socket.io 服务端 path 不能设 "/"——engine.io 会以前缀匹配吃掉
+   该端口上的全部 HTTP 请求（/health 实测返回 "Transport unknown"），
+   保持默认 /socket.io 即可与自定义 HTTP 端点共存**；浏览器端
+   `io("/?XTransformPort=3031")`（URL 路径是命名空间、query 随行、
+   engine 传输路径是客户端默认——Caddy 按查询转发与路径无关，实测经
+   :81 网关连通）。发射侧：recordSkillInvocation 落行即广播 + K5 队列
+   **全部 12 处终态翻转统一收口到 transitionInvocation**（条件写 #45/#47
+   纪律 + 落地后重读行再广播——事件携带真相而非意图）；best-effort
+   1.5s 超时、失败 5 分钟节流警告。消费侧：useSkillEvents 单例 hook
+   （引用计数挂载/卸载、断线重连、重连立即点查补漏）——聊天抽屉 QUEUED
+   卡**推送即翻转**（轮询降级为离线 4s/在线 30s 心跳双保险）+ Activity
+   tab **新行免刷新实时插入**（已加载行原地翻转，total 跟随）+ 两处
+   "live" 呼吸灯（离线隐藏，poll 兜底仍在）；事件与轮询同池
+   applyTerminalRows——哪条泳道先到都渲染同一真相。QA C：网关连通/
+   直接 emit/内联调用事件/排队调用 queued+terminal 双事件（真实
+   durationMs）/内置技能同流。
+4. **过程产出**：QA 66/66（A1-A9 白名单矩阵 / B1-B9 bundle 矩阵 /
+   C1-C6 推送通道 / D 清理——首轮 64/65 与 38/58 两处失败均为测试自身
+   缺陷：agents 端点返回裸数组、partial import 后未把再注册行放回清理
+   清单）；E2E 8 截图（57-64）+ VLM 复核 5 张（57 工具栏、58 denied 卡
+   4/4、61 bundle 报告 4/4、63 推送卡+live 灯 4/4、64 移动对话框；57/64
+   目标元素在折叠线下 = #49 视口假阴性，DOM 断言已证）；移动端
+   375×812 零溢出 + footer 780/812 贴底 + 对话框 343px；console/page
+   errors 零。**E2E 平台发现：推送功能必须在网关源（:81）打开页面**
+   ——直连 :3000 时 XTransformPort 相对解析落在 Next 进程（404），这正是
+   用户预览的真实路径（预览面板即经网关）。
+
+## Q 线 — 下一阶段候选（基于 P 线测试结果排序）
+
+P 线收口后，技能层四维授权（requires ∧ agents ∧ enabled ∧ 家族限流）、
+执行面双泳道（inline/queue）、可移植性（单文档/bundle/renames）、实时
+性（推送+轮询双保险）全部闭环。测试结果暴露的新排序依据：**推送通道是
+单点广播**（无鉴权、无房间隔离——多用户场景任何客户端都收到全部事件）；
+**反馈摘要只有一行**（E2E 观察到模型在 ok 反馈之外自由发挥渲染响应细节
+——summary 未携带真实响应片段时模型会编造）；**低优先池持续滚动**。按
+价值排序：
+
+1. **反馈接地（Q1）**：skillFeedback 的 ok 分支携带截断的真实响应片段
+   （custom webhook echo 500-1000 字符）——E2E 实证模型会为"Custom
+   webhook skill completed"一行编造 data 数组；把真实响应喂回去是消除
+   幻觉渲染的最短路径（denied/error 反馈已实证诚实）。
+2. **推送通道房间化（Q2）**：socket.io rooms（按 workflowId/agentId 订
+   阅）+ /emit 鉴权 token——当前设计在单用户沙箱成立（audit 行本就全
+   局可读），多租户前必须收口；测试面：跨房间隔离 + 越权 401。
+3. **技能模板库（Q3）**：把 bundle 文档升级为带 README/示例参数的
+   "技能包"格式（version 2 + metadata 段），市场面板接入导入——P1 的
+   bundle 是裸声明数组，模板是带叙事的可分享单元。
+4. **低优先池滚动（P2 遗留）**：stop 路由 detail 措辞打磨；Runs sheet
+   cancelled 行 Retry 直达；file-missing 筛选列；Escape 成文；Insights
+   服务端聚合；叠合深化；认证；真实集群通道。
 

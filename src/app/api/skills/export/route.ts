@@ -1,36 +1,34 @@
-// GET /api/skills/export?skillId=custom.<slug> — O3 export lane.
+// GET /api/skills/export — the O3 export lane, P1-extended to BUNDLES.
 //
-// Returns a portable JSON document describing ONE custom skill — the
-// CustomSkill row projected into its declaration form (the same field set
-// POST /api/skills accepts) plus a document envelope:
+// Three selectors (mutually exclusive — combining them is a 400):
+//   ?skillId=custom.<slug>   → ONE portable skill document (O3 shape)
+//   ?ids=custom.a,custom.b   → a BUNDLE document of the listed customs
+//   ?all=1 | ?all=true       → a BUNDLE of every custom skill (enabled +
+//                              disabled — definitions are portable even
+//                              while inert)
 //
+// Single document (unchanged O3 contract):
+//   { kind: "foundry-lab-skill", version: 1, exportedAt, skill: {…} }
+//
+// Bundle document (P1):
 //   {
-//     "kind": "foundry-lab-skill",
-//     "version": 1,
-//     "exportedAt": "<ISO>",
-//     "skill": {
-//       "skillId": "custom.foo",
-//       "label": "...",
-//       "description": "...",
-//       "endpoint": "https://…",
-//       "params": [ { key, type, required?, default?, min?, max?, description } ],
-//       "headers": { … } | null,
-//       "latency": "fast" | "slow",
-//       "requires": [ "bioToolsEnabled" | "webSearchEnabled" ]   // O1
-//     }
+//     kind: "foundry-lab-skill-bundle",
+//     version: 1,
+//     exportedAt: "<ISO>",
+//     skills: [ { skillId, label, description, endpoint, params, headers,
+//                 latency, requires, agents } ]   // same per-skill shape
 //   }
 //
 // Contract details:
 //   - Only custom.* skills are exportable (built-ins are part of the
-//     application — 400, same boundary PATCH/DELETE enforce).
-//   - Unknown skillId → 404.
-//   - Disabled skills ARE exportable (the definition is portable even while
-//     inert; imports always land ENABLED).
-//   - Content-Disposition invites a download but the body is plain JSON —
-//     programmatic consumers (tests, CI) can just parse it.
-//   - The document intentionally omits `enabled` (import policy: fresh
-//     registrations come up enabled) and every internal column (id,
-//     timestamps).
+//     application — 400 naming the offending id, same boundary PATCH/
+//     DELETE enforce). Unknown ids → 404 listing them.
+//   - ?all with zero customs → 400 (nothing to bundle — honest, not an
+//     empty success that looks like a download bug).
+//   - Disabled skills ARE exportable (imports always land ENABLED).
+//   - Content-Disposition invites a download but the body is plain JSON.
+//   - Documents intentionally omit `enabled` (import policy: fresh
+//     registrations come up enabled) and internal columns (id, timestamps).
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -38,36 +36,178 @@ import { db } from "@/lib/db";
 export const dynamic = "force-dynamic";
 
 const SKILL_DOC_KIND = "foundry-lab-skill";
+const BUNDLE_DOC_KIND = "foundry-lab-skill-bundle";
 const SKILL_DOC_VERSION = 1;
 
 export async function GET(request: NextRequest) {
-  const skillId = request.nextUrl.searchParams.get("skillId")?.trim() ?? "";
+  const sp = request.nextUrl.searchParams;
+  const skillId = sp.get("skillId")?.trim() ?? "";
+  const idsParam = sp.get("ids")?.trim() ?? "";
+  const allParam = sp.get("all")?.trim().toLowerCase() ?? "";
 
-  if (!skillId) {
-    return NextResponse.json(
-      { error: "skillId is required (e.g. ?skillId=custom.my-skill)" },
-      { status: 400 },
-    );
-  }
-  if (!skillId.startsWith("custom.")) {
+  const selectors = [
+    skillId ? "skillId" : null,
+    idsParam ? "ids" : null,
+    ["1", "true", "yes"].includes(allParam) ? "all" : null,
+  ].filter(Boolean) as string[];
+  if (selectors.length > 1) {
     return NextResponse.json(
       {
         error:
-          `"${skillId}" is not a custom skill — only custom.* skills are ` +
-          "exportable; built-in skills are part of the application.",
+          `Pick ONE export selector — got ${selectors.join(" + ")} ` +
+          "(skillId for one skill, ids for a listed set, all for everything).",
+      },
+      { status: 400 },
+    );
+  }
+  if (selectors.length === 0) {
+    return NextResponse.json(
+      {
+        error:
+          "Provide an export selector: ?skillId=custom.my-skill, " +
+          "?ids=custom.a,custom.b, or ?all=1.",
       },
       { status: 400 },
     );
   }
 
-  const row = await db.customSkill.findUnique({ where: { skillId } });
-  if (!row) {
-    return NextResponse.json(
-      { error: `No custom skill registered as "${skillId}"` },
-      { status: 404 },
-    );
+  // ── Single-skill document (O3 lane, unchanged contract) ──────────────────
+  if (selectors[0] === "skillId") {
+    if (!skillId.startsWith("custom.")) {
+      return NextResponse.json(
+        {
+          error:
+            `"${skillId}" is not a custom skill — only custom.* skills are ` +
+            "exportable; built-in skills are part of the application.",
+        },
+        { status: 400 },
+      );
+    }
+    const row = await db.customSkill.findUnique({ where: { skillId } });
+    if (!row) {
+      return NextResponse.json(
+        { error: `No custom skill registered as "${skillId}"` },
+        { status: 404 },
+      );
+    }
+    const doc = {
+      kind: SKILL_DOC_KIND,
+      version: SKILL_DOC_VERSION,
+      exportedAt: new Date().toISOString(),
+      skill: projectSkill(row),
+    };
+    return jsonResponse(doc, filenameFor(row.skillId));
   }
 
+  // ── Bundle document (P1: listed ids or all customs) ──────────────────────
+  let rows;
+  if (selectors[0] === "ids") {
+    const ids = idsParam
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { error: 'ids must be a comma-separated list of custom.* skill ids' },
+        { status: 400 },
+      );
+    }
+    if (ids.length > 100) {
+      return NextResponse.json(
+        { error: "at most 100 skills per bundle export" },
+        { status: 400 },
+      );
+    }
+    const nonCustom = ids.find((id) => !id.startsWith("custom."));
+    if (nonCustom) {
+      return NextResponse.json(
+        {
+          error:
+            `"${nonCustom}" is not a custom skill — only custom.* skills ` +
+            "are exportable; built-in skills are part of the application.",
+        },
+        { status: 400 },
+      );
+    }
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (seen.has(id)) {
+        return NextResponse.json(
+          { error: `duplicate id "${id}" in the ids list` },
+          { status: 400 },
+        );
+      }
+      seen.add(id);
+    }
+    rows = await db.customSkill.findMany({
+      where: { skillId: { in: ids } },
+      orderBy: { createdAt: "asc" },
+    });
+    const found = new Set(rows.map((r) => r.skillId));
+    const missing = ids.filter((id) => !found.has(id));
+    if (missing.length > 0) {
+      return NextResponse.json(
+        {
+          error: `No custom skill registered as ${missing
+            .map((id) => `"${id}"`)
+            .join(", ")}`,
+        },
+        { status: 404 },
+      );
+    }
+  } else {
+    rows = await db.customSkill.findMany({
+      orderBy: { createdAt: "asc" },
+    });
+    if (rows.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "No custom skills are registered on this instance — nothing to " +
+            "bundle. Register one first (or export a single skill by id).",
+        },
+        { status: 400 },
+      );
+    }
+  }
+
+  const doc = {
+    kind: BUNDLE_DOC_KIND,
+    version: SKILL_DOC_VERSION,
+    exportedAt: new Date().toISOString(),
+    skills: rows.map(projectSkill),
+  };
+  return jsonResponse(
+    doc,
+    `foundry-lab-skills-${rows.length}-bundle.json`,
+  );
+}
+
+// ── helpers ─────────────────────────────────────────────────────────────────
+
+/** A CustomSkill row → the portable per-skill declaration shape (the same
+ *  field set POST /api/skills accepts; P3a adds the agent whitelist). */
+function projectSkill(row: {
+  skillId: string;
+  label: string;
+  description: string;
+  params: string;
+  endpoint: string;
+  headers: string | null;
+  latency: string;
+  requires: string;
+  agents: string;
+}): {
+  skillId: string;
+  label: string;
+  description: string;
+  endpoint: string;
+  params: unknown;
+  headers: Record<string, string> | null;
+  latency: "fast" | "slow";
+  requires: string[];
+  agents: string[];
+} {
   let params: unknown = [];
   try {
     params = JSON.parse(row.params);
@@ -83,39 +223,59 @@ export async function GET(request: NextRequest) {
   } catch {
     headers = null;
   }
-  let requires: string[] = [];
+  return {
+    skillId: row.skillId,
+    label: row.label,
+    description: row.description,
+    endpoint: row.endpoint,
+    params,
+    headers,
+    latency: row.latency === "slow" ? "slow" : "fast",
+    requires: parseClosedSet(row.requires, ["bioToolsEnabled", "webSearchEnabled"]),
+    agents: parseStringArray(row.agents),
+  };
+}
+
+function parseClosedSet(raw: string, allowed: string[]): string[] {
   try {
-    const parsed: unknown = JSON.parse(row.requires || "[]");
+    const parsed: unknown = JSON.parse(raw || "[]");
     if (Array.isArray(parsed)) {
-      requires = parsed.filter(
-        (r) => r === "bioToolsEnabled" || r === "webSearchEnabled",
-      );
+      const set = new Set(allowed);
+      return parsed.filter((r): r is string => typeof r === "string" && set.has(r));
     }
   } catch {
-    requires = [];
+    /* corrupt column — the honest floor */
   }
+  return [];
+}
 
-  const doc = {
-    kind: SKILL_DOC_KIND,
-    version: SKILL_DOC_VERSION,
-    exportedAt: new Date().toISOString(),
-    skill: {
-      skillId: row.skillId,
-      label: row.label,
-      description: row.description,
-      endpoint: row.endpoint,
-      params,
-      headers,
-      latency: row.latency === "slow" ? "slow" : "fast",
-      requires,
-    },
-  };
+function parseStringArray(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    if (Array.isArray(parsed)) {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const a of parsed) {
+        if (typeof a !== "string") continue;
+        const id = a.trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+      }
+      return out;
+    }
+  } catch {
+    /* corrupt column — the honest floor */
+  }
+  return [];
+}
 
+function jsonResponse(doc: unknown, filename: string): NextResponse {
   return new NextResponse(JSON.stringify(doc, null, 2) + "\n", {
     status: 200,
     headers: {
       "Content-Type": "application/json; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filenameFor(row.skillId)}"`,
+      "Content-Disposition": `attachment; filename="${filename}"`,
     },
   });
 }

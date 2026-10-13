@@ -14,6 +14,8 @@
 //     requires?:    string[] (O1 — closed set "bioToolsEnabled" |
 //                   "webSearchEnabled"; REPLACES the whole set; null/[]
 //                   clears — every agent may invoke again)
+//     agents?:      string[] (P3a — agent-id whitelist; REPLACES the whole
+//                   set; null/[] clears — requires alone decides again)
 //     enabled?:     boolean (soft switch — disabled rows leave the live
 //                   registry: not invocable, not in prompts, but still
 //                   listed in the catalog flagged for re-enabling)
@@ -34,6 +36,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { reloadCustomSkills } from "@/lib/skills";
 import {
+  validateAgents,
   validateDescription,
   validateEndpoint,
   validateHeaders,
@@ -147,6 +150,20 @@ export async function PATCH(
       touched.push("requires");
     }
   }
+  // P3a: agent whitelist — an array REPLACES the whole set; null (or [])
+  // clears it (back to "requires alone decides"). Same null-means-clear
+  // contract headers and requires follow.
+  if (body.agents !== undefined) {
+    if (body.agents === null) {
+      data.agents = JSON.stringify([]);
+      touched.push("agents");
+    } else {
+      const r = validateAgents(body.agents);
+      if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+      data.agents = JSON.stringify(r.agents ?? []);
+      touched.push("agents");
+    }
+  }
   if (body.enabled !== undefined) {
     if (
       body.enabled !== true &&
@@ -170,7 +187,7 @@ export async function PATCH(
       {
         error:
           "Nothing to update — provide at least one of label, description, " +
-          "endpoint, params, headers, latency, requires, enabled.",
+          "endpoint, params, headers, latency, requires, agents, enabled.",
       },
       { status: 400 },
     );
@@ -195,6 +212,8 @@ export async function PATCH(
         // O1: closed-set parse of the persisted column (defensive against
         // legacy/corrupt values — the wire never carries unknown ids).
         requires: safeParseRequires(row.requires),
+        // P3a: whitelist parse (defensive — same floor as the loader).
+        agents: parseAgentsResponse(row.agents),
         enabled: row.enabled,
       },
       updated: touched,
@@ -205,6 +224,28 @@ export async function PATCH(
       { status: 500 },
     );
   }
+}
+
+/** P3a: defensive whitelist parse for the PATCH response. */
+function parseAgentsResponse(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    if (Array.isArray(parsed)) {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const a of parsed) {
+        if (typeof a !== "string") continue;
+        const id = a.trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+      }
+      return out;
+    }
+  } catch {
+    /* corrupt column — report no whitelist */
+  }
+  return [];
 }
 
 function safeParseRequires(raw: string): string[] {

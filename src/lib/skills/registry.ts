@@ -77,9 +77,12 @@ export function resolveSkillId(raw: string): string | null {
   return null;
 }
 
-/** Skills an agent is ELIGIBLE for — the same rule runSkill enforces. */
+/** Skills an agent is ELIGIBLE for — the same rule runSkill enforces
+ *  (requires ∧ the P3a agent whitelist). */
 export function skillsForAgent(agent: AgentDTO): SkillDefinition[] {
-  return listSkills().filter((s) =>
-    s.requires.every((r) => agent.knowledge[r] === true),
+  return listSkills().filter(
+    (s) =>
+      s.requires.every((r) => agent.knowledge[r] === true) &&
+      (!s.agents || s.agents.length === 0 || s.agents.includes(agent.id)),
   );
 }

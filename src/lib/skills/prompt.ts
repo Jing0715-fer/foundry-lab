@@ -10,13 +10,19 @@
 import type { SkillCatalogEntry, SkillParamDef } from "./types";
 
 /** Render the skills the agent is eligible for as a system-prompt fragment.
- *  `knowledge` mirrors the flags the executor gates on — the SAME flags. */
+ *  `knowledge` mirrors the flags the executor gates on — the SAME flags.
+ *  P3a: `agentId` gates the per-skill whitelist exactly like runSkill
+ *  step 3.25 — the manifest can never advertise a skill the executor
+ *  would refuse (and must never hide one it would run). */
 export function renderSkillManifest(
   entries: SkillCatalogEntry[],
   knowledge: { webSearchEnabled: boolean; bioToolsEnabled: boolean },
+  agentId?: string,
 ): string {
-  const eligible = entries.filter((s) =>
-    s.requires.every((r) => knowledge[r] === true),
+  const eligible = entries.filter(
+    (s) =>
+      s.requires.every((r) => knowledge[r] === true) &&
+      (!s.agents || s.agents.length === 0 || (agentId ? s.agents.includes(agentId) : false)),
   );
   if (eligible.length === 0) return "";
 

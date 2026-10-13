@@ -4,6 +4,10 @@
 // routes import them. Every rule has a matching QA case.
 // O1: validateRequires joins the shared set (POST/PATCH/import all
 // declare authorization through the same closed id set).
+// P3a: validateAgents joins too — the third authorization dimension
+// (per-skill agent whitelist; ids are opaque strings, deliberately NOT
+// checked against the Agent table so an exported whitelist imports
+// anywhere — an id matching no local agent just never clears the gate).
 
 import type { SkillParamDef } from "./types";
 
@@ -152,6 +156,39 @@ export function validateRequires(raw: unknown): {
     out.push(item);
   }
   return { requires: out };
+}
+
+/** P3a: the per-skill agent whitelist — an array of agent ids (opaque
+ *  strings; ≤60 chars each, ≤32 entries, no duplicates). null (PATCH)
+ *  and [] both mean "no whitelist — requires alone decides" (the
+ *  pre-P3a back-compatible default). */
+export function validateAgents(raw: unknown): {
+  agents?: string[];
+  error?: string;
+} {
+  if (raw === undefined || raw === null) return { agents: [] };
+  if (!Array.isArray(raw)) {
+    return { error: "agents must be an array of agent ids (the whitelist)" };
+  }
+  if (raw.length > 32) {
+    return { error: "at most 32 agent ids are allowed in a whitelist" };
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !item.trim() || item.length > 60) {
+      return {
+        error: `agent id "${String(item).slice(0, 40)}" is invalid — ids are non-empty strings (≤60 chars)`,
+      };
+    }
+    const id = item.trim();
+    if (seen.has(id)) {
+      return { error: `duplicate agent id "${id}" in the whitelist` };
+    }
+    seen.add(id);
+    out.push(id);
+  }
+  return { agents: out };
 }
 
 /** Endpoint shape: http(s) URL, ≤2000 chars. Returns the TRIMMED endpoint. */

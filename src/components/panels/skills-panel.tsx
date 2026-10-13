@@ -41,6 +41,7 @@ import {
   Gauge,
   HardDrive,
   KeyRound,
+  ListChecks,
   Loader2,
   Pencil,
   Plus,
@@ -87,6 +88,7 @@ import {
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { EmptyState, PanelSkeleton } from "@/components/empty-state";
 import { useAppStore } from "@/lib/store";
+import { useSkillEvents, type SkillInvocationEvent } from "@/hooks/use-skill-events";
 import { cn } from "@/lib/utils";
 
 // --- Wire types (mirror the /api/skills + /api/skills/invocations +
@@ -126,6 +128,9 @@ interface SkillCatalogEntry {
   /** Only present when the catalog was fetched with ?agentId= — resolved
    *  against that agent's knowledge flags (same rule runSkill enforces). */
   eligible?: boolean;
+  /** P3a: agent-id whitelist (present on customs with a non-empty list —
+   *  requires is ANDed on top; empty = every agent). */
+  agents?: string[];
 }
 
 interface SkillInvocationDTO {
@@ -484,6 +489,23 @@ function RegistryTab() {
     suggestion: string | null;
   } | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
+  // P1: bundle selection mode + the multi-skill import REPORT dialog.
+  const [selectMode, setSelectMode] = React.useState(false);
+  const [selectedIds, setSelectedIds] = React.useState<Set<string>>(new Set());
+  const [importReport, setImportReport] = React.useState<{
+    requested: number;
+    imported: { id: string; label: string }[];
+    skipped: { skillId: string; suggestion: string | null }[];
+    failed: { skillId: string | null; index: number; error: string }[];
+    /** The original bundle doc — the retry action re-submits it with
+     *  renames, no second file read needed. */
+    retryDoc?: Record<string, unknown>;
+  } | null>(null);
+  // P3a: whitelist deep-link target (a chat card denied by a skill's
+  // whitelist points here — consumed after the catalog loads).
+  const pendingSkillEdit = useAppStore((s) => s.pendingSkillEdit);
+  const setPendingSkillEdit = useAppStore((s) => s.setPendingSkillEdit);
+  const toast = useAppStore((s) => s.toast);
 
   const loadCatalog = React.useCallback(async () => {
     setLoading(true);
@@ -503,6 +525,25 @@ function RegistryTab() {
   React.useEffect(() => {
     loadCatalog();
   }, [loadCatalog]);
+
+  // P3a: consume the whitelist deep-link once the catalog has loaded —
+  // open the edit dialog for the named skill, or be honest when the skill
+  // is not (or no longer) registered.
+  React.useEffect(() => {
+    if (!pendingSkillEdit || (loading && skills.length === 0)) return;
+    const pending = pendingSkillEdit;
+    setPendingSkillEdit(null);
+    const target = skills.find((s) => s.id === pending.skillId);
+    if (target) {
+      setEditingSkill(target);
+    } else {
+      toast({
+        title: "Skill not found",
+        description: `No custom skill registered as "${pending.skillId}" — it may have been deleted or renamed.`,
+        variant: "destructive",
+      });
+    }
+  }, [pendingSkillEdit, loading, skills, setPendingSkillEdit, toast]);
 
   const toggleSkill = (id: string) => {
     setExpanded((prev) => {
@@ -657,12 +698,89 @@ function RegistryTab() {
     }
   };
 
-  // O3: import — read the picked file, POST it, route the outcome. A 409
-  // with a suggestion opens the rename confirm; a success refreshes the
-  // catalog (the new card lands live + enabled).
-  const submitImport = async (doc: Record<string, unknown>, renameId?: string) => {
+  // P1: bundle export — the same download flow for a LISTED set or all
+  //  customs. The report toast names the count + the filename so the
+  //  user can tell a 1-skill bundle from an everything bundle.
+  const exportBundle = async (ids: string[] | "all") => {
+    try {
+      const url =
+        ids === "all"
+          ? "/api/skills/export?all=1"
+          : `/api/skills/export?ids=${encodeURIComponent(ids.join(","))}`;
+      const res = await fetch(url);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: "Bundle export failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      const count = Array.isArray(data?.skills) ? data.skills.length : 0;
+      const filename = `foundry-lab-skills-${count}-bundle.json`;
+      const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {
+        type: "application/json",
+      });
+      const url2 = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url2;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url2);
+      toast({
+        title: "Skill bundle exported",
+        description: `${filename} — ${count} skill${count === 1 ? "" : "s"}. Import the file on another Foundry Lab instance (collisions are skipped with a rename offer, not a rollback).`,
+        variant: "default",
+      });
+    } catch (e) {
+      toast({
+        title: "Bundle export failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
+  };
+
+  // P1: selection-mode helpers — checkboxes live on custom cards only.
+  const customs = React.useMemo(
+    () => skills.filter((s) => s.family === "custom"),
+    [skills],
+  );
+  const selectedArray = React.useMemo(
+    () => [...selectedIds].filter((id) => customs.some((c) => c.id === id)),
+    [selectedIds, customs],
+  );
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+  const exitSelectMode = () => {
+    setSelectMode(false);
+    setSelectedIds(new Set());
+  };
+
+  // O3/P1: import — read the picked file, POST it, route the outcome.
+  //  SINGLE docs: a 409 with a suggestion opens the rename confirm; a
+  //  success refreshes the catalog. BUNDLE docs: the lane answers with a
+  //  per-skill REPORT (200) — imported/skipped/failed — which opens the
+  //  report dialog; its retry action re-submits with a renames map built
+  //  from the suggestions. The original doc rides along on the report so
+  //  the retry needs no second file read.
+  const submitImport = async (
+    doc: Record<string, unknown>,
+    renameId?: string,
+  ) => {
     setImporting(true);
     try {
+      const isBundle = doc.kind === "foundry-lab-skill-bundle";
       const res = await fetch("/api/skills/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -671,6 +789,27 @@ function RegistryTab() {
         ),
       });
       const data = await res.json().catch(() => ({}));
+      if (isBundle) {
+        if (!res.ok) {
+          toast({
+            title: "Bundle import failed",
+            description: data?.error ?? `HTTP ${res.status}`,
+            variant: "destructive",
+          });
+          return;
+        }
+        setImportReport({
+          requested: typeof data?.requested === "number" ? data.requested : 0,
+          imported: Array.isArray(data?.imported) ? data.imported : [],
+          skipped: Array.isArray(data?.skipped) ? data.skipped : [],
+          failed: Array.isArray(data?.failed) ? data.failed : [],
+          retryDoc: doc,
+        });
+        if (Array.isArray(data?.imported) && data.imported.length > 0) {
+          await loadCatalog();
+        }
+        return;
+      }
       if (res.status === 409 && (data?.suggestion || data?.error)) {
         setImportConflict({
           doc,
@@ -679,7 +818,7 @@ function RegistryTab() {
         return;
       }
       if (!res.ok) {
-        useAppStore.getState().toast({
+        toast({
           title: "Import failed",
           description: data?.error ?? `HTTP ${res.status}`,
           variant: "destructive",
@@ -687,14 +826,14 @@ function RegistryTab() {
         return;
       }
       setImportConflict(null);
-      useAppStore.getState().toast({
+      toast({
         title: "Skill imported",
         description: `"${data?.skill?.id ?? "custom skill"}" is live and enabled — it flows through the same validation, gating, queue, and audit pipeline as every registration.`,
         variant: "default",
       });
       await loadCatalog();
     } catch (e) {
-      useAppStore.getState().toast({
+      toast({
         title: "Import failed",
         description: e instanceof Error ? e.message : String(e),
         variant: "destructive",
@@ -704,6 +843,17 @@ function RegistryTab() {
     }
   };
 
+  // P1: the report dialog's retry action — re-submit the SAME bundle with
+  //  a renames map covering every skipped skill that got a suggestion.
+  const retrySkippedImport = async () => {
+    if (!importReport?.retryDoc) return;
+    const renames: Record<string, string> = {};
+    for (const s of importReport.skipped) {
+      if (s.suggestion) renames[s.skillId] = s.suggestion;
+    }
+    await submitImport({ ...importReport.retryDoc, renames });
+  };
+
   const handleFilePicked = async (
     e: React.ChangeEvent<HTMLInputElement>,
   ) => {
@@ -711,10 +861,10 @@ function RegistryTab() {
     // Reset the input so picking the SAME file again re-fires change.
     e.target.value = "";
     if (!file) return;
-    if (file.size > 100_000) {
+    if (file.size > 512_000) {
       useAppStore.getState().toast({
         title: "Import failed",
-        description: "File too large — a skill document is a few KB at most.",
+        description: "File too large — a skill document is a few KB and a 100-skill bundle stays well under 512KB.",
         variant: "destructive",
       });
       return;
@@ -783,8 +933,67 @@ function RegistryTab() {
           />
         </div>
         {/* M3: register a custom webhook skill. O3: import a portable skill
-            document (export → file → import, 409 → rename offer). */}
-        <div className="flex items-center gap-2">
+            document (export → file → import, 409 → rename offer). P1: bundle
+            export — select a listed set or everything at once. */}
+        <div className="flex flex-wrap items-center gap-2">
+          {customs.length > 0 && !selectMode && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => exportBundle("all")}
+              className="h-11 gap-1.5 sm:h-8"
+            >
+              <Download className="size-4" />
+              Export all
+            </Button>
+          )}
+          {customs.length > 0 && !selectMode && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              onClick={() => setSelectMode(true)}
+              className="h-11 gap-1.5 sm:h-8"
+            >
+              <ListChecks className="size-4" />
+              Select
+            </Button>
+          )}
+          {selectMode && (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => exportBundle(selectedArray)}
+                disabled={selectedArray.length === 0}
+                className="h-11 gap-1.5 sm:h-8"
+              >
+                <Download className="size-4" />
+                Export selected ({selectedArray.length})
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setSelectedIds(new Set(customs.map((c) => c.id)))}
+                disabled={customs.length === 0}
+                className="h-11 gap-1.5 sm:h-8"
+              >
+                Select all
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={exitSelectMode}
+                className="h-11 gap-1.5 sm:h-8"
+              >
+                Cancel
+              </Button>
+            </>
+          )}
           <Button
             type="button"
             size="sm"
@@ -852,6 +1061,13 @@ function RegistryTab() {
                           onEdit: () => setEditingSkill(s),
                           onToggleEnabled: () => toggleEnabled(s),
                           onExport: () => exportSkill(s),
+                          ...(selectMode
+                            ? {
+                                selectable: true,
+                                selected: selectedIds.has(s.id),
+                                onToggleSelected: () => toggleSelected(s.id),
+                              }
+                            : {}),
                         }
                       : {})}
                   />
@@ -940,6 +1156,116 @@ function RegistryTab() {
         </AlertDialogContent>
       </AlertDialog>
 
+      {/* P1: bundle import REPORT — per-skill outcomes (imported /
+          skipped / failed). Skipped entries with a suggestion offer a
+          one-click retry under the suggested ids (renames map). */}
+      <AlertDialog
+        open={importReport !== null}
+        onOpenChange={(open) => {
+          if (!open) setImportReport(null);
+        }}
+      >
+        <AlertDialogContent className="max-h-[85vh] overflow-y-auto sm:max-w-lg">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Bundle import report</AlertDialogTitle>
+            <AlertDialogDescription>
+              {importReport &&
+                `${importReport.imported.length} of ${importReport.requested} skill${
+                  importReport.requested === 1 ? "" : "s"
+                } imported. Each skill in a bundle is independent — collisions are skipped (not a rollback) and validation failures are reported per skill.`}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {importReport && (
+            <div className="space-y-3 text-xs">
+              {importReport.imported.length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-semibold text-emerald-700 dark:text-emerald-400">
+                    Imported ({importReport.imported.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {importReport.imported.map((s) => (
+                      <li key={s.id} className="font-mono text-[11px]">
+                        {s.id}
+                        <span className="ml-2 font-sans text-muted-foreground">
+                          {s.label}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {importReport.skipped.length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-semibold text-amber-700 dark:text-amber-400">
+                    Skipped — already registered ({importReport.skipped.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {importReport.skipped.map((s) => (
+                      <li key={s.skillId} className="font-mono text-[11px]">
+                        {s.skillId}
+                        {s.suggestion ? (
+                          <span className="ml-2 font-sans text-muted-foreground">
+                            rename offer: {s.suggestion}
+                          </span>
+                        ) : (
+                          <span className="ml-2 font-sans text-muted-foreground">
+                            no free rename id — delete or rename one first
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {importReport.failed.length > 0 && (
+                <div className="space-y-1">
+                  <p className="font-semibold text-rose-700 dark:text-rose-400">
+                    Failed validation ({importReport.failed.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {importReport.failed.map((f, i) => (
+                      <li
+                        key={`${f.skillId ?? "entry"}-${f.index}-${i}`}
+                        className="text-[11px]"
+                      >
+                        <span className="font-mono">
+                          {f.skillId ?? `entry #${f.index}`}
+                        </span>
+                        <span className="ml-2 text-muted-foreground">
+                          {f.error}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={importing}>Close</AlertDialogCancel>
+            {importReport &&
+              importReport.skipped.some((s) => s.suggestion) && (
+                <AlertDialogAction
+                  disabled={importing}
+                  onClick={(e) => {
+                    // Keep the dialog open while the retry runs (Radix
+                    // auto-close would lose the pending state).
+                    e.preventDefault();
+                    retrySkippedImport();
+                  }}
+                >
+                  {importing ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    <Upload className="size-4" />
+                  )}
+                  Import skipped as suggested
+                </AlertDialogAction>
+              )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       {/* M3: shared delete confirm (one instance for all custom cards). */}
       <AlertDialog
         open={confirmDelete !== null}
@@ -991,6 +1317,9 @@ function SkillCard({
   onToggleEnabled,
   onExport,
   toggling,
+  selectable,
+  selected,
+  onToggleSelected,
 }: {
   skill: SkillCatalogEntry;
   open: boolean;
@@ -1005,9 +1334,19 @@ function SkillCard({
   onExport?: () => void;
   /** N2: true while this card's enable/disable PATCH is in flight. */
   toggling?: boolean;
+  /** P1: selection mode — render a leading checkbox for bundle export. */
+  selectable?: boolean;
+  selected?: boolean;
+  onToggleSelected?: () => void;
 }) {
   const latency = LATENCY_META[skill.latency] ?? LATENCY_META["slow"];
   const disabled = skill.family === "custom" && skill.enabled === false;
+  // P3a: resolve whitelist ids to titles for the expanded view (unknown
+  // ids — imported whitelists — are shown as unknown, the honest floor).
+  const agentsList = useAppStore((s) => s.agents);
+  const whitelist = skill.agents ?? [];
+  const titleFor = (id: string) =>
+    agentsList.find((a) => a.id === id)?.title ?? null;
 
   return (
     <Card
@@ -1018,8 +1357,23 @@ function SkillCard({
     >
       <CardContent className="p-0">
         {/* The toggle row and the action buttons are SIBLINGS (never nest
-            interactive elements — keyboard + a11y). */}
+            interactive elements — keyboard + a11y). P1: in selection mode a
+            leading checkbox joins them as another sibling. */}
         <div className="flex items-stretch">
+          {selectable && (
+            <label
+              className="flex w-11 cursor-pointer items-center justify-center border-r"
+              aria-label={`Select ${skill.id} for bundle export`}
+            >
+              <input
+                type="checkbox"
+                checked={selected === true}
+                onChange={() => onToggleSelected?.()}
+                className="size-4 accent-primary"
+                aria-label={`Select ${skill.id} for bundle export`}
+              />
+            </label>
+          )}
           <button
             type="button"
             onClick={onToggle}
@@ -1054,6 +1408,12 @@ function SkillCard({
                     className="bg-muted text-muted-foreground"
                   />
                 ))}
+                {whitelist.length > 0 && (
+                  <Pill
+                    label={`${whitelist.length}-agent whitelist`}
+                    className="bg-violet-500/10 text-violet-700 dark:text-violet-400"
+                  />
+                )}
                 {skill.eligible === true && (
                   <Pill
                     label="eligible"
@@ -1174,6 +1534,21 @@ function SkillCard({
                     </span>
                   </p>
                 )}
+                {whitelist.length > 0 && (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Whitelist:</span>{" "}
+                    {whitelist
+                      .map(
+                        (id) =>
+                          titleFor(id) ?? `unknown (${id.slice(0, 12)}…)`,
+                      )
+                      .join(", ")}
+                    <span className="block text-[11px] leading-snug">
+                      Only these agents may invoke — enforced at execution
+                      time and hidden from everyone else's skill manifests.
+                    </span>
+                  </p>
+                )}
               </div>
             )}
             {skill.aliases.length > 0 && (
@@ -1269,6 +1644,43 @@ function ActivityTab() {
   const pendingSkillInvocation = useAppStore((s) => s.pendingSkillInvocation);
   const setPendingSkillInvocation = useAppStore((s) => s.setPendingSkillInvocation);
   const toast = useAppStore((s) => s.toast);
+
+  // P2a: the PUSH lane — invocation rows land here live. A row already in
+  // the list flips IN PLACE (status/summary/error/duration); an unknown
+  // row is NEW and prepends when the active filters admit it (the count
+  // follows). Rows the filters exclude are ignored — the manual Refresh
+  // re-applies everything against the source of truth.
+  const eventsConnected = useSkillEvents(
+    React.useCallback(
+      (event: SkillInvocationEvent) => {
+        const known = invocations.some((inv) => inv.id === event.id);
+        if (known) {
+          setInvocations((prev) => {
+            const idx = prev.findIndex((inv) => inv.id === event.id);
+            if (idx < 0) return prev;
+            const next = prev.slice();
+            next[idx] = {
+              ...next[idx],
+              status: event.status,
+              resultSummary: event.resultSummary,
+              error: event.error,
+              durationMs: event.durationMs,
+            };
+            return next;
+          });
+          return;
+        }
+        const matchesSource = sourceFilter === "all" || event.source === sourceFilter;
+        const matchesStatus = statusFilter === "all" || event.status === statusFilter;
+        if (!matchesSource || !matchesStatus) return;
+        setInvocations((prev) => [event, ...prev]);
+        setTotal((t) => t + 1);
+      },
+      // The handler ref updates every render, so these deps are for the
+      // linter's benefit — the subscription itself is mount-scoped.
+      [invocations, sourceFilter, statusFilter],
+    ),
+  );
 
   const filterQuery = React.useMemo(() => {
     const sp = new URLSearchParams({ limit: String(PAGE_SIZE) });
@@ -1420,6 +1832,22 @@ function ActivityTab() {
           </SelectContent>
         </Select>
         <div className="ml-auto flex items-center gap-2">
+          {/* P2a: live indicator — the push channel is connected and new
+              rows / flips land here without a Refresh. Absent when offline
+              (manual Refresh + the drawer's poll still cover it). */}
+          {eventsConnected && (
+            <span
+              className="inline-flex items-center gap-1 text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400"
+              title="Live updates connected — new invocations appear here as they land"
+              aria-label="Live updates connected"
+            >
+              <span className="relative flex size-1.5">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+              </span>
+              live
+            </span>
+          )}
           <p className="text-sm font-medium text-muted-foreground">
             {invocations.length === total
               ? `${total} invocation${total === 1 ? "" : "s"}`
@@ -2352,6 +2780,11 @@ function CustomSkillDialog({
   // O1: declared knowledge requirements (closed set — the checkbox rows
   // are rendered FROM REQUIREMENT_LABELS so the two can never drift).
   const [requires, setRequires] = React.useState<SkillRequirement[]>([]);
+  // P3a: the agent whitelist (agent-id array; empty = every agent).
+  // Rendered from the store's agents list + a defensive row for ids the
+  // store doesn't know (imported whitelists — removable inline).
+  const [agents, setAgents] = React.useState<string[]>([]);
+  const knownAgents = useAppStore((s) => s.agents);
   const [submitting, setSubmitting] = React.useState(false);
   const [formError, setFormError] = React.useState<string | null>(null);
 
@@ -2384,6 +2817,10 @@ function CustomSkillDialog({
       setRequires(
         (skill.requires ?? []).filter((r) => r in REQUIREMENT_LABELS),
       );
+      // P3a: prefill the whitelist as-is (ids may not resolve to local
+      // agents — an imported whitelist is still honest data; the unknown
+      // ids render in their own removable rows).
+      setAgents((skill.agents ?? []).slice());
     } else {
       setLabel("");
       setDescription("");
@@ -2392,6 +2829,7 @@ function CustomSkillDialog({
       setHeaders([]);
       setLatency("fast");
       setRequires([]);
+      setAgents([]);
     }
     setFormError(null);
     // Prefill is a pure function of (open, skill identity); in-flight edits
@@ -2449,6 +2887,12 @@ function CustomSkillDialog({
       setFormError("Duplicate header names — each header key may appear once.");
       return;
     }
+    // P3a: the whitelist must not carry duplicates (server 400 parity —
+    // catching it locally keeps the dialog honest without a round trip).
+    if (new Set(agents).size !== agents.length) {
+      setFormError("Duplicate agents in the whitelist — each agent may appear once.");
+      return;
+    }
     setSubmitting(true);
     try {
       const paramRows = params
@@ -2478,6 +2922,9 @@ function CustomSkillDialog({
             headers: headerEntries.length > 0 ? headerObj : null,
             latency,
             requires,
+            // P3a: the dialog owns the whole whitelist (array replace —
+            // empty array clears it, exactly like requires).
+            agents,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -2500,6 +2947,7 @@ function CustomSkillDialog({
           ...(headerEntries.length > 0 ? { headers: headerObj } : {}),
           latency,
           requires,
+          ...(agents.length > 0 ? { agents } : {}),
         };
         const res = await fetch("/api/skills", {
           method: "POST",
@@ -2697,6 +3145,93 @@ function CustomSkillDialog({
                 );
               })}
             </div>
+          </fieldset>
+
+          {/* P3a: the agent whitelist — the third authorization dimension.
+              Rendered from the live agents list; ids that match no local
+              agent (imported whitelists) get their own removable rows. */}
+          <fieldset className="space-y-1.5">
+            <legend className="text-sm font-medium text-foreground">
+              Agent whitelist
+            </legend>
+            <p className="text-[11px] text-muted-foreground">
+              Optional restriction: when agents are checked, ONLY they may
+              invoke this skill (knowledge requirements still apply on top).
+              Leave empty for every agent. Enforced at execution time and
+              reflected in each agent's skill manifest.
+            </p>
+            <div className="max-h-44 space-y-1.5 overflow-y-auto pr-1">
+              {knownAgents.map((a) => {
+                const checked = agents.includes(a.id);
+                return (
+                  <label
+                    key={a.id}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-2.5 rounded-md border px-2.5 py-2 transition-colors",
+                      checked
+                        ? "border-primary bg-primary/5"
+                        : "hover:bg-accent/50",
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) =>
+                        setAgents((prev) =>
+                          e.target.checked
+                            ? [...prev, a.id]
+                            : prev.filter((x) => x !== a.id),
+                        )
+                      }
+                      className="size-4 accent-primary"
+                      aria-label={`Whitelist ${a.title}`}
+                    />
+                    <span
+                      className="flex size-5 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+                      style={{ background: a.color }}
+                    >
+                      {a.title.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">
+                      {a.title}
+                    </span>
+                  </label>
+                );
+              })}
+              {agents
+                .filter((id) => !knownAgents.some((a) => a.id === id))
+                .map((id) => (
+                  <div
+                    key={id}
+                    className="flex items-center gap-2 rounded-md border border-dashed px-2.5 py-2"
+                  >
+                    <Badge variant="outline" className="text-[10px] font-normal">
+                      unknown id
+                    </Badge>
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">
+                      {id}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() =>
+                        setAgents((prev) => prev.filter((x) => x !== id))
+                      }
+                      aria-label={`Remove unknown agent id ${id.slice(0, 12)}`}
+                      className="h-7 w-7 p-0 text-muted-foreground hover:text-rose-600 dark:hover:text-rose-400"
+                    >
+                      <Trash2 className="size-3.5" />
+                    </Button>
+                  </div>
+                ))}
+            </div>
+            {agents.length > 0 && (
+              <p className="text-[11px] text-muted-foreground">
+                {agents.length} agent{agents.length === 1 ? "" : "s"} may
+                invoke — everyone else is refused at execution time.
+              </p>
+            )}
           </fieldset>
 
           <div className="space-y-2">

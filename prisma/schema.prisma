@@ -319,6 +319,15 @@ model CustomSkill {
   // prompt manifest for agents lacking the flags — the same two-rule
   // enforcement built-ins get, now declarable per webhook skill.
   requires    String   @default("[]") // JSON SkillRequirement[]
+  // P3a authorization declaration, third dimension: JSON array of agent
+  // ids — when non-empty, ONLY those agents may invoke (requires is still
+  // ANDed on top: the caller must clear BOTH). Registered empty by default
+  // (back-compatible — requires alone decides, the pre-P3a behavior).
+  // Ids are NOT validated against the Agent table on purpose: a whitelist
+  // exported from another instance (O3 portability) may name agents that
+  // don't exist here — an id that matches no local agent simply never
+  // clears the gate, which is the honest deny-all semantics.
+  agents      String   @default("[]") // JSON agent-id string[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

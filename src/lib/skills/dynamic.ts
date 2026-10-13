@@ -64,6 +64,10 @@ export interface CustomSkillRow {
   /** O1: JSON string array of SkillRequirement ids (unknown values are
    *  dropped defensively — the gate only understands the closed set). */
   requires: string;
+  /** P3a: JSON string array of agent ids (the whitelist; empty/absent =
+   *  requires alone decides). Defensively filtered to strings — an
+   *  id matching no local agent simply never clears the gate. */
+  agents: string;
 }
 
 // Per-module-instance sync state (see header — the DB is the shared truth;
@@ -119,6 +123,7 @@ export function registerCustomSkill(row: CustomSkillRow): void {
   // reads exactly these ids, so an unknown id would gate nothing while
   // looking like authorization; pre-O1 rows have no column value → "[]").
   const requires = parseRequires(row.requires);
+  const agents = parseAgents(row.agents);
   const slow = row.latency === "slow";
   registerSkill({
     id: row.skillId,
@@ -129,6 +134,7 @@ export function registerCustomSkill(row: CustomSkillRow): void {
     params: paramDefs,
     requires,
     latency: slow ? "slow" : "fast",
+    ...(agents.length > 0 ? { agents } : {}),
     handler: async (params, ctx) =>
       invokeWebhook(
         row.skillId,
@@ -180,6 +186,30 @@ function parseRequires(raw: string): SkillRequirement[] {
     }
   } catch {
     // Corrupt column value — register requirement-free (the honest floor).
+  }
+  return [];
+}
+
+/** P3a: defensive parse of the agent-whitelist column. Strings survive
+ *  (trimmed, deduped); anything else is dropped — a corrupt row registers
+ *  with no whitelist (open to requires' verdict), never a garbage gate. */
+function parseAgents(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    if (Array.isArray(parsed)) {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const a of parsed) {
+        if (typeof a !== "string") continue;
+        const id = a.trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+      }
+      return out;
+    }
+  } catch {
+    // Corrupt column value — no whitelist (the honest floor).
   }
   return [];
 }

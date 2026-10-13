@@ -96,6 +96,11 @@ export interface SkillCatalogEntry {
   /** M3: present only on custom.* entries — the registered webhook
    *  endpoint (built-in projections never carry one). */
   endpoint?: string;
+  /** P3a: present only on custom.* entries with a non-empty agent
+   *  whitelist — the agent ids allowed to invoke (requires is ANDed on
+   *  top). Empty/absent = every agent (the pre-P3a default). Ids are
+   *  opaque strings on purpose (portable across instances, O3). */
+  agents?: string[];
 }
 
 export interface SkillDefinition extends SkillCatalogEntry {
@@ -133,6 +138,10 @@ export interface SkillRunResult {
   summary: string;
   /** Full error/reason text (present iff status !== "ok"). */
   error?: string;
+  /** P3a: which authorization dimension refused a "denied" envelope —
+   *  "requires" (knowledge flags) vs "whitelist" (agent list). Lets
+   *  downstream consumers offer the right fix deep-link. */
+  deniedBy?: "requires" | "whitelist";
   /** Honest wall-clock duration of the executed (or rejected) operation. */
   durationMs: number;
   /** SkillInvocation row id when the audit write succeeded. */
@@ -151,5 +160,6 @@ export function toCatalogEntry(def: SkillDefinition): SkillCatalogEntry {
     requires: def.requires,
     latency: def.latency,
     ...(def.example !== undefined ? { example: def.example } : {}),
+    ...(def.agents && def.agents.length > 0 ? { agents: def.agents } : {}),
   };
 }

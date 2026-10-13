@@ -18,6 +18,9 @@
 import { db } from "@/lib/db";
 import { getSkill } from "./registry";
 import { checkSkillRateLimit } from "./rate-limit";
+// P2a: every audit write is also broadcast to connected browsers (the
+// O2 4s poll becomes a push channel; the row stays the source of truth).
+import { emitInvocationEvent } from "./events";
 import type {
   SkillContext,
   SkillDefinition,
@@ -152,11 +155,37 @@ export async function runSkill(
           skillId: def.id,
           status: "denied",
           summary: `Denied — requires ${missing.join(", ")}`,
+          deniedBy: "requires",
           error:
             `This agent has ${missing.join(" and ")} disabled in its knowledge ` +
             "configuration, so the skill was refused at execution time. Tell the " +
             "user to enable it in the agent's settings if they want this capability — " +
             "do not pretend the tool ran.",
+          durationMs: Date.now() - t0,
+        },
+        ctx,
+        params,
+      );
+    }
+
+    // 3.25. P3a gate — the per-skill agent whitelist. Non-empty list and
+    // this agent not on it → refused BEFORE any rate-limit slot or handler
+    // runs. The fix for this denial lives on the SKILL (edit its whitelist
+    // in the Registry) — pointedly NOT in the agent's own settings.
+    if (def.agents && def.agents.length > 0 && !def.agents.includes(ctx.agent.id)) {
+      return await finalize(
+        {
+          skillId: def.id,
+          status: "denied",
+          summary: `Denied — agent not on the skill's whitelist (${def.agents.length} allowed)`,
+          deniedBy: "whitelist",
+          error:
+            `This skill is restricted to a whitelist of ${def.agents.length} ` +
+            `agent${def.agents.length === 1 ? "" : "s"}, and "${ctx.agent.title}" ` +
+            "is not on it, so the skill was refused at execution time. Tell the " +
+            "user to edit the skill's agent whitelist in the Skills Registry (or " +
+            "ask a whitelisted agent) if they want this capability — do not " +
+            "pretend the tool ran.",
           durationMs: Date.now() - t0,
         },
         ctx,
@@ -268,6 +297,8 @@ export async function recordSkillInvocation(entry: {
         durationMs: entry.durationMs ?? null,
       },
     });
+    // P2a: broadcast the fresh row (best-effort, never blocks).
+    emitInvocationEvent(row);
     return row.id;
   } catch (e) {
     console.warn("[skills] audit write failed:", (e as Error).message);

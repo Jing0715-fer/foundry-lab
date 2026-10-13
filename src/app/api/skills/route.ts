@@ -49,6 +49,7 @@ import type { SkillParamDef } from "@/lib/skills/types";
 import {
   SKILL_ID_RE,
   slugify,
+  validateAgents,
   validateDescription,
   validateEndpoint,
   validateHeaders,
@@ -83,6 +84,8 @@ export interface SkillCatalogEntryWire {
   headers?: Record<string, string>;
   enabled?: boolean;
   eligible?: boolean;
+  /** P3a: agent-id whitelist (present on customs with a non-empty list). */
+  agents?: string[];
 }
 
 export async function GET(request: NextRequest) {
@@ -131,6 +134,9 @@ export async function GET(request: NextRequest) {
       } catch {
         /* corrupt requires JSON — the card shows none */
       }
+      // P3a: whitelist projection (defensive parse — same floor as the
+      // registry loader: corrupt column → no whitelist on the wire).
+      const agents = parseAgentsWire(c.agents);
       return [
         c.skillId,
         {
@@ -138,6 +144,7 @@ export async function GET(request: NextRequest) {
           enabled: c.enabled,
           latency: c.latency === "slow" ? ("slow" as const) : ("fast" as const),
           ...(requires && requires.length > 0 ? { requires } : {}),
+          ...(agents.length > 0 ? { agents } : {}),
           ...(headers ? { headers } : {}),
         },
       ] as const;
@@ -147,8 +154,15 @@ export async function GET(request: NextRequest) {
   const skills: SkillCatalogEntryWire[] = catalogEntries().map((s) => ({
     ...s,
     ...(rowById.has(s.id) ? rowById.get(s.id)! : {}),
+    // P3a: eligible = requires ∧ whitelist (the SAME conjunction the
+    // executor enforces — the UI can never call a skill eligible the
+    // pipeline would refuse).
     ...(knowledge
-      ? { eligible: s.requires.every((r) => knowledge![r] === true) }
+      ? {
+          eligible:
+            s.requires.every((r) => knowledge![r] === true) &&
+            (!s.agents || s.agents.length === 0 || s.agents.includes(agentId!)),
+        }
       : {}),
   }));
 
@@ -189,6 +203,9 @@ export async function GET(request: NextRequest) {
       latency: meta.latency,
       endpoint: meta.endpoint,
       enabled: false,
+      // P3a: whitelist rides on the disabled projection too (the edit
+      // dialog prefills from it — exactly why requires is here as well).
+      ...(meta.agents && meta.agents.length > 0 ? { agents: meta.agents } : {}),
       ...(meta.headers ? { headers: meta.headers } : {}),
       ...(knowledge ? { eligible: false } : {}),
     });
@@ -198,6 +215,28 @@ export async function GET(request: NextRequest) {
     skills,
     ...(agentId ? { agentId } : {}),
   } as SkillCatalogResponse);
+}
+
+/** P3a: defensive whitelist parse for the wire projection. */
+function parseAgentsWire(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    if (Array.isArray(parsed)) {
+      const seen = new Set<string>();
+      const out: string[] = [];
+      for (const a of parsed) {
+        if (typeof a !== "string") continue;
+        const id = a.trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push(id);
+      }
+      return out;
+    }
+  } catch {
+    /* corrupt column — project none */
+  }
+  return [];
 }
 
 // ── POST: registration ───────────────────────────────────────────────────────
@@ -212,6 +251,8 @@ interface RegistrationBody {
   latency?: unknown;
   /** O1: closed-set requirement ids ([] when omitted). */
   requires?: unknown;
+  /** P3a: agent-id whitelist ([] when omitted — requires alone decides). */
+  agents?: unknown;
 }
 
 export async function POST(request: NextRequest) {
@@ -282,6 +323,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: requiresRes.error }, { status: 400 });
   }
   const requires = requiresRes.requires ?? [];
+  // P3a: the agent whitelist — validated but NOT checked against the
+  // Agent table (portability: an exported whitelist may name agents this
+  // instance doesn't have; such ids simply never clear the gate).
+  const agentsRes = validateAgents(body.agents);
+  if (agentsRes.error) {
+    return NextResponse.json({ error: agentsRes.error }, { status: 400 });
+  }
+  const agents = agentsRes.agents ?? [];
 
   // Collisions: the live registry (force-synced — route bundles can hold
   // stale copies, #Turbopack) AND the table (another process/bundle may
@@ -315,6 +364,7 @@ export async function POST(request: NextRequest) {
         enabled: true,
         latency,
         requires: JSON.stringify(requires),
+        agents: JSON.stringify(agents),
       },
     });
   } catch (e) {
@@ -340,6 +390,7 @@ export async function POST(request: NextRequest) {
     latency: row.latency === "slow" ? ("slow" as const) : ("fast" as const),
     endpoint: row.endpoint,
     enabled: row.enabled,
+    ...(agents.length > 0 ? { agents } : {}),
   };
   return NextResponse.json({ skill: entry }, { status: 201 });
 }

@@ -80,6 +80,12 @@ export interface ToolCall {
    *  limited cards were indistinguishable from real errors. Chat cards
    *  use this to offer the right deep-link (denied → agent editor). */
   skillStatus?: string;
+  /** P3a: which authorization dimension refused the call — "whitelist"
+  *  (the skill's agent list doesn't include this agent; fix = edit the
+  *  SKILL in the Registry) vs "requires" (the agent's knowledge flags
+  *  lack a requirement; fix = the agent editor). Absent on legacy rows
+  *  and non-denied cards. */
+  deniedBy?: "requires" | "whitelist";
   /** O2: set by the chat drawer's live refresh when the invocation row
    *  this card points at has FLIPPED since the message was persisted —
    *  the card's snapshot text swaps to "updated from the Activity log"

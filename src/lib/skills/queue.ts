@@ -40,6 +40,9 @@ import {
   unregisterWebhookAbort,
 } from "@/lib/real-executor";
 import { isStopRequested } from "@/lib/stop-registry";
+// P2a: terminal transitions are broadcast to connected browsers (the
+// O2 4s poll becomes a push channel; the row stays the source of truth).
+import { emitInvocationEvent } from "./events";
 import { getSkill } from "./registry";
 import { validateParams } from "./runner";
 import { checkSkillRateLimit } from "./rate-limit";
@@ -49,6 +52,7 @@ import type {
   SkillDefinition,
   SkillRunResult,
 } from "./types";
+import type { Prisma } from "@prisma/client";
 
 const OUTPUTS_ROOT = resolve(process.cwd(), "outputs");
 
@@ -102,11 +106,35 @@ export async function runSkillQueued(
           skillId: def.id,
           status: "denied",
           summary: `Denied — requires ${missing.join(", ")}`,
+          deniedBy: "requires",
           error:
             `This agent has ${missing.join(" and ")} disabled in its knowledge ` +
             "configuration, so the skill was refused before queueing. Tell the " +
             "user to enable it in the agent's settings if they want this capability — " +
             "do not pretend the tool ran.",
+          durationMs: Date.now() - t0,
+        },
+        ctx,
+        params,
+      );
+    }
+
+    // 3.25. P3a gate — the agent whitelist, enforced BEFORE the queue row
+    // exists (mirrors runSkill step 3.25: no slot, no job, no engine cost).
+    if (def.agents && def.agents.length > 0 && !def.agents.includes(ctx.agent.id)) {
+      return await queuedEnvelope(
+        {
+          skillId: def.id,
+          status: "denied",
+          summary: `Denied — agent not on the skill's whitelist (${def.agents.length} allowed)`,
+          deniedBy: "whitelist",
+          error:
+            `This skill is restricted to a whitelist of ${def.agents.length} ` +
+            `agent${def.agents.length === 1 ? "" : "s"}, and "${ctx.agent.title}" ` +
+            "is not on it, so the skill was refused before queueing. Tell the " +
+            "user to edit the skill's agent whitelist in the Skills Registry (or " +
+            "ask a whitelisted agent) if they want this capability — do not " +
+            "pretend the tool ran.",
           durationMs: Date.now() - t0,
         },
         ctx,
@@ -174,15 +202,10 @@ export async function runSkillQueued(
     // Row creation failed — fail the invocation row honestly (never leave a
     // "queued" audit row with nothing behind it).
     if (invocationId) {
-      await db.skillInvocation
-        .updateMany({
-          where: { id: invocationId, status: "queued" },
-          data: {
-            status: "error",
-            error: `Failed to create the tool job: ${(e as Error).message}`,
-          },
-        })
-        .catch(() => {});
+      await transitionInvocation(invocationId, {
+        status: "error",
+        error: `Failed to create the tool job: ${(e as Error).message}`,
+      });
     }
     return {
       skillId: def.id,
@@ -196,12 +219,9 @@ export async function runSkillQueued(
 
   // Link the summary to the concrete job id (the row now exists).
   if (invocationId) {
-    await db.skillInvocation
-      .updateMany({
-        where: { id: invocationId, status: "queued" },
-        data: { resultSummary: `Queued as tool job ${jobId} — running in the background` },
-      })
-      .catch(() => {});
+    await transitionInvocation(invocationId, {
+      resultSummary: `Queued as tool job ${jobId} — running in the background`,
+    });
   }
 
   // 6. Fire-and-forget execution. The void promise has its own crash net —
@@ -231,12 +251,10 @@ export async function runSkillQueued(
       })
       .catch(() => {});
     if (invocationId) {
-      await db.skillInvocation
-        .updateMany({
-          where: { id: invocationId, status: "queued" },
-          data: { status: "error", error: `Queue executor crashed: ${msg}` },
-        })
-        .catch(() => {});
+      await transitionInvocation(invocationId, {
+        status: "error",
+        error: `Queue executor crashed: ${msg}`,
+      });
     }
   });
 
@@ -254,6 +272,38 @@ export async function runSkillQueued(
 }
 
 // ── internals ────────────────────────────────────────────────────────────────
+
+/** P2a: THE one way the queue lane transitions an invocation row —
+ *  the conditional write (only a row still "queued" takes the outcome)
+ *  plus the live broadcast when the write landed. Centralizing it keeps
+ *  the conditional-write discipline (#45/#47) and the push in lockstep:
+ *  a row the stop route already flipped matches zero rows here, keeps
+ *  its verdict, and emits nothing. */
+async function transitionInvocation(
+  invocationId: string,
+  data: Prisma.SkillInvocationUpdateManyMutationInput,
+): Promise<number> {
+  let count = 0;
+  try {
+    const res = await db.skillInvocation.updateMany({
+      where: { id: invocationId, status: "queued" },
+      data,
+    });
+    count = res.count;
+  } catch {
+    // Audit write failed — same tolerance the inline lane shows.
+    return 0;
+  }
+  if (count > 0) {
+    // Broadcast the LANDED row (re-read: the event carries the truth,
+    // not the intent). Best-effort, never throws.
+    const row = await db.skillInvocation
+      .findUnique({ where: { id: invocationId } })
+      .catch(() => null);
+    if (row) emitInvocationEvent(row);
+  }
+  return count;
+}
 
 /** Audit + return an envelope for pre-queue refusals (invalid/denied/limited). */
 async function queuedEnvelope(
@@ -300,15 +350,10 @@ async function executeQueuedSkillJob(args: {
   });
   if (claimed.count === 0) {
     if (invocationId) {
-      await db.skillInvocation
-        .updateMany({
-          where: { id: invocationId, status: "queued" },
-          data: {
-            status: "cancelled",
-            error: "Stopped by the user before the engine started.",
-          },
-        })
-        .catch(() => {});
+      await transitionInvocation(invocationId, {
+        status: "cancelled",
+        error: "Stopped by the user before the engine started.",
+      });
     }
     return;
   }
@@ -372,40 +417,30 @@ async function executeQueuedSkillJob(args: {
     // Stopped mid-flight — the SIGTERM'd engine resolved, but the row was
     // cancelled by the user while it ran.
     if (invocationId) {
-      await db.skillInvocation
-        .updateMany({
-          where: { id: invocationId, status: "queued" },
-          data: {
-            status: "cancelled",
-            error: "Stopped by the user while the engine was running.",
-            durationMs: Date.now() - t0,
-          },
-        })
-        .catch(() => {});
+      await transitionInvocation(invocationId, {
+        status: "cancelled",
+        error: "Stopped by the user while the engine was running.",
+        durationMs: Date.now() - t0,
+      });
     }
     return;
   }
 
   // Terminal audit write — same conditional discipline.
   if (invocationId) {
-    await db.skillInvocation
-      .updateMany({
-        where: { id: invocationId, status: "queued" },
-        data: {
-          status: ok ? "ok" : "error",
-          ...(ok
-            ? {
-                resultSummary: result.outputFiles.length
-                  ? `${summary}\nArtifacts: ${result.outputFiles.join(", ")}`
-                  : summary,
-              }
-            : {
-                error: (result.stderr || result.stdout || "engine failed").slice(0, 400),
-              }),
-          durationMs: Date.now() - t0,
-        },
-      })
-      .catch(() => {});
+    await transitionInvocation(invocationId, {
+      status: ok ? "ok" : "error",
+      ...(ok
+        ? {
+            resultSummary: result.outputFiles.length
+              ? `${summary}\nArtifacts: ${result.outputFiles.join(", ")}`
+              : summary,
+          }
+        : {
+            error: (result.stderr || result.stdout || "engine failed").slice(0, 400),
+          }),
+      durationMs: Date.now() - t0,
+    });
   }
 }
 
@@ -445,15 +480,10 @@ async function executeQueuedWebhookJob(args: {
     // webhook never fires — the row was already flipped by the stop route.
     if (isStopRequested(jobId)) {
       if (invocationId) {
-        await db.skillInvocation
-          .updateMany({
-            where: { id: invocationId, status: "queued" },
-            data: {
-              status: "cancelled",
-              error: "Stopped by the user before the webhook started.",
-            },
-          })
-          .catch(() => {});
+        await transitionInvocation(invocationId, {
+          status: "cancelled",
+          error: "Stopped by the user before the webhook started.",
+        });
       }
       return;
     }
@@ -511,31 +541,21 @@ async function executeQueuedWebhookJob(args: {
       // Stopped mid-flight — the aborted fetch threw, the stop route had
       // already flipped the row; keep the honest cancelled verdict.
       if (invocationId) {
-        await db.skillInvocation
-          .updateMany({
-            where: { id: invocationId, status: "queued" },
-            data: {
-              status: "cancelled",
-              error: "Stopped by the user while the webhook was running.",
-              durationMs: Date.now() - t0,
-            },
-          })
-          .catch(() => {});
+        await transitionInvocation(invocationId, {
+          status: "cancelled",
+          error: "Stopped by the user while the webhook was running.",
+          durationMs: Date.now() - t0,
+        });
       }
       return;
     }
 
     if (invocationId) {
-      await db.skillInvocation
-        .updateMany({
-          where: { id: invocationId, status: "queued" },
-          data: {
-            status: "ok",
-            resultSummary: summary,
-            durationMs: Date.now() - t0,
-          },
-        })
-        .catch(() => {});
+      await transitionInvocation(invocationId, {
+        status: "ok",
+        resultSummary: summary,
+        durationMs: Date.now() - t0,
+      });
     }
     return;
   } catch (e) {
@@ -569,16 +589,11 @@ async function executeQueuedWebhookJob(args: {
         })
         .catch(() => {});
       if (invocationId) {
-        await db.skillInvocation
-          .updateMany({
-            where: { id: invocationId, status: "queued" },
-            data: {
-              status: "cancelled",
-              error: "Stopped by the user while the webhook was running.",
-              durationMs: Date.now() - t0,
-            },
-          })
-          .catch(() => {});
+        await transitionInvocation(invocationId, {
+          status: "cancelled",
+          error: "Stopped by the user while the webhook was running.",
+          durationMs: Date.now() - t0,
+        });
       }
       return;
     }
@@ -604,30 +619,20 @@ async function executeQueuedWebhookJob(args: {
     });
     if (fin.count === 0) {
       if (invocationId) {
-        await db.skillInvocation
-          .updateMany({
-            where: { id: invocationId, status: "queued" },
-            data: {
-              status: "cancelled",
-              error: "Stopped by the user while the webhook was running.",
-              durationMs: Date.now() - t0,
-            },
-          })
-          .catch(() => {});
+        await transitionInvocation(invocationId, {
+          status: "cancelled",
+          error: "Stopped by the user while the webhook was running.",
+          durationMs: Date.now() - t0,
+        });
       }
       return;
     }
     if (invocationId) {
-      await db.skillInvocation
-        .updateMany({
-          where: { id: invocationId, status: "queued" },
-          data: {
-            status: "error",
-            error: msg.slice(0, 400),
-            durationMs: Date.now() - t0,
-          },
-        })
-        .catch(() => {});
+      await transitionInvocation(invocationId, {
+        status: "error",
+        error: msg.slice(0, 400),
+        durationMs: Date.now() - t0,
+      });
     }
   } finally {
     unregisterWebhookAbort(jobId, ctl);
