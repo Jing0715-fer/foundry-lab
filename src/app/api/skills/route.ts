@@ -86,6 +86,8 @@ export interface SkillCatalogEntryWire {
   eligible?: boolean;
   /** P3a: agent-id whitelist (present on customs with a non-empty list). */
   agents?: string[];
+  /** R3: pack identity (present on customs imported from a named pack). */
+  packName?: string;
 }
 
 export async function GET(request: NextRequest) {
@@ -145,6 +147,7 @@ export async function GET(request: NextRequest) {
           latency: c.latency === "slow" ? ("slow" as const) : ("fast" as const),
           ...(requires && requires.length > 0 ? { requires } : {}),
           ...(agents.length > 0 ? { agents } : {}),
+          ...(c.packName ? { packName: c.packName } : {}),
           ...(headers ? { headers } : {}),
         },
       ] as const;
@@ -207,6 +210,9 @@ export async function GET(request: NextRequest) {
       // dialog prefills from it — exactly why requires is here as well).
       ...(meta.agents && meta.agents.length > 0 ? { agents: meta.agents } : {}),
       ...(meta.headers ? { headers: meta.headers } : {}),
+      // R3: pack identity rides on the disabled projection too (the badge
+      // + pack uninstall stay visible while a pack skill is disabled).
+      ...(row.packName ? { packName: row.packName } : {}),
       ...(knowledge ? { eligible: false } : {}),
     });
   }

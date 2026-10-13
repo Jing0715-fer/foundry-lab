@@ -101,6 +101,11 @@ export interface SkillCatalogEntry {
    *  top). Empty/absent = every agent (the pre-P3a default). Ids are
    *  opaque strings on purpose (portable across instances, O3). */
   agents?: string[];
+  /** R3: present only on custom.* rows imported from a named PACK
+   *  (bundle-v2 metadata.name) — powers the Registry "from pack X" badge
+   *  and the pack-level uninstall. Manually registered / single-skill
+   *  imported rows have no pack (absent on the wire). */
+  packName?: string;
 }
 
 export interface SkillDefinition extends SkillCatalogEntry {

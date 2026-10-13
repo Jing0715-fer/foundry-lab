@@ -22,10 +22,15 @@
 //
 // Token handling (Q2): the skill-events service generates a random token
 // at first boot and persists it to mini-services/skill-events/.token
-// (gitignored). We read the SAME file (TTL-cached — both processes run on
+// (gitignored). We read the SAME value (TTL-cached — both processes run on
 // this machine). A 401 drops the cache so the next emit re-reads it —
 // service restarts that regenerate/rotate the token self-heal within one
 // emit + one throttled warning.
+//
+// R1: secret management is now ENV-FIRST with the file as fallback —
+// SKILL_EVENTS_EMIT_TOKEN (the same priority order the service reads,
+// so a deployment injecting the env keeps both processes in lockstep
+// without the co-located file). The sandbox keeps the file default.
 
 import { promises as fs } from "fs";
 import { resolve } from "path";
@@ -46,6 +51,12 @@ let tokenCache: { token: string | null; at: number } | null = null;
 async function currentToken(): Promise<string | null> {
   if (tokenCache && Date.now() - tokenCache.at < TOKEN_TTL_MS) {
     return tokenCache.token;
+  }
+  // R1: env first (parity with the service's read priority).
+  const fromEnv = process.env.SKILL_EVENTS_EMIT_TOKEN?.trim();
+  if (fromEnv && fromEnv.length >= 32) {
+    tokenCache = { token: fromEnv, at: Date.now() };
+    return fromEnv;
   }
   try {
     const t = (await fs.readFile(TOKEN_PATH, "utf8")).trim();

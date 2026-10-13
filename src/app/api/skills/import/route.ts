@@ -7,10 +7,13 @@
 //   Bundle v1 (P1): { kind: "foundry-lab-skill-bundle", version: 1,
 //                   skills: [ {…}, {…} ], renames?: { … } }
 //   Bundle v2 (Q3): same + `metadata: { name, description?, tags? }` —
-//                   the shareable "skill pack" envelope. Metadata is
-//                   narrative only (never persisted — CustomSkill rows are
-//                   per-skill); the import REPORT echoes it so the UI can
-//                   title the result "Imported pack "<name>"".
+//                   the shareable "skill pack" envelope. R3: the pack's
+//                   name is now PERSISTED onto every row the bundle import
+//                   creates (CustomSkill.packName) — the Registry shows a
+//                   "from pack X" badge and the pack-level uninstall lane
+//                   deletes WHERE packName = X. Narrative-only v1 bundles
+//                   and single-skill imports land pack-less (null) — pack
+//                   identity lives at the pack level, never the skill's.
 //
 // Contract:
 //   - kind/version are checked first (400 on mismatch — arbitrary JSON
@@ -29,7 +32,7 @@
 //     conflict dialog's "import skipped as suggested" path.
 //   - SINGLE import: collision → 409 + deterministic `suggestion` (the
 //     first free custom.<base>-2|-3|… id); success → 201 { skill }.
-//   - BUNDLE import (P1): PER-SKILL outcomes, NO all-or-nothing rollback —
+//   - Bundle import (P1): PER-SKILL outcomes, NO all-or-nothing rollback —
 //     a bundle is a batch of independent registrations, so one collision
 //     must not void the others. Response 200 with the honest report:
 //       { requested, imported: [...], skipped: [{ skillId, suggestion? }],
@@ -37,6 +40,8 @@
 //         bundle?: { name, description?, tags? } }   // Q3: echoed metadata
 //     (validation failures report per-skill; collisions report per-skill
 //     with a rename suggestion so the client can offer a one-click retry).
+//     R3: every IMPORTED row carries packName = the bundle's metadata.name
+//     (v2 packs; skipped/failed rows obviously carry nothing).
 //   - Imports land ENABLED (the document deliberately carries no enabled
 //     state — an export of a disabled skill imports live).
 //   - Duplicate skillIds WITHIN one bundle → failed entries (the second
@@ -239,7 +244,7 @@ async function importSingle(body: Record<string, unknown>) {
   await reloadCustomSkills();
 
   return NextResponse.json(
-    { skill: projection(skillId, validated, row.enabled) },
+    { skill: projection(skillId, validated, row.enabled, null) },
     { status: 201 },
   );
 }
@@ -284,6 +289,8 @@ async function importBundle(body: Record<string, unknown>) {
     );
   }
   const packMeta = metaRes.metadata;
+  // R3: the persisted pack identity for every row this import creates.
+  const packName = packMeta?.name ?? null;
   const skillsBody = body.skills;
   if (!Array.isArray(skillsBody)) {
     return NextResponse.json(
@@ -391,9 +398,11 @@ async function importBundle(body: Record<string, unknown>) {
 
     try {
       const row = await db.customSkill.create({
-        data: createData(skillId, validated),
+        // R3: pack identity rides onto every row this bundle creates —
+        // the pack-level uninstall and the Registry badge key on it.
+        data: { ...createData(skillId, validated), ...(packName ? { packName } : {}) },
       });
-      imported.push(projection(skillId, validated, row.enabled));
+      imported.push(projection(skillId, validated, row.enabled, packName));
     } catch (e) {
       failed.push({
         skillId,
@@ -505,6 +514,7 @@ function projection(
   skillId: string,
   v: ValidatedSkill,
   enabled: boolean,
+  packName?: string | null,
 ) {
   return {
     id: skillId,
@@ -517,6 +527,8 @@ function projection(
     requires: v.requires,
     agents: v.agents,
     enabled,
+    // R3: the pack this row belongs to (bundle imports; null = pack-less).
+    ...(packName ? { packName } : {}),
   };
 }
 

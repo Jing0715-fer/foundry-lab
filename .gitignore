@@ -81,3 +81,7 @@ db/custom.db
 # Q2: skill-events push-channel emit token (generated at service boot —
 # shared with the app via the file, never committed, never sent to browsers)
 mini-services/skill-events/.token
+
+# R1: skill-events connection-grant signing key (same sharing model — env
+# override SKILL_EVENTS_SIGNING_KEY for deployments; never committed)
+mini-services/skill-events/.signing-key

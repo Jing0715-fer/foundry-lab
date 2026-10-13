@@ -52,6 +52,22 @@ export function renderSkillManifest(
     }
     lines.push("");
   }
+  // R2: stop-after-the-fence. Q1's grounding fixed what the model does
+  // WITH the returned payload, but E2E proved a residual: in the SAME
+  // reply as the fence, the model would continue past the closing ``` and
+  // write prose describing the tool's RESULT before any result existed
+  // (a prior guess, later contradicting the real feedback). This is the
+  // source-level suppression: the reply that emits a fence must END at
+  // the fence — everything after it would be fabricated by construction.
+  lines.push(
+    "CRITICAL — stop after each skill fence: the moment you emit a ```skill " +
+      "block, END your reply immediately after its closing ```. Do NOT write " +
+      "any text after a skill fence in the same reply: the skill has not run " +
+      "yet, so any outcome, result, or data you describe there would be a " +
+      "guess. Emit the fence, stop, and wait — the system executes the skill " +
+      "and returns the actual result as your next input; continue from that.",
+  );
+  lines.push("");
   lines.push(
     "After each skill call, the system executes it and returns the result. " +
       "Revise your answer using the results. If a skill call fails or is " +

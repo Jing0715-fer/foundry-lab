@@ -189,6 +189,39 @@
   同校验、同冲突重命名建议、同报告对话框含“Import skipped as
   suggested” 一键重提）；Registry “Export selected” 升级为打包对话框
   （name/README/tags → v2 pack，或保留 v1 裸备份）。
+- **推送通道身份化（R1）**：Q2 房间化的收口——房间本是自愿订阅（任何
+  客户端可声明任意 agentId 偷听），`/emit` token 只挡伪造不挡偷听。
+  现在**每个连接必须携带服务端铸造的 HMAC 会话 grant**（`GET
+  /api/skills/events-session` → `v1.<exp>.<payload>.<hmac>`，HMAC-SHA256
+  签名 + 12h 过期，浏览器永远看不到签名钥）；skill-events 连接中间件
+  拒绝无 grant/过期/篡改的握手；连接的默认房间集 = **grant 自身的权限
+  集**（不再盲目入 all）；每次 subscribe 被**服务端钳制**到权限（越权
+  房间被过滤并在 ack 中披露 `filtered`；含 all 的 grant 允许任意窄化，
+  窄 grant 仅允许自己的房间）——QA 实证窄 grant 偷听其他 agent 房间
+  被服务端过滤（对照全权连接两行都收到）。秘密管理升级 **env 优先 +
+  文件回退**（`SKILL_EVENTS_EMIT_TOKEN` / `SKILL_EVENTS_SIGNING_KEY`）；
+  **轮换双向传播 ≤5s 不停服**（服务端 5s TTL + 失配重读；QA 实证旧
+  grant/旧 token 吊销 + 新铸造立即生效 + health 全程 200）；浏览器 hook
+  铸造失败或 grant 被拒时诚实降级轮询（connect_error 触发重铸并更新
+  下次握手的 auth）。
+- **工具循环预猜抑制（R2）**：技能 manifest 加“**围栏后停笔**”指令——
+  Q1 接地修正了模型拿到反馈后的行为，但 E2E 实证模型会在围栏同轮的
+  正文里预猜工具结果（先验幻觉段）；现在指令要求**发出 ```skill 围栏
+  后立即结束回复**（此时任何结果描述都必然是猜测），等待系统返回真实
+  结果后再继续。浏览器级双采样实证：两个 agent（Computational
+  Biologist + Principal Investigator）、两种技能（custom webhook +
+  built-in bio）的第一轮回复均**在围栏闭合处精确结束（零正文）**，
+  第二轮携带真实数据接地。
+- **包身份持久化（R3）**：`CustomSkill.packName` 列——bundle v2 导入
+  时从 `metadata.name` 回填（手工注册 / 单文档导入 / v1 bundle 无包）；
+  Registry 卡片 **amber "pack: X" 徽章** + 展开区 **Origin 行**（含卸载
+  指引）；disabled 行保留投影；`POST /api/skills/pack/uninstall`
+  **按包身份整体卸载**（`WHERE packName = X` 精确匹配——改名副本随包
+  删除、无包技能免疫、审计历史保留；0 行 404 诚实拒绝）；Templates
+  包卡 **Uninstall pack 按钮**（owned > 0 时出现）+ AlertDialog 确认
+  （披露改名副本/审计保留/无包免疫语义）。QA 实证：卸载含 disabled
+  行的包 → enabled+disabled 双删 + 审计行存续 + 注册表真注销（收敛
+  窗口后 404 invalid）。
 
 ![技能面板](docs/images/28-skills-panel.png)
 ![聊天 QUEUED 卡深链](docs/images/40-m-queued-deeplink.png)
@@ -209,6 +242,12 @@
 ![技能模板库（Q3）](docs/images/65-q-templates-tab.png)
 ![Activity 实时插入与 live 指示（Q2 房间化推送）](docs/images/66-q-activity-live.png)
 ![移动端模板库（Q3）](docs/images/67-q-mobile-templates.png)
+![Registry 包徽章与 Origin 行（R3）](docs/images/68-r3-registry-pack-badge.png)
+![包卸载确认对话框（R3）](docs/images/69-r3-pack-uninstall-dialog.png)
+![Activity live 推送与审计保留（R1/R3）](docs/images/70-r1-activity-live-push.png)
+![围栏后停笔的真 LLM 回复（R2）](docs/images/71-r2-fence-stop-chat.png)
+![移动端聊天抽屉（R2）](docs/images/72-mobile-chat-drawer.png)
+![移动端模板库（R3 卸载按钮）](docs/images/73-mobile-templates.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -533,6 +572,8 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | GET | `/api/skills/export` | O3/P1/Q3：导出可移植文档 —— `?skillId=` 单技能 / `?ids=a,b` 列表 bundle / `?all=1` 全量（三选择器互斥 400；内置 400、未知 404、重复 400；含 requires + P3a agents；Content-Disposition 附件）；Q3：bundle 泳道附 `?name/description/tags=` → **version 2 技能包**（metadata 校验 name 1-80 / desc ≤500 / tags ≤8×≤24，超限 400；与 skillId 选择器并用 400） |
 | POST | `/api/skills/import` | O3/P1/Q3：导入 —— 单文档 201（复用注册校验管道，冲突 409 附确定性改名 suggestion，可选顶层 id 重命名）；bundle 文档（v1 ∪ v2）200 携带逐技能报告（imported/skipped+建议/failed 索引错误，部分失败不回滚；`renames` 映射重提；**Q3：v2 报告回显 bundle 元数据**；v2 缺 metadata 400）；均落 enabled=true |
 | GET/POST | `/api/skills/retention` | M2：审计保留策略预览（GET）/ 干跑与执行（POST：maxAgeDays/rowCap/dryRun） |
+| GET | `/api/skills/events-session` | R1：铸造推送通道会话 grant（HMAC-SHA256 签名 + 12h 过期；返回 `{token, rooms:["all"], expiresAt}`——单用户工作室的诚实全权，未来认证在此按身份收窄；签名钥不可用 → 503，浏览器降级轮询） |
+| POST | `/api/skills/pack/uninstall` | R3：按包身份整体卸载（`{packName}` 精确匹配 `WHERE packName=X`——enabled+disabled 随包删除、改名副本随包删除、无包技能免疫、审计历史保留；未知包 404 / 空名与超 80 字符 400） |
 
 ## 常见问题
 

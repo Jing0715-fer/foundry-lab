@@ -328,6 +328,13 @@ model CustomSkill {
   // don't exist here — an id that matches no local agent simply never
   // clears the gate, which is the honest deny-all semantics.
   agents      String   @default("[]") // JSON agent-id string[]
+  // R3 pack identity: backfilled from the bundle-v2 metadata.name when the
+  // row arrived through a PACK import (template packs, downloaded bundle
+  // files with pack metadata). Manually registered and single-skill
+  // imports have NO pack (null) — pack identity lives at the pack level,
+  // not the skill level. Powers the Registry "from pack X" badge and the
+  // pack-level uninstall lane (DELETE all rows WHERE packName = X).
+  packName    String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

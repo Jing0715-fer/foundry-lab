@@ -16,8 +16,11 @@
 > 与实时性：P1 技能集打包导出 + P2a 推送式活性刷新 + P3a 技能级 agent 白名单，
 > QA 66/66 + 浏览器金路径全绿）、10-23（Q 线 Skill 层反幻觉与实时性收口：
 > Q1 反馈接地 + Q2 推送房间化与 emit 鉴权 + Q3 技能模板库，QA 60/60 +
-> 浏览器金路径含真 LLM 接地实证全绿）
-> 十八轮测试结论滚动更新，随每个阶段交付后重写。
+> 浏览器金路径含真 LLM 接地实证全绿）、10-24（R 线 Skill 层身份化与反幻觉
+> 源头：R1 推送通道 HMAC grant + 服务端强制房间映射 + 轮换双向传播，R2
+> 围栏后停笔指令双采样实证，R3 包身份持久化与整包卸载，QA 31/31 +
+> 浏览器金路径全绿含真 LLM 双采样停笔）
+> 二十轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -188,6 +191,10 @@
 | 61 | **房间化是自愿订阅而非身份隔离（Q2 边界）**：服务端房间语法强制（all/agent:/workflow:），但任何客户端可声明任意 agentId 订阅任意房间；/emit token 挡住了伪造事件，挡不住偷听。单用户沙箱成立（audit 行本就全局可读）；多租户需 per-连接身份令牌 + 服务端强制房间映射（R1 候选） | 安全 | 边界已记录（R 线） |
 | 62 | **文件共享秘密模式（.token）**：服务首次 boot 生成随机 token 写 gitignored 文件（mode 0600），应用侧 TTL 缓存读同一文件、401 时弃缓存重读（服务重启换 token 自愈于一次 emit + 一条限流警告内）；秘密永不进 git、永不发给浏览器。代价：多实例部署需 env 化（R1） | 安全/架构 | 已交付（QA 401/202 + 网关 401 实证） |
 | 63 | **格式版本升级必须双向镜像 + 双版本共存**：bundle v2 的 metadata 校验规则（name 1-80/desc ≤500/tags ≤8×≤24）在 export 与 import 两侧常量镜像；导入接受 v1∪v2（v1 文档继续流动），v2 无 metadata 是 400（畸形包而非兼容输入）；导出 opt-in（无 metadata → v1 兼容档）。教训：**格式演进 = 新档可选产出 + 旧档永久接受 + 校验规则单源两用** | API 设计 | 已交付（QA 60/60） |
+| 64 | **秘密轮换必须双向传播（失配重读的半边缺陷）**：失配触发的重读只在**新钥凭证**到达时发现轮换——**被吊销的旧钥 grant/token 会继续对着陈旧缓存验证通过**（首轮轮换测试实证：旧 grant 照连、旧 token 照 202）。修复模式：**共享秘密的缓存必须有 TTL（≤5s），失配重读只解决"新凭证立即可用"、TTL 才解决"旧凭证按时吊销"**——两个方向缺一不可，"轮换不停服"的测试必须双向断言 | 安全/架构 | 已修复（QA A16 双向实证） |
+| 65 | **LLM 指令遵从的"停笔"语义可用强指令达成（R2 实证）**：Q 线 #58 记录的预猜段（围栏同轮正文里的先验结果描述）在 manifest 加"CRITICAL — stop after each skill fence: END your reply immediately after its closing ```"指令后**双采样零残留**（两个 agent、custom webhook 与 built-in bio 两种技能族；流式路由 `content = fullText + "\n\n" + followUpText` 的拼接边界让判定可机械验证：第一轮末字符恒为围栏闭合）。指令要点：陈述**为什么**（此时任何结果描述必然是猜测）+ 给出机械动作（END reply at the closing fence） | LLM 语义 | 已交付（R2） |
+| 66 | **网关前转的 socket.io 会话在客户端死亡后服务端残留**：浏览器经 Caddy `XTransformPort` 前转的连接，浏览器关闭后页面 socket 本身干净离开（transport close），但**代理持留的上游连接**会话不亡——close 握手不传播（客户端侧 socket 由 root Caddy 进程持有、/proc 不可读；残留会话零房间订阅零数据暴露，仅 health clients 计数失真）。多实例/长周期部署需要**服务端空闲会话清扫**（activity-based sweep，S 线候选） | 基础设施 | 边界已记录（S 线） |
+| 67 | **e2e 抽屉/面板多实例与代理持留的连接计数解读**：页面常驻 drawer + 面板 drawer 双挂载共用单例 socket（refCount）；连接计数异常时先关闭浏览器定归属（浏览器关 → 页面 socket 全离 → 残留即代理持留）再下结论，避免把 Caddy 上游池误诊为客户端泄漏（本轮差点发生）。**socket 生命周期类缺陷的定位顺序：进程归属（/proc inode 全局搜）→ 浏览器开关对照 → 代码层排查** | e2e 工程标准 | 验收参考 |
 
 ## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
@@ -638,28 +645,91 @@ toast；移动端 375×812 零溢出 + footer 812/812 贴底；console/page erro
 VLM 复核 3 截图全过。基线字段级核对：2/19/16/0/0/12/3/86/9/4 与冻结基线
 一致（含 4 条 e2e 聊天消息与 4 个模板技能的定点清除）。
 
-## R 线 — 下一阶段候选（基于 Q 线测试结果排序）
+## R 线 — Skill 层身份化与反幻觉源头（已交付：R1+R2+R3 全三项；Task 50）
 
-Q 线后技能层的三块短板（反馈、传输、可移植性）全部闭环，测试结果暴露的
-新排序依据：**房间是自愿订阅**（客户端可声明任意 agentId 偷听任意房间，
-/emit token 只挡伪造不挡偷听——单用户沙箱成立，多租户前必须收口）；**接地
-不预防第一轮预猜**（#58：多轮拼接的回复同含猜测段与修正段，源头抑制需
-prompt 指令）；**包身份不入库**（导入即爆炸为散技能行，Templates 无法回溯
-“这个技能来自哪个包”）。按价值排序：
+- **R1 推送通道身份化（已交付）**：
+  - **Grant 模型**：每个连接必须携带服务端铸造的会话 grant——
+    `GET /api/skills/events-session` → `mintSkillEventsSession(rooms)` 产出
+    `v1.<expMs>.<payloadB64url>.<hmacB64url>`（HMAC-SHA256 签名 + 12h 过期 +
+    5s 时钟偏斜容差；payload = `{rooms}` 权限集）。**身份决策属于服务端**
+    （单用户工作室 = 诚实全权 `["all"]`；未来认证在此按身份收窄——机制
+    即交付物）。浏览器永远看不到签名钥；grant 不能当 emit token 用
+    （QA A15 泳道分离实证）。
+  - **连接中间件强制**：`io.use()` 拒绝无 grant/格式错/过期/签名不匹配
+    的握手（QA A2-A5：无 token、垃圾、手工铸造过期 grant、篡改 payload
+    四路 connect_error；浏览器页面上下文无 token 直连同样被拒）。
+  - **服务端强制房间映射**：连接默认房间集 = **grant 自身的权限集**
+    （不再盲目入 all）；每次 subscribe **钳制**到权限——越权房间被
+    过滤并在 ack 披露 `{ok, rooms, requested, filtered}`；含 all 的 grant
+    允许任意窄化（全权语义），窄 grant 仅允许自己的房间。**偷听实证**
+    （QA A10）：窄 grant `agent:qa-a` 连接订阅后，qa-a 行收到、qa-b 行
+    收不到（对照全权连接两行都收到）。
+  - **秘密管理 env 化**：emit token 与签名钥均 env 优先
+    （`SKILL_EVENTS_EMIT_TOKEN` / `SKILL_EVENTS_SIGNING_KEY`）+ 文件回退
+    （服务 boot 生成 gitignored 0600 文件；应用侧 events.ts 同优先级读）。
+  - **轮换双向传播 ≤5s 不停服（#64）**：服务端秘密缓存 5s TTL + 失配
+    重读——QA A16 实证旧 grant 拒绝 + 旧 token 401 + 新 token 202 + 新
+    铸造连接成功 + health 全程 200（服务零重启）。浏览器侧 hook 在
+    grant 被拒的 connect_error 上重铸（服务端每次铸造强制重读钥）并
+    更新下次握手的 auth。
+- **R2 工具循环预猜抑制（已交付，#65）**：技能 manifest 加
+  "CRITICAL — stop after each skill fence" 指令（陈述为什么：围栏后任何
+  结果描述必然是猜测；给出机械动作：END reply immediately after the
+  closing ```）。**浏览器级双采样零残留**：Computational Biologist +
+  custom.template-echo、Principal Investigator + bio.pdb——两轮的第一轮
+  回复均在围栏闭合处精确结束（拼接边界机械验证：`content = fullText +
+  "\n\n" + followUpText`，fullText 末字符恒为 ```），第二轮携带真实数据
+  （真实时间戳 / 真实 score）。Q1（接地）+ R2（停笔）构成双保险：反馈
+  前不写结果 + 反馈后逐字引用。
+- **R3 包身份持久化（已交付）**：`CustomSkill.packName` 列（bundle v2
+  导入时从 `metadata.name` 回填；手工注册/单文档/v1 bundle 无包 null）；
+  Registry 卡片 amber "pack: X" 徽章 + 展开区 Origin 行（含卸载指引）；
+  disabled 行保留投影（徽章/卸载在禁用期可见）；`POST
+  /api/skills/pack/uninstall` 按包身份整体卸载——`WHERE packName = X`
+  精确匹配（改名副本随包删除、无包技能免疫、审计历史保留；QA C10
+  免疫实证）；Templates 包卡 Uninstall pack 按钮（owned > 0）+ AlertDialog
+  确认（披露改名副本/审计保留/无包免疫）。QA 实证：含 disabled 行的包
+  卸载 → enabled+disabled 双删 + 审计行存续 + 注册表真注销（#53 收敛
+  窗口后 404 invalid）+ packName 非 PATCH 面（单独提交 = "Nothing to
+  update" 400）。
 
-1. **R1 推送通道身份化（Q2 的多租户前收口）**：socket 连接携带会话身份令牌
-   → 服务端按身份**强制**房间映射（客户端声明仅能窄化不能扩张）+ /emit
-   token 从共享文件升级为 env/secret 管理。测试面：越权订阅被拒、偷听
-   房间被服务端过滤、token 轮换不停服。
-2. **R2 工具循环预猜抑制（Q1 的源头补充）**：system prompt 加“fence 之后
-   立即停止生成、等待工具反馈”指令（配合现有的反馈接地双保险）——消除
-   第一轮先验幻觉段（#58 观察到的残留）。测试面：真 LLM 回复不含工具
-   反馈前的结果描述。
-3. **R3 包身份持久化**：CustomSkill 加 `packName` 列（导入时从 bundle
-   metadata 回填）→ Registry 显示“来自包 X”徽章 + Templates 已导入分组
-   与包级卸载（当前删除是逐技能的）。schema 变更 + 基线重冻同 commit 纪律。
-4. **低优先池滚动（历线遗留）**：stop 路由 detail 措辞打磨；Runs sheet
+**QA/e2e 证据**：API 冒烟 **31/31**（A R1 身份 16 例：铸造形状/四路拒绝
+/全权默认/窄 grant 钳制/偷听对照/网关泳道/语法全有或全无/显式清空/emit
+鉴权 401/grant≠token 泳道分离/**轮换双向传播**；B R2 3 例：指令渲染/
+位置（示例后修订段前）/无泄漏；C R3 10 例：四路无包来源/v2 回填/disabled
+投影/PATCH 免疫/卸载校验 404-400×2/整包卸载含审计与注销/模板包往返/无包
+免疫；D 清理归零）。浏览器级金路径全绿：网关源页面自动铸造并连接（health
+grants entitledAll:1）→ 页面上下文无 token 直连被拒 → **Activity LIVE 推送
+金路径**（页面 fetch 触发真实 bio.pdb → 免刷新 data-inv-id 行 + 真实 5
+hits + 归因 + 497ms 真实时长）→ **R2 双采样停笔**（见上）→ **R3 包导入
+→ 双卡徽章 + Origin → Uninstall 对话框 → 目录清空 → 按钮消失 → 审计
+保留**；移动端 375×812 零溢出 + footer 贴底 + 44px 触控；console/page
+errors 零；VLM 复核 6 截图全过。基线字段级核对：2/19/16/0/0/12/3/86/9/4
+与冻结基线一致。过程产出 4 条新结论（#64 轮换双向传播/#65 停笔指令实证/
+#66 网关代理持留边界/#67 连接计数定位顺序）。
+
+## S 线 — 下一阶段候选（基于 R 线测试结果排序）
+
+R 线把技能层的身份、反幻觉、可移植性三块收口后，测试结果暴露的剩余
+排序依据：**真实身份前置**（R1 的 grant 机制已是"身份决策的服务端钩
+子"，但当前决策恒为全权——NextAuth 落地后按会话身份收窄即激活全部
+既有钳制基建，且聊天/面板等 UI 面全部无需改动）；**推送会话治理**
+（#66：代理持留的僵尸会话需要服务端 activity 清扫，health clients 计数
+才可采信）；**Insights 服务端聚合**（Q 线遗留：聚合在客户端做，多面板
+各自重算）。按价值排序：
+
+1. **S1 NextAuth 会话身份接入 R1 grant**：NextAuth 认证 →
+   `events-session` 路由按会话身份计算权限集（全权 → 按工作区/角色
+   窄化）→ R1 的签名/钳制/吊销基建零改动继承。测试面：匿名请求无
+   grant（503/401）、已认证用户窄 grant 生效、越权订阅被钳制。
+2. **S2 推送通道空闲会话清扫（#66）**：skill-events 周期性（如 5min）
+   清扫无活动 socket（最后 subscribe/ping 时间超阈值 → 主动断开），
+   health clients 回归可采信。测试面：伪造长闲置连接被清扫、活跃连
+   接不受影响。
+3. **S3 Insights 服务端聚合**：把 /api/skills/insights 的聚合计算移到
+   服务端（SQL 聚合或服务端 reduce），面板只渲染。测试面：聚合与直查
+   一致、多面板共享单次请求（TanStack Query 或路由缓存）。
+4. **低优先池滚动（历线遗留）**：stop 路由 detail 措辞；Runs sheet
    cancelled 行 Retry 直达；file-missing 筛选列；Escape 分层语义成文；
-   Insights 服务端聚合；叠合深化（多链/per-region RMSD/worker 对称性）；
-   NextAuth 认证；真实 SSH 集群通道。
+   叠合深化（多链/per-region RMSD/worker 对称性）；真实 SSH 集群通道。
 

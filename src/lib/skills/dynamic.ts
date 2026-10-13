@@ -68,6 +68,9 @@ export interface CustomSkillRow {
    *  requires alone decides). Defensively filtered to strings — an
    *  id matching no local agent simply never clears the gate. */
   agents: string;
+  /** R3: pack identity backfilled at import time (bundle-v2 metadata.name).
+   *  Display/lifecycle metadata only — the executor never reads it. */
+  packName: string | null;
 }
 
 // Per-module-instance sync state (see header — the DB is the shared truth;

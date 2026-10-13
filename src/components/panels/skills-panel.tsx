@@ -139,6 +139,9 @@ interface SkillCatalogEntry {
   /** P3a: agent-id whitelist (present on customs with a non-empty list —
    *  requires is ANDed on top; empty = every agent). */
   agents?: string[];
+  /** R3: pack identity (present on customs imported from a named pack —
+   *  powers the "from pack X" badge; manual/single imports carry none). */
+  packName?: string;
 }
 
 interface SkillInvocationDTO {
@@ -1482,6 +1485,14 @@ function SkillCard({
                     className="bg-violet-500/10 text-violet-700 dark:text-violet-400"
                   />
                 )}
+                {/* R3: pack identity — rows imported from a named pack
+                    (template packs / bundle files with pack metadata). */}
+                {skill.packName && (
+                  <Pill
+                    label={`pack: ${skill.packName}`}
+                    className="bg-amber-500/10 text-amber-700 dark:text-amber-400"
+                  />
+                )}
                 {skill.eligible === true && (
                   <Pill
                     label="eligible"
@@ -1615,6 +1626,14 @@ function SkillCard({
                       Only these agents may invoke — enforced at execution
                       time and hidden from everyone else's skill manifests.
                     </span>
+                  </p>
+                )}
+                {skill.packName && (
+                  <p className="text-xs text-muted-foreground">
+                    <span className="font-medium text-foreground">Origin:</span>{" "}
+                    imported from the pack “{skill.packName}” — the Templates
+                    tab (or POST /api/skills/pack/uninstall) removes the whole
+                    pack in one action.
                   </p>
                 )}
               </div>
@@ -2824,6 +2843,11 @@ function TemplatesTab() {
   const [importingPackId, setImportingPackId] = React.useState<string | null>(null);
   const [expanded, setExpanded] = React.useState<string | null>(null);
   const [report, setReport] = React.useState<PackImportReport | null>(null);
+  // R3: pack-level uninstall — confirmation dialog + busy flag. The lane
+  // deletes by packName (the import-time backfill), so renamed copies of
+  // the pack's skills (conflict-retry imports) go away with it too.
+  const [confirmUninstall, setConfirmUninstall] = React.useState<SkillTemplatePack | null>(null);
+  const [uninstallingPackId, setUninstallingPackId] = React.useState<string | null>(null);
 
   const loadCatalogIds = React.useCallback(async () => {
     try {
@@ -2931,6 +2955,51 @@ function TemplatesTab() {
       });
     } finally {
       setImportingPackId(null);
+    }
+  };
+
+  // R3: pack-level uninstall — the inverse of importPack. The lane deletes
+  // every CustomSkill row WHERE packName = pack.name (the exact identity
+  // the import backfilled), so it is the honest "remove the whole pack"
+  // including renamed copies. Audit history is preserved (server-side).
+  const uninstallPack = async (pack: SkillTemplatePack) => {
+    setUninstallingPackId(pack.id);
+    try {
+      const res = await fetch("/api/skills/pack/uninstall", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ packName: pack.name }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast({
+          title: "Pack uninstall failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      const count = typeof data?.count === "number" ? data.count : 0;
+      toast({
+        title: `Pack uninstalled — ${pack.name}`,
+        description:
+          `${count} skill${count === 1 ? "" : "s"} unregistered as a unit` +
+          (data?.disabledDeleted
+            ? ` (${data.disabledDeleted} were disabled)`
+            : "") +
+          ". Audit history is preserved in the Activity tab.",
+        variant: "default",
+      });
+      await loadCatalogIds();
+    } catch (e) {
+      toast({
+        title: "Pack uninstall failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setUninstallingPackId(null);
+      setConfirmUninstall(null);
     }
   };
 
@@ -3077,6 +3146,27 @@ function TemplatesTab() {
                       )}
                       {fullyImported ? "Re-import pack" : "Import pack"}
                     </Button>
+                    {/* R3: pack-level uninstall — offered once ANY of the
+                        pack's rows exist on this instance (the lane removes
+                        the whole packName family, renamed copies included). */}
+                    {owned > 0 && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setConfirmUninstall(pack)}
+                        disabled={uninstallingPackId !== null}
+                        className="h-11 gap-1.5 text-rose-600 hover:bg-rose-500/10 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 sm:h-8"
+                        data-testid={`template-uninstall-${pack.id}`}
+                      >
+                        {uninstallingPackId === pack.id ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="size-4" />
+                        )}
+                        Uninstall pack
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       size="sm"
@@ -3194,6 +3284,53 @@ function TemplatesTab() {
                 Import skipped as suggested
               </AlertDialogAction>
             )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* R3: pack-level uninstall confirmation — one action removes every
+          row this pack's import created (by packName, renamed copies
+          included). Audit history survives (the server never touches it). */}
+      <AlertDialog
+        open={confirmUninstall !== null}
+        onOpenChange={(open) => {
+          if (!open) setConfirmUninstall(null);
+        }}
+      >
+        <AlertDialogContent className="sm:max-w-md">
+          <AlertDialogHeader>
+            <AlertDialogTitle data-testid="pack-uninstall-title">
+              Uninstall pack “{confirmUninstall?.name}”?
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Every skill imported from this pack — including renamed copies
+              from conflict retries — will be unregistered as a unit. Their
+              past invocation rows stay in the Activity tab (audit history is
+              never rewritten). Individually registered skills are immune:
+              the uninstall matches the pack identity, not the skill ids.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={uninstallingPackId !== null}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={uninstallingPackId !== null}
+              className="bg-rose-600 text-white hover:bg-rose-700 dark:bg-rose-600 dark:hover:bg-rose-700"
+              onClick={(e) => {
+                // Keep the dialog open while the uninstall runs.
+                e.preventDefault();
+                if (confirmUninstall) void uninstallPack(confirmUninstall);
+              }}
+              data-testid="pack-uninstall-confirm"
+            >
+              {uninstallingPackId !== null ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Trash2 className="size-4" />
+              )}
+              Uninstall pack
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
