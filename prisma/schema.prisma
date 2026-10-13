@@ -312,6 +312,13 @@ model CustomSkill {
   // the K5 queue — QUEUED cards, real mid-flight stop via abort, orphan
   // sweep, audit transitions all inherit).
   latency     String   @default("fast") // fast | slow
+  // O1 authorization declaration: JSON array of SkillRequirement ids
+  // ("bioToolsEnabled" | "webSearchEnabled"). Registered empty by default
+  // (back-compatible — the pre-O1 "all agents" behavior); non-empty rows
+  // are GATED at execution time by runSkill step 3 and EXCLUDED from the
+  // prompt manifest for agents lacking the flags — the same two-rule
+  // enforcement built-ins get, now declarable per webhook skill.
+  requires    String   @default("[]") // JSON SkillRequirement[]
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 }

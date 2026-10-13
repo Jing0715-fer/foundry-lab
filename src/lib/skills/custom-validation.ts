@@ -2,6 +2,8 @@
 // POST /api/skills). POST and PATCH /api/skills/:skillId must accept the
 // SAME shapes with the SAME rules, so the validators live here and both
 // routes import them. Every rule has a matching QA case.
+// O1: validateRequires joins the shared set (POST/PATCH/import all
+// declare authorization through the same closed id set).
 
 import type { SkillParamDef } from "./types";
 
@@ -114,6 +116,42 @@ export function validateLatency(raw: unknown): {
     return { error: `latency must be "fast" or "slow" (got ${JSON.stringify(raw)})` };
   }
   return { latency: raw as "fast" | "slow" };
+}
+
+/** O1: the knowledge-requirement ids a custom skill may declare. The set
+ *  is CLOSED — runSkill's gate reads exactly these ids off the agent's
+ *  knowledge flags, so an unknown id would gate nothing while looking
+ *  like authorization. null (PATCH) and [] both mean "no requirements —
+ *  every agent may invoke" (the pre-O1 default, back-compatible). */
+export const REQUIREMENT_IDS = ["bioToolsEnabled", "webSearchEnabled"] as const;
+const REQUIREMENT_SET = new Set<string>(REQUIREMENT_IDS);
+
+export function validateRequires(raw: unknown): {
+  requires?: string[];
+  error?: string;
+} {
+  if (raw === undefined || raw === null) return { requires: [] };
+  if (!Array.isArray(raw)) {
+    return { error: "requires must be an array of requirement ids" };
+  }
+  if (raw.length > REQUIREMENT_IDS.length) {
+    return { error: `at most ${REQUIREMENT_IDS.length} requirements exist (${REQUIREMENT_IDS.join(", ")})` };
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string" || !REQUIREMENT_SET.has(item)) {
+      return {
+        error: `requirement "${String(item)}" is unknown — valid ids are ${REQUIREMENT_IDS.join(" and ")}`,
+      };
+    }
+    if (seen.has(item)) {
+      return { error: `duplicate requirement "${item}"` };
+    }
+    seen.add(item);
+    out.push(item);
+  }
+  return { requires: out };
 }
 
 /** Endpoint shape: http(s) URL, ≤2000 chars. Returns the TRIMMED endpoint. */

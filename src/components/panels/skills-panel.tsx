@@ -37,6 +37,7 @@ import {
   ChevronRight,
   Clock,
   Database,
+  Download,
   Gauge,
   HardDrive,
   KeyRound,
@@ -48,6 +49,7 @@ import {
   Search,
   Timer,
   Trash2,
+  Upload,
   Webhook,
   Zap,
 } from "lucide-react";
@@ -297,6 +299,16 @@ const REQUIREMENT_LABELS: Record<SkillRequirement, string> = {
   webSearchEnabled: "web search",
 };
 
+/** O1: dialog copy for the two declarable requirements — what the checkbox
+ *  actually does (gating is ENFORCED by runSkill and the prompt manifest
+ *  filters ineligible entries, so the hint must say both). */
+const REQUIREMENT_HINTS: Record<SkillRequirement, string> = {
+  bioToolsEnabled:
+    "Agents with bio tools enabled in their knowledge config may invoke; others are refused at execution time.",
+  webSearchEnabled:
+    "Agents with web search enabled in their knowledge config may invoke; others are refused at execution time.",
+};
+
 // --- Activity metadata -------------------------------------------------------
 
 const INV_STATUS_META: Record<string, { label: string; pill: string }> = {
@@ -465,6 +477,13 @@ function RegistryTab() {
   // N2: edit dialog target + soft-enable busy flag.
   const [editingSkill, setEditingSkill] = React.useState<SkillCatalogEntry | null>(null);
   const [togglingId, setTogglingId] = React.useState<string | null>(null);
+  // O3: import busy flag + the rename-on-collision confirm state.
+  const [importing, setImporting] = React.useState(false);
+  const [importConflict, setImportConflict] = React.useState<{
+    doc: Record<string, unknown>;
+    suggestion: string | null;
+  } | null>(null);
+  const fileInputRef = React.useRef<HTMLInputElement | null>(null);
 
   const loadCatalog = React.useCallback(async () => {
     setLoading(true);
@@ -555,9 +574,11 @@ function RegistryTab() {
       setSkills((prev) =>
         prev.map((s) =>
           s.id === skill.id
-            ? // Enabled customs resolve eligibility like the server does
-              // (customs declare no requirements → no locked pill); disabled
-              // ones show locked. Reset to undefined so the pill disappears.
+            ? // O1: eligibility for customs now follows their declared
+              // requires — but this tab fetches WITHOUT ?agentId (no
+              // knowledge context to resolve against), so the pill resets
+              // to undefined (absent) on enable and stays locked on
+              // disabled (never invocable, requirement or not).
               { ...s, enabled: next, eligible: next ? undefined : false }
             : s,
         ),
@@ -593,6 +614,129 @@ function RegistryTab() {
         : skills,
     [skills, q],
   );
+
+  // O3: export — fetch the portable document and hand it to the browser's
+  // download flow (the response already carries Content-Disposition; the
+  // blob dance is what makes a click save it).
+  const exportSkill = async (skill: SkillCatalogEntry) => {
+    try {
+      const res = await fetch(
+        `/api/skills/export?skillId=${encodeURIComponent(skill.id)}`,
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        useAppStore.getState().toast({
+          title: "Export failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      const filename =
+        skill.id.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 60) + ".skill.json";
+      const blob = new Blob([JSON.stringify(data, null, 2) + "\n"], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+      useAppStore.getState().toast({
+        title: "Skill exported",
+        description: `${filename} — import it on another Foundry Lab instance through the Import button (a 409 collision offers a deterministic rename).`,
+        variant: "default",
+      });
+    } catch (e) {
+      useAppStore.getState().toast({
+        title: "Export failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    }
+  };
+
+  // O3: import — read the picked file, POST it, route the outcome. A 409
+  // with a suggestion opens the rename confirm; a success refreshes the
+  // catalog (the new card lands live + enabled).
+  const submitImport = async (doc: Record<string, unknown>, renameId?: string) => {
+    setImporting(true);
+    try {
+      const res = await fetch("/api/skills/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(
+          renameId ? { ...doc, id: renameId } : doc,
+        ),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && (data?.suggestion || data?.error)) {
+        setImportConflict({
+          doc,
+          suggestion: typeof data.suggestion === "string" ? data.suggestion : null,
+        });
+        return;
+      }
+      if (!res.ok) {
+        useAppStore.getState().toast({
+          title: "Import failed",
+          description: data?.error ?? `HTTP ${res.status}`,
+          variant: "destructive",
+        });
+        return;
+      }
+      setImportConflict(null);
+      useAppStore.getState().toast({
+        title: "Skill imported",
+        description: `"${data?.skill?.id ?? "custom skill"}" is live and enabled — it flows through the same validation, gating, queue, and audit pipeline as every registration.`,
+        variant: "default",
+      });
+      await loadCatalog();
+    } catch (e) {
+      useAppStore.getState().toast({
+        title: "Import failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleFilePicked = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = e.target.files?.[0];
+    // Reset the input so picking the SAME file again re-fires change.
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > 100_000) {
+      useAppStore.getState().toast({
+        title: "Import failed",
+        description: "File too large — a skill document is a few KB at most.",
+        variant: "destructive",
+      });
+      return;
+    }
+    try {
+      const text = await file.text();
+      const doc: unknown = JSON.parse(text);
+      if (!doc || typeof doc !== "object" || Array.isArray(doc)) {
+        throw new Error("the file is not a skill document (expected a JSON object)");
+      }
+      await submitImport(doc as Record<string, unknown>);
+    } catch (err) {
+      useAppStore.getState().toast({
+        title: "Import failed",
+        description:
+          err instanceof Error
+            ? `Could not read the file: ${err.message}`
+            : String(err),
+        variant: "destructive",
+      });
+    }
+  };
 
   const grouped = React.useMemo(
     () =>
@@ -638,16 +782,34 @@ function RegistryTab() {
             aria-label="Search skills"
           />
         </div>
-        {/* M3: register a custom webhook skill. */}
-        <Button
-          type="button"
-          size="sm"
-          onClick={() => setRegisterOpen(true)}
-          className="h-11 gap-1.5 sm:h-8"
-        >
-          <Plus className="size-4" />
-          Register skill
-        </Button>
+        {/* M3: register a custom webhook skill. O3: import a portable skill
+            document (export → file → import, 409 → rename offer). */}
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={importing}
+            className="h-11 gap-1.5 sm:h-8"
+          >
+            {importing ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <Upload className="size-4" />
+            )}
+            Import
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setRegisterOpen(true)}
+            className="h-11 gap-1.5 sm:h-8"
+          >
+            <Plus className="size-4" />
+            Register skill
+          </Button>
+        </div>
       </div>
 
       <p className="text-xs text-muted-foreground" aria-live="polite">
@@ -689,6 +851,7 @@ function RegistryTab() {
                           onDelete: () => setConfirmDelete(s),
                           onEdit: () => setEditingSkill(s),
                           onToggleEnabled: () => toggleEnabled(s),
+                          onExport: () => exportSkill(s),
                         }
                       : {})}
                   />
@@ -720,6 +883,62 @@ function RegistryTab() {
           }
         }}
       />
+
+      {/* O3: hidden file picker — the Import button clicks it. Accepting
+          .json + application/json keeps the picker honest; the reader
+          validates the envelope (kind/version) on the server anyway. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".json,application/json"
+        onChange={handleFilePicked}
+        className="hidden"
+        aria-label="Import skill document"
+      />
+
+      {/* O3: rename-on-collision confirm — the import lane's deterministic
+          suggestion offered as a one-click re-submit. */}
+      <AlertDialog
+        open={importConflict !== null}
+        onOpenChange={(open) => {
+          if (!open) setImportConflict(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Skill id already exists</AlertDialogTitle>
+            <AlertDialogDescription>
+              {importConflict &&
+                (importConflict.suggestion
+                  ? `"${(importConflict.doc.skill as Record<string, unknown> | undefined)?.skillId ?? "the skill"}" is already registered on this instance. Import it as "${importConflict.suggestion}" instead? The definition (label, endpoint, params, headers, latency, requirements) is preserved — only the id changes.`
+                  : `"${(importConflict.doc.skill as Record<string, unknown> | undefined)?.skillId ?? "the skill"}" is already registered on this instance, and no free rename id could be suggested. Delete or rename one of them first, then import again.`)}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={importing}>Skip</AlertDialogCancel>
+            {importConflict?.suggestion && (
+              <AlertDialogAction
+                disabled={importing}
+                onClick={(e) => {
+                  // Keep the dialog open while the re-submit runs (Radix
+                  // auto-close would lose the pending state).
+                  e.preventDefault();
+                  if (importConflict) {
+                    submitImport(importConflict.doc, importConflict.suggestion ?? undefined);
+                  }
+                }}
+              >
+                {importing ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <Upload className="size-4" />
+                )}
+                Import as {importConflict?.suggestion}
+              </AlertDialogAction>
+            )}
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* M3: shared delete confirm (one instance for all custom cards). */}
       <AlertDialog
@@ -770,6 +989,7 @@ function SkillCard({
   onDelete,
   onEdit,
   onToggleEnabled,
+  onExport,
   toggling,
 }: {
   skill: SkillCatalogEntry;
@@ -781,6 +1001,8 @@ function SkillCard({
   onEdit?: () => void;
   /** N2: soft-enable toggle (PATCH { enabled }). */
   onToggleEnabled?: () => void;
+  /** O3: export the portable skill document (GET /api/skills/export). */
+  onExport?: () => void;
   /** N2: true while this card's enable/disable PATCH is in flight. */
   toggling?: boolean;
 }) {
@@ -857,7 +1079,7 @@ function SkillCard({
               aria-hidden
             />
           </button>
-          {(onToggleEnabled || onEdit || onDelete) && (
+          {(onToggleEnabled || onEdit || onDelete || onExport) && (
             <div
               className="flex divide-x border-l"
               aria-label="Custom skill actions"
@@ -898,6 +1120,17 @@ function SkillCard({
                   className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-primary/10 hover:text-primary"
                 >
                   <Pencil className="size-4" aria-hidden />
+                </button>
+              )}
+              {onExport && (
+                <button
+                  type="button"
+                  onClick={onExport}
+                  aria-label={`Export custom skill ${skill.label}`}
+                  title={`Export ${skill.id} as a portable skill document (import it on another instance)`}
+                  className="flex w-11 items-center justify-center text-muted-foreground transition-colors hover:bg-emerald-500/10 hover:text-emerald-600 dark:hover:text-emerald-400"
+                >
+                  <Download className="size-4" aria-hidden />
                 </button>
               )}
               {onDelete && (
@@ -2116,6 +2349,9 @@ function CustomSkillDialog({
   const [params, setParams] = React.useState<ParamRow[]>([]);
   const [headers, setHeaders] = React.useState<HeaderRow[]>([]);
   const [latency, setLatency] = React.useState<"fast" | "slow">("fast");
+  // O1: declared knowledge requirements (closed set — the checkbox rows
+  // are rendered FROM REQUIREMENT_LABELS so the two can never drift).
+  const [requires, setRequires] = React.useState<SkillRequirement[]>([]);
   const [submitting, setSubmitting] = React.useState(false);
   const [formError, setFormError] = React.useState<string | null>(null);
 
@@ -2143,6 +2379,11 @@ function CustomSkillDialog({
         })),
       );
       setLatency(skill.latency);
+      // O1: prefill the declared requirements (unknown ids dropped — the
+      // server only ever persists the closed set).
+      setRequires(
+        (skill.requires ?? []).filter((r) => r in REQUIREMENT_LABELS),
+      );
     } else {
       setLabel("");
       setDescription("");
@@ -2150,6 +2391,7 @@ function CustomSkillDialog({
       setParams([]);
       setHeaders([]);
       setLatency("fast");
+      setRequires([]);
     }
     setFormError(null);
     // Prefill is a pure function of (open, skill identity); in-flight edits
@@ -2223,7 +2465,8 @@ function CustomSkillDialog({
       if (editing && skill) {
         // N2: update the fields the dialog owns. Enabled is NOT included
         // (the card power button owns it) — an edit never silently
-        // re-enables a disabled skill.
+        // re-enables a disabled skill. O1: requires is included — it is
+        // part of the definition the dialog owns.
         const res = await fetch(`/api/skills/${encodeURIComponent(skill.id)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
@@ -2234,6 +2477,7 @@ function CustomSkillDialog({
             params: paramRows,
             headers: headerEntries.length > 0 ? headerObj : null,
             latency,
+            requires,
           }),
         });
         const data = await res.json().catch(() => ({}));
@@ -2255,6 +2499,7 @@ function CustomSkillDialog({
           params: paramRows,
           ...(headerEntries.length > 0 ? { headers: headerObj } : {}),
           latency,
+          requires,
         };
         const res = await fetch("/api/skills", {
           method: "POST",
@@ -2397,6 +2642,62 @@ function CustomSkillDialog({
               </button>
             </div>
           </div>
+
+          {/* O1: authorization declaration — the closed requirement set,
+              rendered from REQUIREMENT_LABELS so the rows and the gate can
+              never drift. Empty selection = every agent may invoke. */}
+          <fieldset className="space-y-1.5">
+            <legend className="text-sm font-medium text-foreground">
+              Agent knowledge requirements
+            </legend>
+            <p className="text-[11px] text-muted-foreground">
+              Optional authorization: only agents with the checked knowledge
+              switches may invoke this skill — enforced at execution time and
+              reflected in each agent's skill manifest. Leave both unchecked
+              for every agent.
+            </p>
+            <div className="space-y-1.5">
+              {(Object.keys(REQUIREMENT_LABELS) as SkillRequirement[]).map((r) => {
+                const checked = requires.includes(r);
+                return (
+                  <label
+                    key={r}
+                    className={cn(
+                      "flex cursor-pointer items-start gap-2.5 rounded-md border p-2.5 transition-colors",
+                      checked
+                        ? "border-primary bg-primary/5"
+                        : "hover:bg-accent/50",
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) =>
+                        setRequires((prev) =>
+                          e.target.checked
+                            ? [...prev, r]
+                            : prev.filter((x) => x !== r),
+                        )
+                      }
+                      className="mt-0.5 size-4 accent-primary"
+                      aria-label={`Require ${REQUIREMENT_LABELS[r]}`}
+                    />
+                    <span className="min-w-0">
+                      <span className="block text-xs font-medium text-foreground">
+                        Require {REQUIREMENT_LABELS[r]}
+                        <code className="ml-1.5 font-mono text-[10px] text-muted-foreground">
+                          {r}
+                        </code>
+                      </span>
+                      <span className="block text-[11px] leading-snug text-muted-foreground">
+                        {REQUIREMENT_HINTS[r]}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </fieldset>
 
           <div className="space-y-2">
             <div className="flex items-center justify-between">

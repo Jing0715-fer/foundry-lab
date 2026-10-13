@@ -8,6 +8,7 @@ import {
   Globe,
   KeyRound,
   Loader2,
+  RefreshCw,
   Send,
   Trash2,
   Webhook,
@@ -91,6 +92,111 @@ export function AgentChatDrawer({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, open]);
+
+  // O2: QUEUED-card live refresh. While the drawer is open and any message
+  // carries a still-queued tool call with an audit row, poll the point-query
+  // lane (GET /api/skills/invocations?ids=…) every 4s — when the background
+  // run lands (ok / error / cancelled) the card flips IN PLACE. The
+  // persisted ChatMessage row is never rewritten: the refreshedAt marker
+  // distinguishes a live status from the message's original snapshot, and
+  // polling stops the moment no queued card remains.
+  const queuedIdsKey = React.useMemo(() => {
+    const ids: string[] = [];
+    for (const m of messages) {
+      for (const tc of m.toolCalls ?? []) {
+        if (tc.status === "queued" && tc.invocationId && !tc.refreshedAt) {
+          ids.push(tc.invocationId);
+        }
+      }
+    }
+    return ids.join(",");
+  }, [messages]);
+
+  React.useEffect(() => {
+    if (!open || queuedIdsKey === "") return;
+    let disposed = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(
+          `/api/skills/invocations?ids=${encodeURIComponent(queuedIdsKey)}`,
+        );
+        if (!res.ok || disposed) return;
+        const data = (await res.json()) as {
+          invocations?: Array<{
+            id: string;
+            status: string;
+            resultSummary: string | null;
+            error: string | null;
+            durationMs: number | null;
+          }>;
+        };
+        const rows = Array.isArray(data.invocations) ? data.invocations : [];
+        const terminal = new Map<
+          string,
+          { status: string; text: string }
+        >();
+        for (const row of rows) {
+          if (
+            row.status === "ok" ||
+            row.status === "error" ||
+            row.status === "cancelled"
+          ) {
+            const text =
+              (row.status === "ok"
+                ? (row.resultSummary ?? "")
+                : (row.error ?? row.resultSummary ?? "")) +
+              (row.durationMs != null
+                ? ` (${(row.durationMs / 1000).toFixed(1)}s)`
+                : "");
+            terminal.set(row.id, { status: row.status, text });
+          }
+        }
+        if (terminal.size === 0 || disposed) return;
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (!m.toolCalls) return m;
+            let changed = false;
+            const toolCalls = m.toolCalls.map((tc) => {
+              if (
+                tc.status === "queued" &&
+                tc.invocationId &&
+                !tc.refreshedAt &&
+                terminal.has(tc.invocationId)
+              ) {
+                changed = true;
+                const t = terminal.get(tc.invocationId)!;
+                return {
+                  ...tc,
+                  status:
+                    t.status === "ok"
+                      ? ("completed" as const)
+                      : t.status === "cancelled"
+                        ? ("cancelled" as const)
+                        : ("failed" as const),
+                  skillStatus: t.status,
+                  ...(t.text ? { result: t.text } : {}),
+                  refreshedAt: new Date().toISOString(),
+                };
+              }
+              return tc;
+            });
+            return changed ? { ...m, toolCalls } : m;
+          }),
+        );
+      } catch {
+        // Network hiccup — the next tick retries; a failed poll must never
+        // disturb the conversation.
+      }
+    };
+    const interval = setInterval(tick, 4000);
+    // One immediate probe: a run that landed while the drawer was closed
+    // flips on open instead of waiting a full interval.
+    tick();
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+    };
+  }, [open, queuedIdsKey]);
 
   // Track whether the message list is scrolled to the top (for the gradient overlay).
   const handleScroll = React.useCallback(() => {
@@ -448,7 +554,11 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
           ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
           : call.status === "queued"
             ? "bg-teal-500/10 text-teal-700 dark:text-teal-400"
-            : "bg-muted text-muted-foreground";
+            : call.status === "cancelled"
+              // O2: the live refresh can flip a queued card to the queue
+              // lane's honest cancelled verdict (stopped before landing).
+              ? "border border-dashed border-zinc-400/70 bg-zinc-500/10 text-zinc-600 dark:text-zinc-400"
+              : "bg-muted text-muted-foreground";
 
   // M1 deep-links: the card knows WHERE its outcome lives — queued runs
   // point at the Skills Activity tab (invocation row flips to a terminal
@@ -467,9 +577,10 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
     setActivePanel("skills");
     toast({
       title: "Opening the Skills Activity tab",
-      description: call.jobId
-        ? "The queued run's invocation row flips to ok / error / cancelled when the run lands."
-        : "The invocation row for this call is highlighted when it's on the loaded page.",
+      description:
+        call.status === "queued" && call.jobId
+          ? "The queued run's invocation row flips to ok / error / cancelled when the run lands."
+          : "The invocation row for this call is highlighted when it's on the loaded page.",
       variant: "default",
     });
   };
@@ -509,7 +620,7 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
           {truncated}
         </pre>
       )}
-      {call.status === "queued" && (
+      {call.status === "queued" && !call.refreshedAt && (
         <p className="mt-1 text-[11px] text-muted-foreground">
           Running in the background — watch the Skills Activity tab (its
           invocation row flips to ok / error / cancelled when the run
@@ -517,8 +628,24 @@ function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null 
           sent.
         </p>
       )}
-      {/* M1: deep-link actions. */}
-      {call.status === "queued" && (
+      {/* O2: the live refresh flipped this card — the status above and the
+          result line are from the audit row, NOT from the persisted message
+          (which keeps its original snapshot). */}
+      {call.refreshedAt && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          <span
+            className="inline-flex items-center gap-1"
+            aria-label={`Refreshed from the Activity log`}
+          >
+            <RefreshCw className="size-3" aria-hidden />
+            Updated from the Activity log — the background run landed; the
+            persisted chat message keeps its original snapshot.
+          </span>
+        </p>
+      )}
+      {/* M1: deep-link actions. O2: Watch progress stays available on
+          refreshed cards (the audit row is exactly where the outcome lives). */}
+      {(call.status === "queued" || call.refreshedAt) && call.invocationId && (
         <Button
           type="button"
           variant="outline"

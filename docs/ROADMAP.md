@@ -438,27 +438,70 @@ M 线收口后，custom 技能底座完整（注册/执行/同步/治理/深链�
   "engine lands"→"run lands"，#52 同族）；E2E 中发现并修复 locked 药丸
   往返残留。
 
-## O 线 — Skill 层授权与协同（P1 下一阶段候选；基于 N 线测试结果排序）
+## O 线 — Skill 层授权与协同（已交付；Task 47）
 
 N 线收口后，custom 技能已是一等公民（注册/执行/停止/编辑/停用全链路）。
 测试结果暴露的排序依据：custom 技能目前 `requires: []`（注册面无授权声
 明）——K2 的 denied 深链闭环对内置 bio/web 生效但 custom 全开；QUEUED 卡
 为时点快照（行翻转后回看聊天仍是 queued 文案）；管理面在多人/多环境协
-同下需要可移植性。按价值排序：
+同下需要可移植性。三项全部落地：
 
-1. **custom 技能授权声明（O1）**：注册/编辑对话框加 requires 多选
-   （bioToolsEnabled/webSearchEnabled）——CustomSkill.requires 列（JSON
-   String 零迁移）+ 注册表透传 + 门控自动继承（runSkill 的 3 步已存在，
-   零执行层新代码）+ denied 卡 "Fix agent access" 深链（M1 模式复用）+
-   目录 eligible 投影对齐。测试面：denied custom 卡 + 深链闭环 e2e。
-2. **QUEUED 卡活性刷新（O2）**：聊天卡从"时点快照"升级为"订阅刷新"——
-   抽屉打开时对 queued 卡轮询（或 SSE 广播）invocation 终态，行翻转后
-   卡上状态药丸同步翻转（文案仍保留快照披露）。修复 VLM 复核指出的
-   "boilerplate 密集"观感的同时给出信息活性。
-3. **技能导入导出（O3）**：custom 技能 JSON 导出（CustomSkill 行投影 +
-   版本戳）与导入（POST 校验管道复用，冲突 409 带改名建议）——团队/环境
-   间迁移注册面。
+1. **custom 技能授权声明（O1）✅**：CustomSkill.requires 列（JSON 闭合集
+   数组，`@default("[]")` 向后兼容）+ validateRequires 共享校验（未知 id
+   400 / 重复 400）+ registerCustomSkill 透传（防御性丢弃未知 id）+
+   POST/PATCH/import 三面统一 + 注册/编辑对话框 "Agent knowledge
+   requirements" 多选（REQUIREMENT_LABELS 渲染，UI 与门控不可漂移）+
+   目录 eligible 对齐（含 disabled 行 requires 投影）。**门控与提示词
+   清单零新执行代码继承**（runSkill 第 3 步 + manifest 过滤已存在——
+   O1 的核心论点验证：声明式契约的收益）。QA：denied custom 403 + 错误
+   文案点名 bioToolsEnabled + eligible 双向翻转 + disabled 投影。
+   E2E：真 LLM 聊天点名调用 → denied 卡 + **"Fix agent access" 深链打开
+   agent 编辑器正确定位知识开关**（M1 模式对 custom 生效）。
+2. **QUEUED 卡活性刷新（O2）✅**：invocations 路由新增 `?ids=` 点查通道
+   （≤ 50 id、忽略过滤器、无分页、空 ids 400——B 面 4 例覆盖顺序/缺 id/
+   空串/过滤器旁路）；聊天抽屉在打开且有未落定 queued 卡时每 4 秒轮询，
+   行翻转（ok/error/cancelled）后**卡上状态药丸原地翻转**（cancelled
+   新增虚线锌药丸）+ 结果行带真实时长 + "Updated from the Activity log"
+   披露 + 刷新卡保留 Watch progress 深链；**持久化 ChatMessage 永不改写**
+   （refreshedAt 标记区分活状态与快照，审计诚实）；无 queued 卡即停轮询；
+   打开时立即探测一次（抽屉关闭期间落地的运行即时翻转）。E2E：真 LLM
+   + 真 webhook（3s delay）→ QUEUED 卡 → 4s 内翻转 completed(3.0s)。
+3. **技能导入导出（O3）✅**：GET /api/skills/export?skillId= 可移植文档
+   （kind "foundry-lab-skill" / version 1 / 全字段投影含 requires /
+   Content-Disposition 附件 / 内置 400 / 未知 404 / 缺参 400 / 无 enabled
+   泄漏）；POST /api/skills/import 信封校验（kind/version 400）+ 复用注册
+   校验管道 + 冲突 409 附确定性 suggestion（custom.<base>-2/-3… 首个空闲
+   id，注册表+表双源检查）+ 可选顶层 id 重命名 + 导入落 enabled=true；
+   面板第四键导出按钮 + Import 按钮文件选择器 + 409 冲突确认对话框
+   （"Import as …" 一键重提）。QA：**requires 跨实例可移植性**证明
+   （导入副本对 critic 依然 denied）。E2E：导出 → 删除 → 导入恢复 →
+   再导入 → 409 → 重命名导入（完整往返）。
+4. **过程产出**：QA 58/58（A1-A8 门控矩阵 / B1-B4 点查 / C1-C11 导入导出
+   矩阵 / D 清理）；E2E 6 截图（51-56）+ VLM 复核（54 刷新卡 4/4、55 移动
+   端 requires 4/4）；移动端 375×812 零溢出 + footer 贴底 + 对话框 343px
+   适配；console/page errors 零。
+
+## P 线 — 下一阶段候选（基于 O 线测试结果排序）
+
+O 线收口后，custom 技能的声明面（注册/编辑/授权/导入导出）与执行面
+（队列/停止/审计/刷新）均已闭环。测试结果暴露的新排序依据：**协同可移植
+性止步于单技能单文件**——多技能环境迁移是 N 手工操作；**刷新是拉模型**
+（4s 轮询，多抽屉/多标签页下有重复轮询）；O1 的闭合集（2 个知识开关）
+粒度粗于真实权限需求（例如"只允许特定 agent"）。按价值排序：
+
+1. **技能集打包导出（P1）**：导出面从单技能扩展为"选中集/全量集"——
+   GET /api/skills/export?ids=a,b,c（或 bundle 文档 kind
+   foundry-lab-skill-bundle）+ 导入端多技能事务语义（部分失败报告，
+   非全回滚）。测试面：多技能往返 + 部分冲突矩阵。
+2. **推送式刷新（P2a）**：O2 拉模型升级为 SSE 广播（invocation 终态事件
+   推送到打开的抽屉/Activity tab）——多客户端一致性 + 消除空轮询。
+   依赖 job-events socket.io mini-service 扩展（skill-invocation 频道）。
+3. **技能级 agent 白名单（P3a）**：requires 闭合集之外的第三维——
+   CustomSkill.agents JSON 列（agent id 数组，空 = requires 决定），
+   目录 eligible 三级解析（requires ∧ 白名单），门控第 3.25 步。
+   谨慎：粒度收益 vs 管理复杂度（每技能手动维护名单）。
 4. **低优先池滚动（P2）**：stop 路由 detail 措辞打磨（abort 竞态下
    "already finished" 语义可解释但欠精确）；Runs sheet cancelled 行
    Retry 直达；file-missing 筛选列；Escape 成文；Insights 服务端聚合；
    叠合深化；认证；真实集群通道。
+

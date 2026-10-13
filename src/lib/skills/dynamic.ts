@@ -35,7 +35,12 @@
 
 import { db } from "@/lib/db";
 import { registerSkill, unregisterSkill, listSkills } from "./registry";
-import type { SkillDefinition, SkillParamDef, SkillSource } from "./types";
+import type {
+  SkillDefinition,
+  SkillParamDef,
+  SkillRequirement,
+  SkillSource,
+} from "./types";
 
 const WEBHOOK_TIMEOUT_MS = 20_000;
 /** N1: slow (queued) webhooks get a long leash — the K5 queue lane runs
@@ -56,6 +61,9 @@ export interface CustomSkillRow {
   enabled: boolean;
   /** N1: "fast" | "slow" (unknown values coerce to "fast"). */
   latency: string;
+  /** O1: JSON string array of SkillRequirement ids (unknown values are
+   *  dropped defensively — the gate only understands the closed set). */
+  requires: string;
 }
 
 // Per-module-instance sync state (see header — the DB is the shared truth;
@@ -106,6 +114,11 @@ export function registerCustomSkill(row: CustomSkillRow): void {
   } catch {
     // Handled by the caller (loader logs); register with no params.
   }
+  // O1: parse the declared requirements. Defensive against corrupt/legacy
+  // rows — anything that is not a known closed-set id is DROPPED (the gate
+  // reads exactly these ids, so an unknown id would gate nothing while
+  // looking like authorization; pre-O1 rows have no column value → "[]").
+  const requires = parseRequires(row.requires);
   const slow = row.latency === "slow";
   registerSkill({
     id: row.skillId,
@@ -114,7 +127,7 @@ export function registerCustomSkill(row: CustomSkillRow): void {
     description: row.description,
     aliases: [],
     params: paramDefs,
-    requires: [],
+    requires,
     latency: slow ? "slow" : "fast",
     handler: async (params, ctx) =>
       invokeWebhook(
@@ -153,6 +166,23 @@ export function registerCustomSkill(row: CustomSkillRow): void {
 }
 
 // ── internals ────────────────────────────────────────────────────────────────
+
+/** O1: closed-set parse of a requires JSON column ("[]"-shaped). */
+const KNOWN_REQUIREMENTS = new Set<string>(["bioToolsEnabled", "webSearchEnabled"]);
+
+function parseRequires(raw: string): SkillRequirement[] {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (r): r is SkillRequirement => typeof r === "string" && KNOWN_REQUIREMENTS.has(r),
+      );
+    }
+  } catch {
+    // Corrupt column value — register requirement-free (the honest floor).
+  }
+  return [];
+}
 
 async function resync(): Promise<CustomSkillRow[]> {
   // N2: read ALL rows (enabled + disabled). Only ENABLED rows register —

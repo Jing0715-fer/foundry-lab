@@ -117,12 +117,36 @@
   编辑对话框复用注册表单（预填 + latency 单选 + headers 行编辑器，
   headers/null 清除）；注册与编辑共用同一校验模块（custom-validation.ts），
   卡片三按钮（电源/铅笔/垃圾桶）+ 展开区显示 Endpoint/Execution/Headers。
+- **授权声明（O1）**：注册/编辑对话框新增“Agent knowledge requirements”
+  多选（bioToolsEnabled / webSearchEnabled 闭合集）；CustomSkill.requires
+  列（JSON 数组，空 = 全员可调，向后兼容）→ 注册表透传 → **门控与提示词
+  清单自动继承零新执行代码**（runSkill 第 3 步已存在，manifest 过滤已存在）；
+  POST/PATCH 校验未知 id 400、重复 400；denied 聊天卡带 “Fix agent access”
+  深链（M1 模式对 custom 生效）；目录 eligible 投影对齐（含 disabled 行
+  requires 投影）。
+- **QUEUED 卡活性刷新（O2）**：聊天抽屉从“时点快照”升级为“订阅刷新”——
+  抽屉打开且有未落定的 queued 卡时，每 4 秒轮询
+  `GET /api/skills/invocations?ids=…`（新增点查通道，≤ 50 id、忽略过滤器）；
+  行翻转后卡上状态药丸原地翻转（ok→completed / error→failed /
+  cancelled→cancelled 新药丸），结果行带真实时长，并显示“Updated from
+  the Activity log”披露（持久化消息永不改写，审计诚实）；刷新卡保留
+  Watch progress 深链；无 queued 卡即停轮询。
+- **技能导入导出（O3）**：`GET /api/skills/export?skillId=` 返回可移植
+  JSON 文档（kind foundry-lab-skill / version 1 / 全字段投影含 requires，
+  Content-Disposition 附件）；`POST /api/skills/import` 复用同一校验管道
+  （信封 kind/version 400），冲突 409 附确定性改名建议
+  （custom.<base>-2/-3…首个空闲 id）→ 客户端“Import as …”一键重提；
+  导入落 enabled=true；面板每张 custom 卡新增导出按钮（第四键）+
+  顶部 Import 按钮（文件选择器 → 409 冲突确认对话框 → 重命名导入）。
 
 ![技能面板](docs/images/28-skills-panel.png)
 ![聊天 QUEUED 卡深链](docs/images/40-m-queued-deeplink.png)
 ![自定义 webhook 技能注册](docs/images/42-m-registry-custom.png)
 ![custom 技能管理卡（N2）](docs/images/47-n-registry-custom-card.png)
 ![聊天慢技能 QUEUED 卡（N1）](docs/images/49-n-chat-queued-card.png)
+![注册卡 requires 药丸（O1/O3）](docs/images/51-o-registry-requires.png)
+![导入冲突重命名对话框（O3）](docs/images/52-o-import-conflict-rename.png)
+![QUEUED 卡活性刷新（O2）](docs/images/54-o-queued-card-refreshed.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -438,12 +462,14 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | POST | `/api/screening/:id/rmsd` | 结构 RMSD 指标轴计算（`{refId}`，原子事务） |
 | POST | `/api/screening/:id/promote` | 候选提升回画布 |
 | GET | `/api/bio-tools/:type` | BLAST / PDB / PubMed / UniProt |
-| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析；含 custom.* 端点；N2：disabled 行带 enabled:false 仍列出） |
-| POST | `/api/skills` | 注册自定义 webhook 技能（M3：label/description/endpoint/params 校验，冲突 409；N1：latency "fast"\|"slow"） |
-| PATCH | `/api/skills/:skillId` | N2：局部更新 custom 技能（label/description/endpoint/params/headers/latency/enabled；空 body 400、内置 400、未知 404） |
+| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析；含 custom.* 端点；N2：disabled 行带 enabled:false 仍列出；O1：requires 投影 + eligible 对齐） |
+| POST | `/api/skills` | 注册自定义 webhook 技能（M3：label/description/endpoint/params 校验，冲突 409；N1：latency "fast"\|"slow"；O1：requires 闭合集校验） |
+| PATCH | `/api/skills/:skillId` | N2：局部更新 custom 技能（label/description/endpoint/params/headers/latency/enabled；空 body 400、内置 400、未知 404；O1：requires 数组替换/null 清除） |
 | DELETE | `/api/skills/:skillId` | 注销自定义技能（内置 400 / 未知 404；审计历史保留） |
-| POST | `/api/skills/invoke` | REST 调用快速技能（200 ok / 400 invalid / 403 denied / 429 limited / 500 error）；N1：slow custom 返回 202 queued（后台队列 + jobId） |
-| GET | `/api/skills/invocations` | 统一调用审计日志（M2：keyset 分页 cursor + limit/skillId/source/status/agentId 过滤） |
+| POST | `/api/skills/invoke` | REST 调用快速技能（200 ok / 400 invalid / 403 denied / 429 limited / 500 error）；N1：slow custom 返回 202 queued（后台队列 + jobId）；O1：custom requires 门控同样生效（denied 403） |
+| GET | `/api/skills/invocations` | 统一调用审计日志（M2：keyset 分页 cursor + limit/skillId/source/status/agentId 过滤；O2：`?ids=` 点查通道 ≤ 50 id、忽略过滤器，供 QUEUED 卡刷新轮询） |
+| GET | `/api/skills/export` | O3：导出 custom 技能为可移植 JSON 文档（`?skillId=`；内置 400/未知 404/缺参 400；含 requires；Content-Disposition 附件） |
+| POST | `/api/skills/import` | O3：导入技能文档（信封 kind/version 校验 400；复用注册校验管道；冲突 409 附确定性改名 suggestion；可选顶层 id 重命名；导入落 enabled=true） |
 | GET/POST | `/api/skills/retention` | M2：审计保留策略预览（GET）/ 干跑与执行（POST：maxAgeDays/rowCap/dryRun） |
 
 ## 常见问题

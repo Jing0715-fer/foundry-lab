@@ -13,6 +13,13 @@
 // that order. The response carries `total` (rows matching the filters) and
 // `nextCursor` (present iff another page exists) — offset-based paging
 // would silently skip/duplicate rows as new invocations stream in.
+//
+// O2 — ?ids=<id1,id2,…>: a POINT-QUERY lane for the chat drawer's QUEUED-card
+// refresh. Given ≤ 50 comma-separated invocation ids, the endpoint returns
+// exactly those rows (any status, filters ignored, no pagination —
+// hasMore:false). The drawer polls it while open so a queued background run
+// flipping to ok/error/cancelled updates the chat card without a refetch of
+// the whole conversation.
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -76,6 +83,39 @@ export async function GET(request: NextRequest) {
   const source = sp.get("source") ?? undefined;
   const status = sp.get("status") ?? undefined;
 
+  // O2: point-query lane — ?ids=<id1>,<id2>,… (≤50). Returns exactly those
+  // rows in the request's id order; filters/cursor/pagination are IGNORED
+  // (the caller asked for specific rows, not a page). Missing ids are simply
+  // absent from the response — a deleted/never-existed id is not an error
+  // for a refresh poll.
+  const idsParam = sp.get("ids");
+  if (idsParam !== null) {
+    const ids = idsParam
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .slice(0, 50);
+    if (ids.length === 0) {
+      return NextResponse.json(
+        { error: 'ids must be a comma-separated list of invocation ids' },
+        { status: 400 },
+      );
+    }
+    const rows = await db.skillInvocation.findMany({
+      where: { id: { in: ids } },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const invocations: SkillInvocationDTO[] = ids
+      .filter((id) => byId.has(id))
+      .map((id) => toDTO(byId.get(id)!));
+    return NextResponse.json({
+      invocations,
+      count: invocations.length,
+      total: invocations.length,
+      hasMore: false,
+    } as InvocationsResponse);
+  }
+
   const where: Record<string, unknown> = {};
   if (skillId) where.skillId = skillId;
   if (agentId) where.agentId = agentId;
@@ -118,29 +158,7 @@ export async function GET(request: NextRequest) {
   const page = hasMore ? rows.slice(0, limit) : rows;
   const nextCursor = hasMore ? page[page.length - 1]?.id : undefined;
 
-  const invocations: SkillInvocationDTO[] = page.map((r) => {
-    let params: Record<string, unknown> = {};
-    try {
-      params = r.params ? JSON.parse(r.params) : {};
-    } catch {
-      params = {};
-    }
-    return {
-      id: r.id,
-      skillId: r.skillId,
-      source: r.source,
-      agentId: r.agentId,
-      agentTitle: r.agentTitle,
-      workflowId: r.workflowId,
-      nodeId: r.nodeId,
-      status: r.status,
-      params,
-      resultSummary: r.resultSummary,
-      error: r.error,
-      durationMs: r.durationMs,
-      createdAt: r.createdAt.toISOString(),
-    };
-  });
+  const invocations: SkillInvocationDTO[] = page.map((r) => toDTO(r));
 
   return NextResponse.json({
     invocations,
@@ -149,4 +167,42 @@ export async function GET(request: NextRequest) {
     hasMore,
     ...(nextCursor ? { nextCursor } : {}),
   } as InvocationsResponse);
+}
+
+function toDTO(r: {
+  id: string;
+  skillId: string;
+  source: string;
+  agentId: string | null;
+  agentTitle: string | null;
+  workflowId: string | null;
+  nodeId: string | null;
+  status: string;
+  params: string;
+  resultSummary: string | null;
+  error: string | null;
+  durationMs: number | null;
+  createdAt: Date;
+}): SkillInvocationDTO {
+  let params: Record<string, unknown> = {};
+  try {
+    params = r.params ? JSON.parse(r.params) : {};
+  } catch {
+    params = {};
+  }
+  return {
+    id: r.id,
+    skillId: r.skillId,
+    source: r.source,
+    agentId: r.agentId,
+    agentTitle: r.agentTitle,
+    workflowId: r.workflowId,
+    nodeId: r.nodeId,
+    status: r.status,
+    params,
+    resultSummary: r.resultSummary,
+    error: r.error,
+    durationMs: r.durationMs,
+    createdAt: r.createdAt.toISOString(),
+  };
 }

@@ -13,7 +13,7 @@
 //   in the live registry — they are not invocable, not advertised in
 //   prompts, not eligible.
 //
-// POST (M3/K4, N1/N2): register a custom webhook skill. Body:
+// POST (M3/K4, N1/N2, O1): register a custom webhook skill. Body:
 //   {
 //     label:       string (1..80, required)
 //     description: string (1..400, required)
@@ -28,10 +28,14 @@
 //     latency?:    "fast" (default — ≤10s inline, 20s webhook timeout) |
 //                  "slow" (N1 — agent/REST lanes enqueue it as a background
 //                  ToolJob through the K5 queue)
+//     requires?:   string[] (O1 — closed set "bioToolsEnabled" |
+//                  "webSearchEnabled"; empty/omitted = every agent may
+//                  invoke, the pre-O1 back-compatible default)
 //   }
 // The row is persisted, registered into the LIVE registry (this process),
-// and served by every surface built-ins use: prompt manifest, runSkill
-// validation/gating/audit, rate limits, Activity, Insights.
+// and served by every surface built-ins use: prompt manifest (eligible
+// entries only), runSkill validation/gating/audit (requires ENFORCED at
+// execution time), rate limits, Activity, Insights.
 
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
@@ -51,6 +55,7 @@ import {
   validateLabel,
   validateLatency,
   validateParamDefs,
+  validateRequires,
 } from "@/lib/skills/custom-validation";
 
 export const dynamic = "force-dynamic";
@@ -100,7 +105,10 @@ export async function GET(request: NextRequest) {
 
   // Custom rows carry their webhook endpoint on the wire (the built-in
   // projection never does) — merge the management projection in so the
-  // Registry cards can show + edit it.
+  // Registry cards can show + edit it. O1: requires rides along (the
+  // registry projection already carries it for ENABLED rows — this merge
+  // is for the edit-dialog prefill of DISABLED ones, where the registry
+  // never sees the row).
   const rowById = new Map(
     customRows.map((c) => {
       let headers: Record<string, string> | undefined;
@@ -112,12 +120,24 @@ export async function GET(request: NextRequest) {
       } catch {
         /* corrupt headers JSON — the card shows none */
       }
+      let requires: string[] | undefined;
+      try {
+        const parsedReqs: unknown = JSON.parse(c.requires || "[]");
+        if (Array.isArray(parsedReqs)) {
+          requires = parsedReqs.filter(
+            (r) => r === "bioToolsEnabled" || r === "webSearchEnabled",
+          );
+        }
+      } catch {
+        /* corrupt requires JSON — the card shows none */
+      }
       return [
         c.skillId,
         {
           endpoint: c.endpoint,
           enabled: c.enabled,
           latency: c.latency === "slow" ? ("slow" as const) : ("fast" as const),
+          ...(requires && requires.length > 0 ? { requires } : {}),
           ...(headers ? { headers } : {}),
         },
       ] as const;
@@ -134,6 +154,8 @@ export async function GET(request: NextRequest) {
 
   // N2: disabled customs are NOT in the live registry — project them from
   // the table rows so the catalog still lists them (flagged, re-enablable).
+  // O1: requires comes from the row (the registry projection below only
+  // covers enabled rows).
   const registered = new Set(skills.map((s) => s.id));
   for (const row of customRows) {
     if (row.enabled || registered.has(row.skillId)) continue;
@@ -144,6 +166,17 @@ export async function GET(request: NextRequest) {
     } catch {
       /* unparsable params — project none (the card still lists the skill) */
     }
+    let requires: string[] = [];
+    try {
+      const parsedReqs: unknown = JSON.parse(row.requires || "[]");
+      if (Array.isArray(parsedReqs)) {
+        requires = parsedReqs.filter(
+          (r) => r === "bioToolsEnabled" || r === "webSearchEnabled",
+        );
+      }
+    } catch {
+      /* corrupt requires JSON — project none */
+    }
     const meta = rowById.get(row.skillId)!;
     skills.push({
       id: row.skillId,
@@ -152,7 +185,7 @@ export async function GET(request: NextRequest) {
       description: row.description,
       aliases: [],
       params,
-      requires: [],
+      requires,
       latency: meta.latency,
       endpoint: meta.endpoint,
       enabled: false,
@@ -177,6 +210,8 @@ interface RegistrationBody {
   params?: unknown;
   headers?: unknown;
   latency?: unknown;
+  /** O1: closed-set requirement ids ([] when omitted). */
+  requires?: unknown;
 }
 
 export async function POST(request: NextRequest) {
@@ -240,6 +275,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: latencyRes.error }, { status: 400 });
   }
   const latency = latencyRes.latency ?? "fast";
+  // O1: authorization declaration — closed set, [] when omitted (the
+  // pre-O1 default keeps every existing registration back-compatible).
+  const requiresRes = validateRequires(body.requires);
+  if (requiresRes.error) {
+    return NextResponse.json({ error: requiresRes.error }, { status: 400 });
+  }
+  const requires = requiresRes.requires ?? [];
 
   // Collisions: the live registry (force-synced — route bundles can hold
   // stale copies, #Turbopack) AND the table (another process/bundle may
@@ -272,6 +314,7 @@ export async function POST(request: NextRequest) {
         ...(headerRes.headers ? { headers: JSON.stringify(headerRes.headers) } : {}),
         enabled: true,
         latency,
+        requires: JSON.stringify(requires),
       },
     });
   } catch (e) {
@@ -293,7 +336,7 @@ export async function POST(request: NextRequest) {
     description: row.description,
     aliases: [],
     params: paramRes.params ?? [],
-    requires: [],
+    requires,
     latency: row.latency === "slow" ? ("slow" as const) : ("fast" as const),
     endpoint: row.endpoint,
     enabled: row.enabled,

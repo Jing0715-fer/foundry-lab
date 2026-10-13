@@ -67,7 +67,7 @@ export interface ToolCall {
   skillId?: string;
   params: Record<string, unknown>;
   result?: string;
-  status?: "pending" | "running" | "completed" | "failed" | "queued";
+  status?: "pending" | "running" | "completed" | "failed" | "queued" | "cancelled";
   /** K5: the background ToolJob row when a slow comp skill was queued. */
   jobId?: string;
   /** M1: the SkillInvocation audit row the call landed on (deep-link
@@ -80,6 +80,12 @@ export interface ToolCall {
    *  limited cards were indistinguishable from real errors. Chat cards
    *  use this to offer the right deep-link (denied → agent editor). */
   skillStatus?: string;
+  /** O2: set by the chat drawer's live refresh when the invocation row
+   *  this card points at has FLIPPED since the message was persisted —
+   *  the card's snapshot text swaps to "updated from the Activity log"
+   *  so the user can tell a live status from a stale snapshot. The
+   *  persisted ChatMessage row is NEVER rewritten (audit honesty). */
+  refreshedAt?: string;
 }
 
 export type TaskType = "general" | "design" | "analysis" | "research";

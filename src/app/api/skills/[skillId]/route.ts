@@ -1,5 +1,5 @@
 // PATCH/DELETE /api/skills/:skillId — manage a CUSTOM skill (M3 delete,
-// N2 patch).
+// N2 patch, O1 requires).
 //
 // PATCH body (all fields OPTIONAL — a partial update; at least one is
 // required, an empty body is a 400):
@@ -11,6 +11,9 @@
 //     headers?:     Record<string,string> (≤8 — REPLACES the whole set;
 //                   null/{} clears them)
 //     latency?:     "fast" | "slow"
+//     requires?:    string[] (O1 — closed set "bioToolsEnabled" |
+//                   "webSearchEnabled"; REPLACES the whole set; null/[]
+//                   clears — every agent may invoke again)
 //     enabled?:     boolean (soft switch — disabled rows leave the live
 //                   registry: not invocable, not in prompts, but still
 //                   listed in the catalog flagged for re-enabling)
@@ -37,6 +40,7 @@ import {
   validateLabel,
   validateLatency,
   validateParamDefs,
+  validateRequires,
 } from "@/lib/skills/custom-validation";
 
 export const dynamic = "force-dynamic";
@@ -129,6 +133,20 @@ export async function PATCH(
     data.latency = r.latency;
     touched.push("latency");
   }
+  // O1: authorization declaration — an array REPLACES the whole set;
+  // null (or []) clears it (back to "every agent may invoke"). Same
+  // null-means-clear contract headers follow.
+  if (body.requires !== undefined) {
+    if (body.requires === null) {
+      data.requires = JSON.stringify([]);
+      touched.push("requires");
+    } else {
+      const r = validateRequires(body.requires);
+      if (r.error) return NextResponse.json({ error: r.error }, { status: 400 });
+      data.requires = JSON.stringify(r.requires ?? []);
+      touched.push("requires");
+    }
+  }
   if (body.enabled !== undefined) {
     if (
       body.enabled !== true &&
@@ -152,7 +170,7 @@ export async function PATCH(
       {
         error:
           "Nothing to update — provide at least one of label, description, " +
-          "endpoint, params, headers, latency, enabled.",
+          "endpoint, params, headers, latency, requires, enabled.",
       },
       { status: 400 },
     );
@@ -174,6 +192,9 @@ export async function PATCH(
         headers: row.headers ? JSON.parse(row.headers) : null,
         params: JSON.parse(row.params),
         latency: row.latency === "slow" ? "slow" : "fast",
+        // O1: closed-set parse of the persisted column (defensive against
+        // legacy/corrupt values — the wire never carries unknown ids).
+        requires: safeParseRequires(row.requires),
         enabled: row.enabled,
       },
       updated: touched,
@@ -184,6 +205,20 @@ export async function PATCH(
       { status: 500 },
     );
   }
+}
+
+function safeParseRequires(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    if (Array.isArray(parsed)) {
+      return parsed.filter(
+        (r) => r === "bioToolsEnabled" || r === "webSearchEnabled",
+      );
+    }
+  } catch {
+    /* corrupt column — report requirement-free */
+  }
+  return [];
 }
 
 // ── DELETE: unregister (M3) ─────────────────────────────────────────────────
