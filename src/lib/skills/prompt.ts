@@ -10,13 +10,19 @@
 import type { SkillCatalogEntry, SkillParamDef } from "./types";
 
 /** Render the skills the agent is eligible for as a system-prompt fragment.
- *  `knowledge` mirrors the flags the executor gates on — the SAME flags. */
+ *  `knowledge` mirrors the flags the executor gates on — the SAME flags.
+ *  P3a: `agentId` gates the per-skill whitelist exactly like runSkill
+ *  step 3.25 — the manifest can never advertise a skill the executor
+ *  would refuse (and must never hide one it would run). */
 export function renderSkillManifest(
   entries: SkillCatalogEntry[],
   knowledge: { webSearchEnabled: boolean; bioToolsEnabled: boolean },
+  agentId?: string,
 ): string {
-  const eligible = entries.filter((s) =>
-    s.requires.every((r) => knowledge[r] === true),
+  const eligible = entries.filter(
+    (s) =>
+      s.requires.every((r) => knowledge[r] === true) &&
+      (!s.agents || s.agents.length === 0 || (agentId ? s.agents.includes(agentId) : false)),
   );
   if (eligible.length === 0) return "";
 
@@ -46,6 +52,22 @@ export function renderSkillManifest(
     }
     lines.push("");
   }
+  // R2: stop-after-the-fence. Q1's grounding fixed what the model does
+  // WITH the returned payload, but E2E proved a residual: in the SAME
+  // reply as the fence, the model would continue past the closing ``` and
+  // write prose describing the tool's RESULT before any result existed
+  // (a prior guess, later contradicting the real feedback). This is the
+  // source-level suppression: the reply that emits a fence must END at
+  // the fence — everything after it would be fabricated by construction.
+  lines.push(
+    "CRITICAL — stop after each skill fence: the moment you emit a ```skill " +
+      "block, END your reply immediately after its closing ```. Do NOT write " +
+      "any text after a skill fence in the same reply: the skill has not run " +
+      "yet, so any outcome, result, or data you describe there would be a " +
+      "guess. Emit the fence, stop, and wait — the system executes the skill " +
+      "and returns the actual result as your next input; continue from that.",
+  );
+  lines.push("");
   lines.push(
     "After each skill call, the system executes it and returns the result. " +
       "Revise your answer using the results. If a skill call fails or is " +

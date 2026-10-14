@@ -4,7 +4,23 @@
 > 执行引擎）、10-09（C+E 线数据可信度与执行健壮性）、10-10（D+F 线科研深度与可读性）、
 > 10-11（F 线 P1 打磨与运维）、10-12（G 线验证通道与生产化）、10-13（H 线科研深度与可及性
 > 收口，QA 审查闭环 + 浏览器级 e2e 含真实引擎与真实键盘）、10-14（J 线智能体操作
-> skill 标准化）十轮测试结论滚动更新，随每个阶段交付后重写。
+> skill 标准化）、10-15（L 线真实中止与 cancelled 语义——S/E 参考分支三块移植 + QA/e2e
+> 全验证）、10-16（I 线 RMSD 轴打磨 + 执行令牌 #47 封口——含集群 e2e 双模式
+> 51/51 + 76/76 与陈旧断言修复）、10-17（K 线 Skill 层运营化：Insights 聚合 + denied
+> 深链 + per-agent 限流 + 慢技能异步入队，QA 51/52 容错重验 + 浏览器金路径全绿）、
+> 10-18（M 线 Skill 层运营深化：M1 聊天卡深链闭环 + M2 审计保留与分页 +
+> M3 动态技能注册，QA 42/42 + 浏览器金路径全绿）、10-20（N 线 Skill 层扩展运营：
+> N1 慢 webhook 技能入队 + N2 custom 技能管理面，QA 17/17 + 浏览器金路径全绿）、
+> 10-21（O 线 Skill 层授权与协同：O1 requires 授权声明 + O2 QUEUED 卡活性刷新 +
+> O3 技能导入导出，QA 58/58 + 浏览器金路径全绿）、10-22（P 线 Skill 层权限细粒度
+> 与实时性：P1 技能集打包导出 + P2a 推送式活性刷新 + P3a 技能级 agent 白名单，
+> QA 66/66 + 浏览器金路径全绿）、10-23（Q 线 Skill 层反幻觉与实时性收口：
+> Q1 反馈接地 + Q2 推送房间化与 emit 鉴权 + Q3 技能模板库，QA 60/60 +
+> 浏览器金路径含真 LLM 接地实证全绿）、10-24（R 线 Skill 层身份化与反幻觉
+> 源头：R1 推送通道 HMAC grant + 服务端强制房间映射 + 轮换双向传播，R2
+> 围栏后停笔指令双采样实证，R3 包身份持久化与整包卸载，QA 31/31 +
+> 浏览器金路径全绿含真 LLM 双采样停笔）
+> 二十轮测试结论滚动更新，随每个阶段交付后重写。
 
 ## 本阶段成果（已完成）
 
@@ -78,24 +94,64 @@
     （Registry 浏览器 + Activity 审计日志，J6-a 子代理交付）。
   - 浏览器级 e2e：金路径（真模型 ```skill bio.pdb → 真 RCSB → 卡片 bio|bio.pdb|completed）+
     web.search 首执行 + done.toolCalls 即时合并修复 + Activity 双行核对 + 移动端 + console
-    零告警；基线纪律遵守（schema 变更重冻 + e2e 后恢复 + 字段级核对）。
-
-- **I 线 · RMSD 轴打磨与 Escape 分层（本轮交付）**：ROADMAP 上轮规划的 P1 项全部落地，
-  开发 → QA → e2e 全闭环：
-  - **I1a 磁盘真相行级服务**：候选 DTO 新增 pdbExists（详情端点 existsSync 快照；列表
-    端点 lite 投影不受影响）——悬空引用从"用户点进去才 400"变为"选择器层就不可见 +
-    计数提示"；基线 demo 全悬空态（86/86）UI 诚实显示引导文案。QA 普查把同病修到相邻
-    两处（详情抽屉 Superpose 伙伴 + Compare 门控）。
-  - **I1b 缺口可见化**：rescan 新增/对齐失败的候选（有 PDB 无 rmsd 键）→ amber 提示 +
-    一键 "Recompute vs <ref>"——评分器静默重归一化的缺口现在有 UI 出口。
-  - **I1c 参考域语义修正**：参考的自比 0 从 rmsd 域计算中排除（标签≠数据点）——
-    三处统一（DTO / 落库 defs / promote 摘要，computeScreeningMetricDefs 单一实现）；
-    表格 REF 徽章；e2e 实证域 26.5–29.7（旧实现恒 0–29.7）。
-  - **I2 Escape 分层**：frame Escape 让位 pending wire（连线是模式、选择是状态——
-    模式优先）；e2e 真实键盘实证：单次 Escape 取消连线且组保持激活 → 第二次反选组；
-    优先级矩阵成文（CONTRIBUTING 代码约定节）。
-  - QA 无 P0/P1；2 个 P2（#46 同病普查）当场修复；e2e 抓到 1 个文案复数 bug（#43）
-    + 3 条新 e2e 工程教训（#44 modifier 不透传 / #45 rect 零检查 / #46 普查启发式）。
+    零警告；基线重冻与恢复纪律遵守（详见 Task 41 worklog）。
+- **L 线 · 真实中止与 cancelled 语义（本轮交付，S/E 参考分支三块移植）**：并行会话合并
+  （Task 22-merge）决议的三块独有改进全部落到 main 的 J 线基座上，"看得见也管得住"升级为
+  **真实停止**：
+  - **L1 进程注册表 + runKey 贯穿**（real-executor）：`ACTIVE_PROCS` Map + `killActiveProcess`
+  （SIGTERM + 2s SIGKILL 升级 + 陈旧 unregister 防误杀后继运行）；`runKey`（= 画布节点 id）
+  穿透 executeCompToolReal → native/builtin/foundry 六个 spawn 点 → runProcess 注册/注销；
+  集群泳道同步改写 `triggeredBy: node:<id>`（停止路由免日志刮削直达发现）；J 线 comp 技能
+  handler 也传 ctx.nodeId（agent 节点发 comp 技能同样可杀）。
+  - **L2 cancelled 终态**：NodeStatus/NodeExecResult 加 `cancelled`（schema 注释同步——String
+  列零迁移）；stop-registry（零依赖新模块）+ executeNodeGuarded **post-race 停止守卫**
+  （迟到结果报 cancelled 而非自然结果；fresh 执行先清陈旧标志）；runner 单节点/工作流两
+  泳道条件写守卫全部保留（迟到永不复活）；runner 异常安全网条件化（不再把 cancelled
+  复活成 failed）；SSE 流三处终态识别 + job cancelled → node cancelled 诚实映射；runs
+  路由 Recent/计数加 cancelled 泳道（queued-then-stopped 的 startedAt=null 行按
+  completedAt 匹配窗口）。
+  - **L3 stopNodeRun 四步真实停止**（node-run-control 新模块）：register stop →
+  SIGTERM 进程 → **先行翻转 cancelled**（SSE reconcile 只动 running 行，先翻即封死竞态
+  路径）→ 链接作业取消（triggeredBy 主发现 + 日志 marker 兜底，集群 scancel/
+  本地 SIGTERM + 双向徽标）；响应携带 detail 溯源行（"local engine process killed" 等）。
+  - **L4 async 运行模式**（run 路由 `?async=1`）：领占即返回（61ms 实测），执行后台
+  fire-and-forget + 崩溃安全网条件写 failed（永不楔死 running）；RunsSheet Retry 改异步
+  （spinner 只覆盖 claim 阶段）；行键盘 closest 排除清单修复（Stop/Retry 的 Enter 归
+  按钮不归行）。
+  - **L5 UI 三态呈现**：RunsSheet cancelled 行（Ban 图标 + zinc 药丸 + 划线 + "cancelled —
+  stopped by user"）+ 汇总行含取消计数；node-card cancelled 徽章/药丸/底条 + 停止结果
+  文案；minimap 状态色；inspector SSE 终态 toast 三变体；PATCH 路由状态白名单加
+  cancelled。
+  - **QA/e2e 证据**：API 冒烟 32/32（含 pre-spawn 守卫：claim 后立即 stop → 引擎永不
+  spawn；双泳道真实击杀 pgrep 归零；迟到 9s 不复活；queued 停止 → runner 声明跳过；
+  404/409 全路径）；浏览器级 e2e（真实键盘 Enter 击发 Stop 按钮 + 行不劫持 + sheet 不
+  关；cancelled 徽章/划线/汇总计数 VLM 双截图实证；改轻参数后 UI 重跑 from cancelled
+  真实引擎完成）；移动端 375 零溢出 + console 零错误；演示基线字段级恢复（含 16 条
+  测试期 SkillInvocation 审计行清理）。
+- **I 线 · RMSD 轴打磨 + 执行令牌（本轮交付，两项）**：
+  - **I-1 RMSD 轴打磨（#38/#39 + rescan 提示）**：候选 DTO 新增服务端
+    `pdbExists`（序列化时 existsSync）——参考选择器按磁盘存在性预检：悬空 PDB
+    候选以**禁用项 + 琥珀 "file missing" 标记**呈现（不再"能选不能算"的 400
+    死路）；当前参考 PDB 丢失时参考 chip 警告；H1a 抽屉叠合伙伴选择器同标准；
+    rescan 新增候选缺 rmsd 键 → **琥珀补算提示**（N 个候选尚无 RMSD）；
+    **域排除开关**（`Screening.rmsdExcludeRef` 持久化，PATCH 校验 boolean）：
+    共享 parseDomainMetrics 把参考的 rmsd=0 锚点移出域计算（DTO 实时域与
+    refreshScreeningMetrics 持久化域同源同值），其余候选归一化区间不再被常数 0
+    压扁；参考行常显 **"REF" 徽标**（桌面表 + 移动卡）+ 报告披露排除状态。
+    QA/浏览器证据：API 冒烟 26/26（域翻转 [0,30]→[11.9,30] / 持久化域==DTO 域 /
+    非法值 400 / 悬空标记）+ 浏览器级（禁用项与标记、toggle 点击与键盘双路径、
+    REF 徽标、rescan 提示、移动端 375、console 零警告）。
+  - **I-6 执行令牌（#47 封口）**：`Node.runToken` 列（领占时原子写入，lane 侧生成
+    ——无回读竞态）；单节点 run 路由 / 工作流 runner / SSE 集群 reconcile 的全部
+    persist 守卫升级 `where status running AND runToken = 本次领占`；runner 泳道级
+    crash 网移入 runNode 内并令牌化（旧的无令牌泳池网恰好是 #47 窗口本身）；
+    停止不改令牌（停止凭状态赢，不凭 epoch）。**QA 证据**：冒烟 29/29——含确定性
+    陈旧令牌落笔零行命中 + 修复前守卫（仅 status）会命中的反差对照、以及真 LLM
+    ALPHA/BETA 双泳道竞态（旧泳道停后重试迟到落笔被隔离，终态恒为新运行的
+    BETA）；集群 e2e 基础 51/51 + ceiling 76/76（含 P3 停止路径与 P5b cancelled
+    映射的**陈旧断言修复**——见测试结论 #48）。浏览器级：停止（真实键盘
+    Enter）→ cancelled 行/徽章/汇总 → inspector 改轻参数重跑 → 真实引擎完成
+    的闭环全链路（领占令牌在 UI 流程后面隔离迟到泳道）。
 
 ## 测试结论（驱动后续优先级）
 
@@ -109,56 +165,111 @@
 | 35 | **onboarding tour 调色板按钮会真实建节点**：用正则匹配按钮文本做"dismiss"可能误中节点描述按钮（本轮自我污染源）——e2e 必须精确匹配 "Skip" 并核对节点计数 | e2e 工程标准 | 验收参考 |
 | 36 | **开着的 Radix menu 全域阻断 elementFromPoint**：hit-test 断言返回 HTML——断言前必须先关菜单/Escape 清场 | e2e 工程标准 | 验收参考 |
 | 37 | **拖拽失败的 pan 副作用使坐标全漂**：失败拖拽 = 背景按下 → 画布平移 → 后续测量全部过期——每次拖拽前重新测量 + "Fit to content" 恢复；坐标经文件中转防转录错误 | e2e 工程标准 | 验收参考 |
-| 38 | **基线 demo screening 的 PDB 引用悬空**（预存 F4）：RMSD 轴需真实产出——服务端 400 "needs a linked PDB file on disk" 诚实报错；参考选择器只查 pdbPath 不查磁盘存在（P2-8） | UX | **已修复（I1a，e2e 实证）**：pdbExists 服务行级快照 + 选择器/相邻选择器三处过滤（#46） |
-| 39 | **参考 rmsd=0 锚定域**（设计取舍）：参考参与 metricDefs 域计算（min=0 恒定）→ 其余候选归一化区间被压扁 + 参考 rmsd 轴恒满分。chip 明示 + "与参考相似度"排序语义下可辩，但可考虑把参考排除出域计算 | 科研语义 | **已交付（I1c）**：排除语义落地为默认（三处统一：DTO/落库/promote）+ REF 徽章 |
+| 38 | **基线 demo screening 的 PDB 引用悬空**（预存 F4）：RMSD 轴需真实产出——服务端 400 "needs a linked PDB file on disk" 诚实报错；参考选择器只查 pdbPath 不查磁盘存在（P2-8） | UX | I 线 |
+| 39 | **参考 rmsd=0 锚定域**（设计取舍）：参考参与 metricDefs 域计算（min=0 恒定）→ 其余候选归一化区间被压扁 + 参考 rmsd 轴恒满分。chip 明示 + "与参考相似度"排序语义下可辩，但可考虑把参考排除出域计算 | 科研语义 | I 线（可选项） |
 | 40 | **barrel 副作用注册模式**：直接 import 子模块（skills/registry）绕过 barrel 的 `import "./catalog"` 副作用 → 注册表空、零报错静默失效。教训：**有副作用注册的中心化模块，消费方一律从 barrel 导入**；客户端安全子集（prompt/types）例外直连防服务端模块进 client bundle | 架构 | 已修复（e2e 实证 18/18） |
 | 41 | **Prisma schema 变更后运行中 dev server 持旧 client**：新模型 db.x undefined → 500。既有纪律 #20 的强化实例：**db push 后必须 daemon 重启**（不依赖报错发现） | 运维 | 已遵守 |
 | 42 | **流式 SSE done 事件字段丢失**：chat-stream 泳道执行的 toolCalls 只在持久化后 refetch 可见（done 处理器只 merge content/messageId）——新执行的操作卡片对用户不可见。修复：done 全字段合并 | UX | 已修复（e2e 实证卡片即时出现） |
-| 43 | **插值文案复数叠加 bug**（本轮 e2e 抓到）：`candidate{s} with a PDB{s have}` 两处复数化叠加渲染成 "a PDBs have"——模板语法正确≠文案正确。教训：**插值文案必须整体读一遍渲染文本；e2e 断言完整字符串**（role=status 文本拼接断言恰好抓到了） | 文案/测试 | 已修复（e2e 重载复验） |
-| 44 | **agent-browser 的 `keydown Shift` 不与合成 mouse 事件合并**（CDP Input.dispatchMouseEvent 不读键盘 modifier 状态）：Shift+拖拽橡皮筋无法用 CLI mouse 通道实现（拖了只触发 pan）。替代路径：**API 层准备状态（PATCH groups/DB）+ 真实指针做无修饰键交互 + 真实键盘做键路验证**；需修饰键的指针场景先用 eval 探针验证 modifier 是否透传 | e2e 工程标准 | 验收参考 |
-| 45 | **data-node-card 标记在包裹层而非定位卡片**（`[data-node-card] > div` 才有 bounding rect）——测得 0×0 = 查错层。教训：**e2e 坐标测量前先断言目标元素 rect 非零**（0×0 = 错层/隐藏层/裁剪），再取坐标 | e2e 工程标准 | 验收参考 |
-| 46 | **同模式选择器陷阱普查启发式**（QA 本轮实证）：修一个选择器的某类陷阱（悬空 pdbPath）后，QA 在相邻两处（详情抽屉 Superpose 伙伴 + Compare 对话框门控）抓到同病。教训：**修某类陷阱时，同一数据字段的所有消费者选择器都要过一遍**（grep pdbPath 的全部 UI 消费点） | 审查启发式 | 已修复 |
+| 43 | **模块级注册表跨热重载不自洽**：ACTIVE_PROCS 是模块内 Map——dev server 热重载产生新模块实例后，spawn 方与 kill 方可能各持一份 Map → kill 静默失败 + 孤儿引擎。教训：**含模块级单例注册表的代码改动后，QA/e2e 必须重启 dev server 再跑**（本轮孤儿引擎事故根因）；生产单实例无此问题 | 运维/QA | 已遵守（重启后 32/32） |
+| 44 | **“清陈旧”防御与 async claim 的竞态**：executeNodeGuarded 开头 clearStop（清上一轮陈旧停止标志）会把 "claim 后立即 stop" 的新鲜标志一并清掉 → 引擎照常 spawn。修复 = runProcess **pre-spawn 守卫**（runKey 已停止则不 spawn）+ 停止先行翻行 + 迟到结果条件写丢弃三层兑底。教训：**新鲜度类防御需要 epoch/token，否则与异步领占竞态** | 执行语义 | 已修复（A2 用例实证） |
+| 45 | **真实停止三件套模式**：①进程真实击杀（SIGTERM+SIGKILL 升级）；②**行先翻转**（reconciler/轮询只动 running 行——先翻即封死错终态竞态路径）；③条件写守卫（迟到结果永不复活）。停止顺序：register→kill→翻行→取消链接作业（作业发现走 DB triggeredBy 主路径，免日志刮） | 架构 | 已交付（L1-L3） |
+| 46 | **throwaway 脚本的签名对齐**：jfetch 自定义（path, init, timeoutMs?）第 3 参数被两处调用忽略 → 默认 60s abort 误判为“服务端挂起”。教训：一次性脚本也要对齐函数签名，超时语义放 init 对象 | QA 工程 | 已修复 |
+| 47 | **迟到执行 vs 重试覆盖竞态（已修复）**：stop→retry 后，旧泳道（不可杀的 LLM 长 lane）迟到 persist `where status running` 可能覆盖新运行刚领占的行。I 线修复：**领占时原子写入 lane 侧生成的 runToken，persist 守卫升级 `where status running AND runToken = 本次领占`**（SSE reconcile 同样令牌化）；QA 以确定性陈旧令牌落笔（零行命中）+ 修复前守卫反差对照 + 真 LLM ALPHA/BETA 双泳道竞态实证 | 执行语义 | 已修复（I-6） |
+| 48 | **语义变更必须重跑所有断言该语义的通道（L 线事故复盘）**：L 线把停止/取消语义改为 cancelled，但未重跑集群 e2e 通道——fixture 仍断言 G 时代的 "failed" 期望，本轮跑通道才暴露 6 条陈旧断言。同批发现 sync 文件列表顺序跟随 `find`（readdir 非确定）——`files[0]` 假设是 PDB 属脆弱断言，需显式选 .pdb。教训：**改共享行为语义 → 必须全通道重跑（含测试装置自身的期望值审计）** | QA 工程 | 已修复（本轮通道全绿 51/51 + 76/76） |
+| 49 | **VLM 截图前必须把目标 UI 滚入视口**：视口截图不含折叠下方内容——控件列底部的 RMSD 卡在首屏折叠下方，首轮 VLM 复核假性 FAIL；scrollIntoView 后 4/4。教训：**截图前断言目标 getBoundingClientRect 在视口内**（与 #35/#36 同族的 e2e 工程标准） | e2e 工程标准 | 验收参考 |
+| 50 | **令牌/epoch 类防御的正确生成位**：领占方在写库前自生成 token（与 status=running 同一次原子写），而非写后回读——回读窗口内 stop+retry 可把新 token 读成自己的。**生成位与写入位必须同一次原子操作**（#44 "pre-spawn 守卫"模式的 DB 化） | 架构 | 已交付（I-6） |
+| 51 | **对活跃上游 API 的 QA 断言必须容错**：13 连发打真 RCSB，1 次瞬时上游失败（error 行 + 诚实 502 信封）使 `oks===12` 过严断言挂掉——但限流器数学反而被更严格证明（槽位由 ok+error 共同消耗：11+1=12 → 第 13 次 429 精确）。教训：**打真实第三方 API 的计数类断言按"成功+上游错误=配额"容错，或用确定性的本地引擎通道（D5 comp 6/15min 实证）背书配额语义** | QA 工程 | 已遵守（B 阶段容错重验 13/13） |
+| 52 | **用户指引文案必须指向真实可见面**：K5 queued 消息/卡片原写 "watch the Tools panel"——但本地 skill 队列 ToolJob 行在 Cluster 面板（`_meta.cluster===true` 过滤）与 AlphaFold 面板（`tool==='alphafold'` 过滤）均不可见，唯一用户可见面是 Skills Activity tab（invocation 行状态转移）。教训：**写"去哪里看"类文案前先枚举该数据经过的全部 UI 面板及其过滤条件**——否则指引一条死路 | UX/文案 | 已修复（4 处措辞 + 截图重拍） |
+| 53 | **Turbopack per-route 模块图 → 同一 lib 模块多实例**：skills 注册表在 DELETE bundle 注销后，GET bundle 的目录仍 Serving 陈旧条目；globalThis once-guard 反而加剧陈旧（A bundle 的已解析 promise 让 B bundle 跳过自己的水合）。修复模式：**DB 为共享真相 + 每 bundle 实例 TTL（≤1s）同步 + 关键路径（目录读/写路由/解析失手）强制同步**——含模块级注册表的 lib 在 Turbopack dev 下不能假设单实例 | 架构 | 已修复（QA D4 实证） |
+| 54 | **Prisma SQLite DateTime 的物理存储是 INTEGER epoch 毫秒**：throwaway 脚本直写 ISO 文本 → 跨类型比较静默失效（SQLite 排序中 TEXT 恒"大于"任何 INTEGER，日期比较全 false-negative 且零报错）。教训：**绕过 ORM 直改库的脚本必须按 ORM 的物理格式写**（先 `typeof(col)` 侦查）；另 bun:sqlite 的 `{readonly:false}` 触发 SQLITE_MISUSE——读写打开用无参构造 | QA 工程 | 已修复（F 相实证） |
+| 55 | **干跑与实施必须共用谓词**：retention 的 estimate 与 delete 走同一 where + 同一排序（estimate 无独立代码路径）；确认对话框引用干跑刚算出的数字。教训：**"预览 N 行将被删除"类 UI 的数字来源必须就是执行路径本身**——否则预览与实施漂移成两套真相 | 架构/UX | 已交付（F6 实证 applied==promised） |
+| 56 | **abort 竞态需要确定性终态判定**：webhook abort 抛错几乎瞬时（fetch reject 在微任务级），可能**跑赢**停止路由自身的 DB 行翻转——若执行器 catch 只写 "failed"，行会停在误导性 failed 而非用户要的 cancelled。修复模式：catch 里 `signal.aborted && isStopRequested(runKey)` 判定 + 执行器自己也写一次幂等 cancelled（双写条件化，先到者定终态，另一方零行命中）。教训：**"行先翻转"（#45）不是充分条件——凡 abort 类近零延迟失败路径，执行器必须自带 cancelled 判定** | 执行语义 | 已交付（N1 C1 实证） |
+| 57 | **进程内 kill 注册表用 globalThis 背书（#53 的运行时版）**：模块级 Map 在 Turbopack per-route bundle 下可能多实例——spawn/abort 注册方与 kill 方各持一份则 kill 静默失败。注册数据类用 DB 共享真相（#53）；**运行时句柄类（进程/AbortController）用 globalThis 挂载 Map**——同一 JS 堆内所有 bundle 实例必然共享同一 globalThis，是句柄注册表的零成本跨 bundle 桥 | 架构 | 已交付（ACTIVE_ABORTS） |
+| 58 | **反馈接地能修正但不能预防第一轮“预猜”（Q1 边界）**：接地后模型在第二轮逐字段引用真实响应（含真实时间戳），但第一轮仍会在围栏同轮写下先验猜测（“simple echo that returned exactly the message”）——工具循环的多轮拼接使最终回复同时含猜测段与修正段。接地消除的是“反馈之后仍编造”；要在源头抑制需 prompt 层“fence 后停笔等待反馈”指令（R2 候选） | LLM 语义 | Q 线已交付（边界已记录） |
+| 59 | **always-mounted 组件的默认订阅泄漏**：抽屉常驻挂载（open 仅控制可见）——未指定房间时默认 ["all"] 意味着**每个页面加载都在全量事件流上**。修复：空房间数组 = 显式清空（服务端 subscribe 空数组 = leave 全部；客户端 "" 联合键解析为无房间）。教训：**默认订阅面按“组件逻辑需要”而非“参数缺省”设计，常驻组件的关闭态必须是零订阅** | 架构 | 已修复（浏览器 health 实证：关阀 {} → 开抽屉 agent:X → 关阀归零） |
+| 60 | **沙箱后台进程的存活配方 = 子壳 + setsid**：`( setsid nohup cmd < /dev/null > log 2>&1 & )`——直接 `&`、`nohup &`、甚至 `setsid &` 都会被工具命令结束时的作业回收杀掉（同一会话内 health 检查通过、下一条命令连接拒绝）。**验证必须在“下一条命令”里做**（同命令内的健康检查会假性通过） | 运维/QA 工程 | 已遵守（重启验证法） |
+| 61 | **房间化是自愿订阅而非身份隔离（Q2 边界）**：服务端房间语法强制（all/agent:/workflow:），但任何客户端可声明任意 agentId 订阅任意房间；/emit token 挡住了伪造事件，挡不住偷听。单用户沙箱成立（audit 行本就全局可读）；多租户需 per-连接身份令牌 + 服务端强制房间映射（R1 候选） | 安全 | 边界已记录（R 线） |
+| 62 | **文件共享秘密模式（.token）**：服务首次 boot 生成随机 token 写 gitignored 文件（mode 0600），应用侧 TTL 缓存读同一文件、401 时弃缓存重读（服务重启换 token 自愈于一次 emit + 一条限流警告内）；秘密永不进 git、永不发给浏览器。代价：多实例部署需 env 化（R1） | 安全/架构 | 已交付（QA 401/202 + 网关 401 实证） |
+| 63 | **格式版本升级必须双向镜像 + 双版本共存**：bundle v2 的 metadata 校验规则（name 1-80/desc ≤500/tags ≤8×≤24）在 export 与 import 两侧常量镜像；导入接受 v1∪v2（v1 文档继续流动），v2 无 metadata 是 400（畸形包而非兼容输入）；导出 opt-in（无 metadata → v1 兼容档）。教训：**格式演进 = 新档可选产出 + 旧档永久接受 + 校验规则单源两用** | API 设计 | 已交付（QA 60/60） |
+| 64 | **秘密轮换必须双向传播（失配重读的半边缺陷）**：失配触发的重读只在**新钥凭证**到达时发现轮换——**被吊销的旧钥 grant/token 会继续对着陈旧缓存验证通过**（首轮轮换测试实证：旧 grant 照连、旧 token 照 202）。修复模式：**共享秘密的缓存必须有 TTL（≤5s），失配重读只解决"新凭证立即可用"、TTL 才解决"旧凭证按时吊销"**——两个方向缺一不可，"轮换不停服"的测试必须双向断言 | 安全/架构 | 已修复（QA A16 双向实证） |
+| 65 | **LLM 指令遵从的"停笔"语义可用强指令达成（R2 实证）**：Q 线 #58 记录的预猜段（围栏同轮正文里的先验结果描述）在 manifest 加"CRITICAL — stop after each skill fence: END your reply immediately after its closing ```"指令后**双采样零残留**（两个 agent、custom webhook 与 built-in bio 两种技能族；流式路由 `content = fullText + "\n\n" + followUpText` 的拼接边界让判定可机械验证：第一轮末字符恒为围栏闭合）。指令要点：陈述**为什么**（此时任何结果描述必然是猜测）+ 给出机械动作（END reply at the closing fence） | LLM 语义 | 已交付（R2） |
+| 66 | **网关前转的 socket.io 会话在客户端死亡后服务端残留**：浏览器经 Caddy `XTransformPort` 前转的连接，浏览器关闭后页面 socket 本身干净离开（transport close），但**代理持留的上游连接**会话不亡——close 握手不传播（客户端侧 socket 由 root Caddy 进程持有、/proc 不可读；残留会话零房间订阅零数据暴露，仅 health clients 计数失真）。多实例/长周期部署需要**服务端空闲会话清扫**（activity-based sweep，S 线候选） | 基础设施 | 边界已记录（S 线） |
+| 67 | **e2e 抽屉/面板多实例与代理持留的连接计数解读**：页面常驻 drawer + 面板 drawer 双挂载共用单例 socket（refCount）；连接计数异常时先关闭浏览器定归属（浏览器关 → 页面 socket 全离 → 残留即代理持留）再下结论，避免把 Caddy 上游池误诊为客户端泄漏（本轮差点发生）。**socket 生命周期类缺陷的定位顺序：进程归属（/proc inode 全局搜）→ 浏览器开关对照 → 代码层排查** | e2e 工程标准 | 验收参考 |
 
-## I 线 — RMSD 轴打磨与遗留收口（P1）
+## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
-**本轮已交付（I1a/I1b/I1c/I2，e2e 实证）**：
+1. ~~**RMSD 轴打磨**（#38/#39）~~ **已交付**（I-1）：选择器磁盘预检（禁用项+标记）/
+   rescan 补算提示 / 域排除开关 + REF 徽标 + 报告披露。余留小项：参考悬空时
+   Compute 按钮的主动禁态提示（当前依赖选择器禁用项 + 服务端 400 兑底）。
+2. ~~**execution token（#47）**~~ **已交付**（I-6）：领占原子写 runToken + 全
+   persist 守卫令牌化 + SSE reconcile 令牌化；#47 窗口封死（QA 三重实证）。
+3. **Escape 分层语义成文**（QA 38-a P2-3，未动）：pending 连线 + frame 激活时
+   Escape 需两次——已知矩阵，CONTRIBUTING/验收参考记录或改为单次冒泡到全局。
+4. **叠合深化遗留**（D 线延续，未动）：多链叠合选择（当前自动取对齐链）；
+   per-region RMSD（CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）。
+5. **认证与团队协作**（NextAuth，H4 延续，未动）：工作流/campaign 共享与操作
+   审计——依赖面大，建议独立分支推进。
+6. **真实 SSH 集群通道**（G 线残留，未动）：F3 徽标的真实集群场景（当前 mock
+   e2e 双模式 127/127 背书）。
 
-1. ✅ **I1a 磁盘预检**：ScreeningCandidateDTO 新增 pdbExists（行级 existsSync 快照，
-   列表端点仍走 lite 投影零开销）；RMSD 参考选择器只出真可用参考；悬空计数三处可见
-   （空态文案 / 选择器下 hint / e2e 钩子）；QA 普查后相邻两处同病修复（详情抽屉
-   Superpose 伙伴 + Compare 门控，#46）。
-2. ✅ **I1b rescan 新候选提示**：rmsdMissing（有 PDB 且存在但无 rmsd 键，仅当轴存在）
-   → amber 提示条（role=status）+ "Recompute vs <ref>" 一键重算；e2e 闭环（rescan →
-   4 新候选 → 提示出现 → 真实点击 Recompute → 提示消失 + 7 候选全获 rmsd）。
-3. ✅ **I1c 参考域排除 + REF 徽章**：参考自比 0 是轴的定义不是数据点——
-   computeScreeningMetricDefs 三处统一（DTO / 落库 defs / promote 摘要）；表格 REF
-   徽章（桌面 + 移动）+ title 语义说明；e2e 实证域 [26.5–29.7] 排除参考 0。
-4. ✅ **I2 Escape 分层语义**：frame Escape 让位 pendingFrom（连线是模式、选择是状态）；
-   e2e 实证单次 Escape 取消连线且组框保持激活、第二次反选；H2 键盘回归通过；
-   优先级矩阵成文 CONTRIBUTING 代码约定节。
+## K 线 — Skill 层运营化（已交付：K1+K2+K3+K5；余项 K4/K6 转候选池）
 
-**剩余（下一阶段建议）**：
+- **K1 技能使用分析（已交付）**：GET /api/skills/insights（window=24h|7d|30d|all，
+  非法值回退 7d）——totals（invocations/byStatus 八态并集/okRate=ok/(ok+error)/
+  P50/P95/avg，**百分位只覆盖真实执行过的调用**——denied/invalid/limited/skipped
+  从未进 handler，不参与测量，脚注明示）+ per-skill（calls/okRate/P50/P95/last
+  used）+ per-agent（**denied/limited 信号计数**）+ per-source 泳道聚合；
+  skills-panel 第三 tab "Insights"（时间窗单选 + Refresh + Outcome 分布 +
+  Top skills / Most active agents / By lane 三表，45 行真实流量下 e2e 实证，
+  移动端折叠布局）。
+- **K2 denied 直达（已交付）**：Activity denied 行 "Fix agent access" 按钮 →
+  store.pendingAgentEdit 深链（镜像 pendingScreeningId 模式）→ Agents 面板自动
+  打开该 agent 的编辑对话框（知识开关触手可及）——e2e 实证（Scientific Critic
+  denied 行 → 对话框打开 + 2 个知识 switch 在场）。
+- **K3 速率配额（已交付）**：skills/rate-limit.ts（family 默认 comp 6/15min、
+  bio 12/min、web 6/min、canvas 30/min + per-skill 覆盖 + **per-agent 滑动
+  窗口**；agentId::skillId 键控）；runSkill 管道步骤 3.5（门控后执行前）；
+  **槽位只被真实执行消耗**（ok/error），denied/invalid/limited 不消耗（拒绝
+  不上锁）；匿名 REST/用户泳道不限流（信任级同 tools/run——滥用场景是循环
+  模型不是点击的人）；"limited" 落审计表携带重试提示。配套 POST
+  /api/skills/invoke（bio/web 快技能 REST 直调 + QA 面：unknown 404 invalid /
+  缺参 400 / slow comp 400 指路 / canvas 400 / agent 404）。
+- **K5 慢技能异步入队（已交付）**：skills/queue.ts runSkillQueued（resolve→
+  validate→gate→limit→SkillInvocation "queued" 行 + ToolJob 行（triggeredBy
+  agent:\<title\>）→ fire-and-forget 真引擎 runKey=jobId → 条件终写
+  ok/error/cancelled）；chat 双泳道 + meeting/research/task 接入（**流式泳道
+  不再拒发**：旧 skipSkill 慢技能分支废除；**门控补漏**——旧 skipSkill 从不查
+  requires，bio 关闭的 agent 引擎请求会放行，现在 denied 在入队前）；workflow
+  agent 节点保持同步（节点即异步底座）；崩溃网 + 服务器重启孤儿行启动清扫
+  （instrumentation：queued 行诚实翻转 error/failed）；chat 卡 QUEUED 态 teal
+  药丸 + 诚实快照说明（"卡片是发送时的快照，作业在后台"——模型反馈明确
+  **禁止编造结果**）。
+- **状态并集最终形态**：ok | error | denied | invalid | skipped | limited |
+  queued | cancelled（String 列零迁移）。
 
-5. **叠合深化遗留**（D 线延续）：多链叠合选择（当前自动取对齐链）；per-region RMSD
-   （CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）；promote Markdown
-   摘要中参考行的 RMSD 0 无注记（P3-1，UI 是注记面——可选补 REF 标记）。
-6. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
-   建议独立分支推进。
-7. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
+**QA/e2e 证据（本线收口轮）**：API 冒烟 51/52（唯一失败 = B1a 断言对活跃
+RCSB 上游过严——13 连发一次瞬时失败，限流器数学反而被更严格证明：槽位由
+ok+error 共同消耗，11+1=12 → 第 13 次 429，见结论 #51）；B 阶段容错重验
+13/13（12×200+1×429 确定性）；孤儿清扫实测（插伪造 queued 行 → daemon 重启
+→ invocation error + ToolJob failed 诚实翻转 + dev.log 对账日志）；浏览器级
+金路径全绿：Insights 聚合（45 行流量全指标 DOM 断言）/ K2 深链闭环 / K5 真
+LLM → skill 围栏 → QUEUED 卡 → 真引擎完成（ToolJob completed exitCode 0 +
+invocation queued→ok + 真实 PDB 工件）/ 移动端 375 零溢出 footer 贴底 /
+console + page errors 零。收尾修复（P3）：queued 消息 4 处 "Tools panel"
+措辞改为真实可见面 "Skills Activity tab"（本地 skill 队列行在 Cluster/
+AlphaFold 面板均有过滤不可见，见结论 #52）+ 截图 39 重拍。
 
-## K 线 — Skill 层运营化（P2，J 线后续建议）
+**余项（转候选池，测试结果驱动排序）**：
+5. **动态技能注册 API**（K4）：POST /api/skills 注册自定义技能（handler 白名单
+   模板或外部 webhook URL）。
+6. **审计保留策略**（K6）：SkillInvocation 定期归档/清理（SQLite 体积治理）+
+   筛选视图分页游标（本轮 45 行/QA 一轮即积累，真实使用会更快）。
+7. **（新发现）queued 卡深链**：聊天 QUEUED 卡可加跳转 Skills 面板 Activity
+   tab 的按钮（镜像 pendingAgentEdit 模式）——当前用户需手动导航。
 
-1. **技能使用分析**：SkillInvocation 聚合视图（按 skill/source/agent 的成功率、P50/P95
-   延迟、denied/invalid 趋势）——面板 Activity Tab 已有原始流，缺聚合统计卡。
-2. **智能体维度资格编辑直达**：Activity 中 denied 行一键跳转该 agent 的编辑对话框
-   （知识开关就在那里）——闭环门控反馈环。
-3. **技能级速率与配额**：runSkill 管道加 per-agent 简单速率限制（技能滥用防护，
-   web.search 尤其）。
-4. **动态技能注册 API**：POST /api/skills 注册自定义技能（handler 白名单模板或外部
-   webhook URL）——当前注册表仅代码内静态注册。
-5. **comp 技能在流式泳道的异步入队**：慢技能当前直接 skip，可改为入 ToolJob 队列后回
-   推卡片（策略泳道统一）。
-6. **审计保留策略**：SkillInvocation 定期归档/清理（SQLite 体积治理）+ 筛选视图分页游标。
+余留候选小项（历轮累积，低优先）：Runs sheet cancelled 行无 Retry 按钮
+（重跑走 inspector Run——功能可达，仅少一步直达）；"file missing" 状态可
+进一步进筛选列（当前仅选择器/chip 语境）。
 
 ## 验收标准（延续并扩充）
 
@@ -198,12 +309,427 @@
 - **新增智能体操作路径必须走 runSkill 管道**（J 线后）：声明 SkillDefinition（含参数 schema
   + requires）→ 注册进 catalog → 不得手写旁路执行器；专门执行器（集群/队列）必须至少
   recordSkillInvocation 落审计表。
-- **引用磁盘文件的新选择器/门控必须消费 pdbExists（或等价磁盘真相）而非裸列**
-  （#38/#46：pdbPath 是落库快照——文件删除后列仍在；修某类陷阱时同字段全部 UI 消费点
-  普查一遍）。
-- **画布内可聚焦面消费 Escape 前必须让位 pendingFrom**（I2：连线是模式、选择是状态——
-  模式优先；优先级矩阵见 CONTRIBUTING）；**插值文案改动必须整体读渲染文本且 e2e 断言
-  完整字符串**（#43：复数化叠加 "a PDBs have"）；**e2e 坐标测量前断言 rect 非零**
-  （#45：0×0 = 错层/隐藏层）；**需修饰键的指针交互先用 eval 探针验证 modifier 透传**
-  （#44：agent-browser keydown Shift 不进合成 mouse 事件——替代 = API 备料 + 无修饰键
-  真实指针 + 真实键盘）。
+- **停止类能力的验收必须证伪"只翻行"**（L 线后）：①本地进程停止断言 pgrep 归零（真实
+  SIGTERM 路径）；②迟到结果不复活（停止后 ≥ 9s 行仍 cancelled）；③行先翻转再慢速远程
+  取消（reconciler 只动 running 行的竞态封死顺序，#45）；④queued 停止后 runner 声明跳过
+  （claim 守卫）；⑤异步模式断言响应 <3s 且行进入 active 泳道。
+- **含模块级单例注册表（ACTIVE_PROCS/STOP_REQUESTED/连接表）的代码改动后，QA/e2e 前
+  必须重启 dev server**（#43：热重载产生多模块实例 → spawn 方与 kill 方各持一份 Map →
+  kill 静默失败 + 孤儿引擎；重启后 32/32 复跑实证）。
+- **"清陈旧"类防御必须考虑新鲜度**（#44）：先清后用模式（clearStop→执行→post-race 查）
+  与异步领占竞态——新鲜停止会被当陈旧清掉；配套 pre-spawn 守卫或 epoch/token。
+- **执行通道写点必须令牌化**（I 线后）：任何新的 Node 行 persist 路径一律
+  `where status running AND runToken = 本次领占`（领占方在 claim 的同一次原子写里
+  生成令牌，#50——写后回读有竞态）；集群 reconcile 类"读行→写行"的裁判同样带
+  它读到的令牌（只落定它观察到的那次运行）。
+- **改共享行为语义（停止/终态/取消类）必须重跑所有断言该语义的通道**（#48）：
+  语义变更的验收清单里显式列出 `bun run e2e:cluster` 双模式与所有受影响
+  fixture 的期望值审计——L 线漏跑导致 6 条陈旧断言潜伏到本轮才暴露；
+  **文件列表顺序类断言不得假设 `files[0]` 的类型**（find/readdir 非确定）。
+- **VLM 截图复核前必须把目标 UI 滚入视口**（#49）：截图前断言目标
+  getBoundingClientRect 在视口内（视口截图不含折叠下方内容，长控件列底部
+  元素首轮必假性 FAIL）。
+- **含模块级注册表/单例的 lib 在 Turbopack dev 下必须按多实例设计**（#53，
+  M 线后）：共享真相放 DB；读侧（目录/清单）与写侧（注册/删除）路由强制
+  同步，其余消费方 TTL 同步；解析失手路径强制同步兜底——不得用 globalThis
+  once-guard 假设"每进程一次"（那只是"第一个 bundle 的一次"）。
+- **绕过 ORM 直改库的测试脚本先侦查物理存储格式**（#54，M 线后）：写值前
+  `typeof(col)` 核对（Prisma SQLite DateTime = INTEGER epoch 毫秒）；类型
+  不匹配的比较静默失效零报错——断言要对照 ORM 读回而非仅脚本自读。
+- **"预览将删除/将影响 N 行"类 UI 的数字必须与执行共用同一谓词代码**（#55，
+  M 线后）：dry-run 与 apply 同一函数路径（estimate 不得有独立实现），
+  确认对话框引用干跑结果而非重新计算。
+- **socket.io 服务端 engine path 不得设为 "/"**（P 线后）：engine.io 以
+  前缀匹配认领请求——path "/" 会吃掉该端口全部 HTTP 流量，与自定义 HTTP
+  端点共存必须保留默认 /socket.io；浏览器端 `io("/?XTransformPort=N")`
+  的 URL 路径是**命名空间**、query 随行进入每个 engine 请求，与网关的
+  查询转发天然兼容（路径无关）。
+- **推送/轮询双通道消费必须同池渲染**（P 线后）：事件与轮询翻卡走同一
+  applyXXX 函数——哪条泳道先到都渲染同一真相，通道身份不可泄漏到 UI；
+  在线心跳降频（30s）而非删除轮询（推送丢失的最坏代价 = 心跳周期，
+  永不是错误判决）。
+- **批量导入必须逐条独立、部分失败不回滚**（P 线后）：bundle 语义下
+  单条冲突/校验失败只报告不中止（failed[]/skipped[] 携带索引与建议），
+  全量回滚会让 1 个已存在 id 作废 N-1 个合法迁移。
+- **授权维度新增必须在三个面同时落地**（P 线后）：门控执行（含队列
+  泳道同步）、目录 eligible、提示词清单过滤——三者任一缺失都会造成
+  "广告了但拒绝"或"能执行但不展示"的漂移；拒因必须可区分（deniedBy）
+  以便修复深链指向正确的编辑面。
+- **推送通道鉴权类改动的验收必须含伪造路径**（Q 线后）：401 断言三路——
+  直连无 token、坏 token、**经网关（浏览器可达的真实路径）**；正确 token
+  202；鉴权后仍要重跑推送金路径（app 链 token 附加回归）。
+- **订阅类功能的验收必须包含"零订阅态"**（#59，Q 线后）：常驻组件的关闭态
+  health 房间计数必须为空——"默认订阅面按组件逻辑需要设计"，参数缺省不得
+  等于全量流；房间窄化的浏览器级断言用服务 health 的房间计数（客户端订阅
+  状态在 DOM 上不可见）。
+- **LLM 反馈类（prompt/feedback 文案）改动的验收必须走真模型金路径**
+  （Q 线后）：断言回复中出现**只能在真实响应里出现的字段**（时间戳/来源
+  标签/请求 id 类）——API 级信封断言证明不了模型真的用了反馈。
+- **格式演进按"新档可选产出 + 旧档永久接受 + 校验规则单源两用"**（#63，
+  Q 线后）：版本升级不破坏旧文档流动；校验常量 export/import 双向镜像；
+  新档缺失必需段是 400（畸形）而非静默降级。
+- **沙箱后台进程（mini 服务/dev server 重启）一律用子壳 + setsid 启动，
+  并在下一条命令验证存活**（#60，Q 线后）：同命令内的健康检查假性通过。
+
+## M 线 — Skill 层运营深化（已交付：M1+M2+M3 全三项）
+
+- **M1 聊天卡深链闭环（已交付）**：ToolCall 加 invocationId + 原始 skillStatus
+  字段（skillCallToToolCall 双 chat 泳道同源填充；历史卡无字段优雅降级）
+  → QUEUED 卡 "Watch progress"（pendingSkillTab + pendingSkillInvocation →
+  Skills 面板 Tabs 转 controlled，Activity tab 加载后按 invocationId/jobId
+  匹配目标行：自动展开 + 滚入视口 + 4 秒 teal 高亮环 + 未找到诚实 toast）
+  → denied 卡 "Fix agent access"（pendingAgentEdit → 智能体编辑对话框，K2
+  模式的聊天侧入口）→ limited 卡 "View audit row"（同 audit 深链）。
+- **M2 审计保留与分页（已交付 = K6）**：SkillInvocation `@@index([createdAt])`
+  （窗口查询护栏——复合索引首列非 createdAt 不命中窗口扫描）；invocations
+  路由 keyset 分页（orderBy createdAt+id 双键全序去重、take limit+1 判
+  hasMore、**total 恒为全量匹配数**——游标只收窄行抓取不改计数，UI "X of Y"
+  与 Load more 标签不漂移）；Activity tab 过滤器（source/status Select，
+  "all" 哨兵防 #34）+ Load more（游标追加，移动端 h-11 触控）；保留策略
+  skills/retention.ts（AGE：终端行 >maxAgeDays 默认 90 删除；CAP：超 rowCap
+  默认 20k 剪最旧终端行；**queued 行任何策略永不删**；两谓词可证不交且干跑/
+  实施同代码路径——确认对话框引用干跑数字）+ instrumentation 启动清扫 +
+  GET/POST /api/skills/retention（dryRun/maxAgeDays/rowCap 全校验）+
+  面板 Retention 卡（干跑预览 → AlertDialog 确认 → 诚实 toast + 列表重载）。
+- **M3 动态技能注册（已交付 = K4）**：Prisma CustomSkill 模型（skillId 唯一
+  custom.<slug>、params JSON=SkillParamDef[]、endpoint http(s)、headers、
+  enabled）+ skills/dynamic.ts（webhook handler：POST {skillId, params,
+  source, agent?, at}、20s AbortSignal 超时、非 2xx/超时/网络错诚实 error、
+  JSON {summary} 可塑审计行）+ **注册表同步模型**：DB 为共享真相，每 bundle
+  实例 TTL ≤1s 同步 + 目录 GET/注册/删除强制同步 + runSkill 解析失手强制
+  同步（Turbopack per-route 模块图多实例，见结论 #53）+ POST /api/skills
+  （label/description/endpoint/params≤6/键正则/headers≤8 校验、custom. 前缀
+  强制、冲突 409）+ DELETE /api/skills/[skillId]（内置 400/未知 404/审计
+  历史保留）+ SkillFamily "custom"（限流 12/min + FAMILY_META + ToolCall
+  kind + Webhook 图标）+ 注册对话框（表单 + 参数行编辑器）+ 每卡删除按钮
+  （与展开按钮同级不嵌套）+ 提示词清单自动纳入（e2e 实证：编辑对话框的
+  系统提示词预览含 custom.* 行）+ mini-services/skill-webhook（:3030
+  echo/fail/slow 确定性 QA/e2e 靶）。
+
+**QA/e2e 证据（M 线收口轮）**：API 冒烟 **42/42**（A 注册表面 13 组全 4xx
+矩阵 + 201/409；B webhook 金路径 + 缺参 400 invalid + 500 error + 25s 端点
+vs 20s 超时诚实超时；C custom 家族 per-agent 限流 12×200+1×429 精确 + limited
+落审计；D 删除三态 + 目录驱逐 + 审计保留；E 分页全页走查 union==total +
+无重复 + 坏游标 400 + 过滤 total==DB 直查真值；F retention 干跑==实施 +
+回溯行删除 + queued 行保护 + 幂等二跑 0）。浏览器级金路径全绿：M3 注册
+对话框 → custom 卡（endpoint 显示）→ **真 LLM 发 ```skill custom.lab-echo →
+真 webhook 执行 → completed 卡 + 模型如实汇报回显**；M1 QUEUED 卡（真
+rfdiffusion 排队 → Watch progress → Activity tab 直达 + 高亮行 + **后台
+引擎 890ms 落地行已翻转 ok**）；M1 denied 卡（ML Engineer 发 bio.blast →
+门控拒绝 → Fix agent access → 编辑对话框直达 + Bio tools 开关在场）；
+M2 过滤器（api 过滤全行匹配）+ Load more（50→100 of 320）+ retention
+（播种回溯行 → 干跑对话框精确数字 → 确认 → 320→319 + 列表重载）；移动端
+375 零溢出 + footer 贴底 + 触控目标 44px；console/page errors 零；VLM 六
+截图复核（两处首轮 FAIL 均为 #49 视口滚动假阴性，滚入视口重拍后全过）。
+
+## N 线 — Skill 层扩展运营（已交付：N1+N2 全两项）
+
+M 线收口后，custom 技能底座完整（注册/执行/同步/治理/深链闭环）。N 线按
+测试结果驱动的价值排序：
+
+1. **慢 webhook 技能入队**（N1）：CustomSkill.latency "slow" 的 webhook 走
+   K5 队列（runSkillQueued 泳道复用，QUEUED 卡 + 真停止 + 孤儿清扫语义
+   全免费继承）——长时外部计算（远端管线/批量作业）成为一等公民。M 线
+   QA 已证 webhook 超时路径诚实，队列化是自然延伸。
+2. **custom 技能管理面**（N2）：PATCH /api/skills/:skillId（enabled 软开关
+   已在 schema、label/description/endpoint/params 编辑）+ 注册对话框复用
+   为编辑对话框 + headers 字段进 UI（API 已支持）。
+3. **低优先池滚动**（P2）：Runs sheet cancelled 行 Retry 直达；file-missing
+   进筛选列；Escape 分层语义成文（I 线余项）；Insights 大窗口服务端聚合
+   （当前 20k 行进程内聚合可接受）；叠合深化（多链/per-region）；认证与
+   团队协作（独立分支）；真实 SSH 集群通道（待真实环境）。
+
+验收标准沿用（每项：API 冒烟全 4xx 路径 + 浏览器 e2e 真实链路 + 字段级基线
+恢复 + lint/tsc/dev.log/console 四清 + 结论滚动进本表）。
+
+### N 线交付证据（2026-10-12）
+
+- **N1 慢技能入队**：schema `CustomSkill.latency`（String 列零迁移默认
+  "fast"，与重冻基线同 commit）；dynamic.ts 注册表透传 latency + 慢路径
+  10 分钟超时 + `ctx.extras.webhookAbortSignal` 停止信号；queue.ts 新增
+  `executeQueuedWebhookJob` 泳道（claim → pre-flight 停止守卫 → 注册
+  AbortController → 同一 handler 后台执行 → 条件终写 ok/error/cancelled，
+  stdout 落真实 webhook 响应快照）；real-executor `ACTIVE_ABORTS`
+  （globalThis 背书）并入 `killActiveProcess`——**停止路由零改动**即真杀
+  在途 fetch；invoke 路由 slow custom → 202 queued；resync 读全量行但只
+  注册 enabled 行（disabled 行由目录联合投影）。
+- **N2 管理面**：`skills/custom-validation.ts` 共享校验（POST/PATCH 同规
+  则）；PATCH 路由七字段局部更新（空 body 400 / 内置 400 / 未知 404 /
+  headers=null 清除）；GET 目录联合 disabled 行（enabled:false + eligible:
+  false 投影）；面板 RegisterSkillDialog 升级为双模式 CustomSkillDialog
+  （注册/编辑同表单：latency 单选卡 + headers 行编辑器 + 预填），卡片三
+  按钮（Power 软开关/Pencil 编辑/Trash 删除）+ disabled/locked 药丸 +
+  展开区 Endpoint/Execution/Headers。
+- **QA 17/17**（/home/z/n-lane-smoke，throwaway）：A 注册投影 3（含 latency
+  非法 400）+ B 队列金路径 3（202 信封/后台完成 exit 0/params 回显+headers
+  透传断言/invocation ok 真实时长 ≥delay/缺参先验证 400/慢 comp 400 保留）
+  + C 真实停止 1（/slow 25s 在途 → stop → cancelled + "Stopped by the
+  user" + 总耗时 ≪25s 证 abort 真杀 + `_meta.executor` 归因）+ D 管理面 8
+  （label/description/headers 反映、latency 切换换泳道 202、enabled=false
+  不可调仍列出、恢复、params 加必填、校验矩阵 6×4xx、headers=null 清除）
+  + E 限流回归 1（12+1→429 精确）+ F 清理 1。
+- **E2E 浏览器级**：注册对话框（Slow 单选 + 参数行 + required）→
+  custom.e2e-slow-echo 卡（slow/webhook 药丸 + 三按钮）；**真 LLM 聊天金
+  路径**：```skill 围栏 → QUEUED 卡（jobId + 诚实快照 + Watch progress）→
+  模型如实说"后台运行、无需进一步操作"（零编造）→ 深链直达 Activity tab
+  目标行展开 → 后台 3s webhook 完成行翻转 ok（CHAT-STREAM/
+  Computational Biologist/3.0s 真实时长）；编辑对话框预填 → 改描述/端点 →
+  toast + 卡片更新（reload 持久化）；停用→enabled disabled+locked 药丸 +
+  toast → 启用往返恢复（含一处 locked 残留修复）；移动端 375×812（
+  docScrollW 375 零溢出/main 319/footer 780–812 贴底/三按钮与 Register 均
+  44px）；console + page errors 零；4 截图（47/48/49/50）；VLM 复核 47 卡
+  4/4、49 聊天卡 3/3、48 字段预填通过（Execution policy/Headers 在折叠下
+  方——#49 视口假阴性，DOM 断言已证 radio checked）。
+- **基线**：demo:fresh 重置 + outputs 清理 + daemon 重启（#41/#43 纪律）；
+  字段级核对 workflows 2 / nodes 14+5 / toolJobs 16 / **skillInvocations 0
+  / customSkills 0** / chatMessages 12 / screenings 3 / candidates 86。
+- **过程产出**：新结论 #56（abort 竞态确定性 cancelled）、#57（globalThis
+  跨 bundle kill 注册表）；#43 热重载陈旧包再次实证（多步编辑 lib 中间态
+  被 Turbopack 编译缓存——重启后复验 17/17）；一处措辞残留修复（聊天卡
+  "engine lands"→"run lands"，#52 同族）；E2E 中发现并修复 locked 药丸
+  往返残留。
+
+## O 线 — Skill 层授权与协同（已交付；Task 47）
+
+N 线收口后，custom 技能已是一等公民（注册/执行/停止/编辑/停用全链路）。
+测试结果暴露的排序依据：custom 技能目前 `requires: []`（注册面无授权声
+明）——K2 的 denied 深链闭环对内置 bio/web 生效但 custom 全开；QUEUED 卡
+为时点快照（行翻转后回看聊天仍是 queued 文案）；管理面在多人/多环境协
+同下需要可移植性。三项全部落地：
+
+1. **custom 技能授权声明（O1）✅**：CustomSkill.requires 列（JSON 闭合集
+   数组，`@default("[]")` 向后兼容）+ validateRequires 共享校验（未知 id
+   400 / 重复 400）+ registerCustomSkill 透传（防御性丢弃未知 id）+
+   POST/PATCH/import 三面统一 + 注册/编辑对话框 "Agent knowledge
+   requirements" 多选（REQUIREMENT_LABELS 渲染，UI 与门控不可漂移）+
+   目录 eligible 对齐（含 disabled 行 requires 投影）。**门控与提示词
+   清单零新执行代码继承**（runSkill 第 3 步 + manifest 过滤已存在——
+   O1 的核心论点验证：声明式契约的收益）。QA：denied custom 403 + 错误
+   文案点名 bioToolsEnabled + eligible 双向翻转 + disabled 投影。
+   E2E：真 LLM 聊天点名调用 → denied 卡 + **"Fix agent access" 深链打开
+   agent 编辑器正确定位知识开关**（M1 模式对 custom 生效）。
+2. **QUEUED 卡活性刷新（O2）✅**：invocations 路由新增 `?ids=` 点查通道
+   （≤ 50 id、忽略过滤器、无分页、空 ids 400——B 面 4 例覆盖顺序/缺 id/
+   空串/过滤器旁路）；聊天抽屉在打开且有未落定 queued 卡时每 4 秒轮询，
+   行翻转（ok/error/cancelled）后**卡上状态药丸原地翻转**（cancelled
+   新增虚线锌药丸）+ 结果行带真实时长 + "Updated from the Activity log"
+   披露 + 刷新卡保留 Watch progress 深链；**持久化 ChatMessage 永不改写**
+   （refreshedAt 标记区分活状态与快照，审计诚实）；无 queued 卡即停轮询；
+   打开时立即探测一次（抽屉关闭期间落地的运行即时翻转）。E2E：真 LLM
+   + 真 webhook（3s delay）→ QUEUED 卡 → 4s 内翻转 completed(3.0s)。
+3. **技能导入导出（O3）✅**：GET /api/skills/export?skillId= 可移植文档
+   （kind "foundry-lab-skill" / version 1 / 全字段投影含 requires /
+   Content-Disposition 附件 / 内置 400 / 未知 404 / 缺参 400 / 无 enabled
+   泄漏）；POST /api/skills/import 信封校验（kind/version 400）+ 复用注册
+   校验管道 + 冲突 409 附确定性 suggestion（custom.<base>-2/-3… 首个空闲
+   id，注册表+表双源检查）+ 可选顶层 id 重命名 + 导入落 enabled=true；
+   面板第四键导出按钮 + Import 按钮文件选择器 + 409 冲突确认对话框
+   （"Import as …" 一键重提）。QA：**requires 跨实例可移植性**证明
+   （导入副本对 critic 依然 denied）。E2E：导出 → 删除 → 导入恢复 →
+   再导入 → 409 → 重命名导入（完整往返）。
+4. **过程产出**：QA 58/58（A1-A8 门控矩阵 / B1-B4 点查 / C1-C11 导入导出
+   矩阵 / D 清理）；E2E 6 截图（51-56）+ VLM 复核（54 刷新卡 4/4、55 移动
+   端 requires 4/4）；移动端 375×812 零溢出 + footer 贴底 + 对话框 343px
+   适配；console/page errors 零。
+
+## P 线 — Skill 层权限细粒度与实时性（已交付：P1+P2a+P3a 全三项；Task 48）
+
+O 线收口时识别的三个缺口（单技能可移植 / 拉模型刷新 / 闭合集粒度粗）
+全部落地：
+
+1. **技能级 agent 白名单（P3a）✅**：CustomSkill.agents 列（JSON agent-id
+   数组，`@default("[]")` 向后兼容——空 = requires 独自决定）+
+   validateAgents 共享校验（非数组/重复/空串/非字符串/超 32 条全 400，
+   **刻意不校验本地 Agent 表**：导出的白名单跨实例可移植，QA A8 实证
+   导入副本对局外 agent 依然 denied）+ registerCustomSkill 防御性解析 +
+   POST/PATCH/import/export 四面统一 + runSkill/runSkillQueued **第 3.25
+   步门控**（名单非空且不在其中 → denied，deniedBy: "whitelist" 区分
+   拒因维度）+ 目录 eligible = requires ∧ 白名单（含 disabled 行投影）+
+   提示词清单过滤（受限技能不再向非名单 agent 展示——广告与执行不可
+   漂移）+ 注册/编辑对话框 "Agent whitelist" 多选（未知 id 渲染为可移除
+   虚线行）+ denied 聊天卡 **"Edit skill whitelist" 深链**直达编辑对话框
+   （修复在技能侧而非 agent 侧——与 requires 拒因的 Fix agent access
+   按 deniedBy 分流）。QA：A9 实证合取语义（在名单但 bio 关 → requires
+   先拒，deniedBy=requires）。
+2. **技能集打包导出（P1）✅**：GET /api/skills/export 三选择器
+   （?skillId= 单文档（O3 不变）/?ids=a,b 列表 bundle/?all=1 全量含
+   disabled 行；互斥 400、内置 400 点名、未知 404 列举、重复 400、
+   ?all 零技能诚实 400）；bundle 文档 kind "foundry-lab-skill-bundle"
+   / version 1 / skills[]（每条 = 同一可移植声明形状，含 P3a agents）；
+   POST import 接受 bundle——**逐技能独立、部分失败不回滚**（一个冲突
+   不作废其余），响应 200 携带报告 imported[]/skipped[]（附确定性改名
+   建议）/failed[]（索引+错误）；`renames` 映射 + 报告对话框
+   "Import skipped as suggested" 一键重提；UI 选择模式（custom 卡前导
+   复选框 + Select/Export selected (N)/Select all/Cancel 工具栏）+
+   Export all + 导入报告对话框；文件上限 512KB。QA B：selectors/bundle
+   形状/部分失败/renames 往返/篡改条目/信封矩阵/单文档 201 回归。
+3. **推送式活性刷新（P2a）✅**：**新 mini-service skill-events（:3031
+   socket.io）**——POST /emit（服务端发射通道）+ GET /health；**关键实现
+   发现：socket.io 服务端 path 不能设 "/"——engine.io 会以前缀匹配吃掉
+   该端口上的全部 HTTP 请求（/health 实测返回 "Transport unknown"），
+   保持默认 /socket.io 即可与自定义 HTTP 端点共存**；浏览器端
+   `io("/?XTransformPort=3031")`（URL 路径是命名空间、query 随行、
+   engine 传输路径是客户端默认——Caddy 按查询转发与路径无关，实测经
+   :81 网关连通）。发射侧：recordSkillInvocation 落行即广播 + K5 队列
+   **全部 12 处终态翻转统一收口到 transitionInvocation**（条件写 #45/#47
+   纪律 + 落地后重读行再广播——事件携带真相而非意图）；best-effort
+   1.5s 超时、失败 5 分钟节流警告。消费侧：useSkillEvents 单例 hook
+   （引用计数挂载/卸载、断线重连、重连立即点查补漏）——聊天抽屉 QUEUED
+   卡**推送即翻转**（轮询降级为离线 4s/在线 30s 心跳双保险）+ Activity
+   tab **新行免刷新实时插入**（已加载行原地翻转，total 跟随）+ 两处
+   "live" 呼吸灯（离线隐藏，poll 兜底仍在）；事件与轮询同池
+   applyTerminalRows——哪条泳道先到都渲染同一真相。QA C：网关连通/
+   直接 emit/内联调用事件/排队调用 queued+terminal 双事件（真实
+   durationMs）/内置技能同流。
+4. **过程产出**：QA 66/66（A1-A9 白名单矩阵 / B1-B9 bundle 矩阵 /
+   C1-C6 推送通道 / D 清理——首轮 64/65 与 38/58 两处失败均为测试自身
+   缺陷：agents 端点返回裸数组、partial import 后未把再注册行放回清理
+   清单）；E2E 8 截图（57-64）+ VLM 复核 5 张（57 工具栏、58 denied 卡
+   4/4、61 bundle 报告 4/4、63 推送卡+live 灯 4/4、64 移动对话框；57/64
+   目标元素在折叠线下 = #49 视口假阴性，DOM 断言已证）；移动端
+   375×812 零溢出 + footer 780/812 贴底 + 对话框 343px；console/page
+   errors 零。**E2E 平台发现：推送功能必须在网关源（:81）打开页面**
+   ——直连 :3000 时 XTransformPort 相对解析落在 Next 进程（404），这正是
+   用户预览的真实路径（预览面板即经网关）。
+
+## Q 线 — Skill 层反幻觉与实时性收口（已交付：Q1+Q2+Q3 全三项；Task 49）
+
+- **Q1 反馈接地（已交付）**：`skillFeedback` ok 分支携带截断的真实响应片段
+  （`dataSnippet`：JSON-compact、800 字符上限、截断显式标注 `+N chars truncated —
+  the payload continues; do not guess the remainder`、空载荷无片段段）+
+  逐字保真指令（“use exactly the fields and values shown above; do not invent
+  fields, values, or structure”）。P 线 E2E 实证的幻觉渲染（模型为一行 summary
+  编造 `data` 数组）在最短路径上消除：**E2E 金路径（真 LLM + 真 webhook）中模型
+  逐字段引用真实响应**（ok / received{skillId, params, source:"chat-stream",
+  agent, at} / headers / at 含真实时间戳——这些字段只能在真实反馈里出现）。
+  边界（#58）：第一轮“预猜”仍会发生（多轮拼接后回复同时含猜测段与修正段）。
+- **Q2 推送通道房间化 + emit 鉴权（已交付）**：
+  - **房间**：socket.io 封闭语法房间（`all` / `agent:<id>` / `workflow:<id>`，
+    id 字符集强制，每 socket ≤32 房间，全有或全无校验——任一非法房间拒绝整
+    个 payload 且状态不变）；/emit 按 row 的 agentId/workflowId 路由 + all 房；
+    subscribe 空数组 = 显式清空（#59）；health 携带房间计数；重连重订阅
+    （connect 事件重发当前联合集）。
+  - **鉴权**：/emit 需共享 Bearer token（服务首次 boot 生成 → gitignored `.token`
+    0600 文件 → 应用侧 TTL 缓存读同文件 + 401 弃缓存重读自愈）——**浏览器经
+    网关伪造 emit 现在被 401 挡住**（QA 直连/坏 token/网关三路 401 + 正确
+    token 202）。
+  - **客户端订阅窄化**：`useSkillEvents` 第三参数 rooms（默认 ["all"]，空数组 =
+    零订阅）；聊天抽屉窄化到 `agent:<id>`（关闭态零订阅——抽屉常驻挂载，
+    修复前每个页面加载都在全量流上，#59）；单例 socket 承载全部订阅者的房间
+    **联合**；roomsKey 序列化去 identity 颤动。
+  - **App 链实证**：真 /api/skills/invoke（agent 归因）→ 事件恰好落在该 agent
+    房间 + all，不落其他 agent 房间（QA socket 双客户端隔离断言）；浏览器级
+    health 实证：关抽屉 {} → 开抽屉 `agent:<bio>:1`（无 all）→ 关抽屉归零。
+- **Q3 技能模板库（已交付）**：bundle **version 2**（`metadata: {name, description?,
+  tags?}`，校验规则 export/import 双向镜像 #63；v1 文档永久接受；v2 无 metadata
+  400；导入报告回显 bundle 身份）；export 三选择器 + `?name/description/tags=`
+  opt-in 升级为 v2 技能包（slug 文件名）；**Templates 第四 tab**：三个内置策展包
+  （Echo Diagnostics 快+慢双泳道 / Failure Lab 错误路径 / Trusted Header Echo
+  自定义头验证——目标端点为本地 skill-webhook 服务，卡内披露）+ 已导入徽章
+  （目录 id 交叉）+ 可展开技能清单（id/latency/端点）+ 一键导入（**走与文件
+  导入完全相同的 /api/skills/import 泳道**：同校验、同冲突重命名建议、同审计）
+  + 报告对话框（导入/跳过/失败三区 + “Import skipped as suggested” 一键重提）；
+  Registry “Export selected” 升级为**打包对话框**（name/README/tags → v2 pack
+  或保留 v1 裸备份导出）。
+
+**QA/e2e 证据**：API 冒烟 **60/60**（A 反馈接地 16 例含真 webhook 回载荷逐字
+接地与 800 截断标记；B 鉴权与房间 17 例含网关 401 与 app 链 agent 房间隔离；
+C v2 格式 22 例含双向校验矩阵/双版本共存/冲突重试/模板包导入与慢速排队
+推送落地；D 清理归零与基线恢复）；浏览器级金路径全绿：模板导入 2/2 → 冲突
+0/2 + 重命名建议 → 重试 2/2 落地 -2 后缀 id → Imported 徽章；**Q1 真 LLM 接地
+金路径**（模型逐字段引用真实响应 + 真实时间戳，无编造字段）；**Q2 抽屉窄化
+浏览器实证**（health 房间计数）；**慢速模板技能排队→推送翻转闭环**（QUEUED
+卡 → 3s 后 COMPLETED + 真实时长 3.0s + “Updated from the Activity log” 披露）；
+Activity 免刷新行插入（data-inv-id）；Export selected 打包对话框全流程 +
+toast；移动端 375×812 零溢出 + footer 812/812 贴底；console/page errors 零；
+VLM 复核 3 截图全过。基线字段级核对：2/19/16/0/0/12/3/86/9/4 与冻结基线
+一致（含 4 条 e2e 聊天消息与 4 个模板技能的定点清除）。
+
+## R 线 — Skill 层身份化与反幻觉源头（已交付：R1+R2+R3 全三项；Task 50）
+
+- **R1 推送通道身份化（已交付）**：
+  - **Grant 模型**：每个连接必须携带服务端铸造的会话 grant——
+    `GET /api/skills/events-session` → `mintSkillEventsSession(rooms)` 产出
+    `v1.<expMs>.<payloadB64url>.<hmacB64url>`（HMAC-SHA256 签名 + 12h 过期 +
+    5s 时钟偏斜容差；payload = `{rooms}` 权限集）。**身份决策属于服务端**
+    （单用户工作室 = 诚实全权 `["all"]`；未来认证在此按身份收窄——机制
+    即交付物）。浏览器永远看不到签名钥；grant 不能当 emit token 用
+    （QA A15 泳道分离实证）。
+  - **连接中间件强制**：`io.use()` 拒绝无 grant/格式错/过期/签名不匹配
+    的握手（QA A2-A5：无 token、垃圾、手工铸造过期 grant、篡改 payload
+    四路 connect_error；浏览器页面上下文无 token 直连同样被拒）。
+  - **服务端强制房间映射**：连接默认房间集 = **grant 自身的权限集**
+    （不再盲目入 all）；每次 subscribe **钳制**到权限——越权房间被
+    过滤并在 ack 披露 `{ok, rooms, requested, filtered}`；含 all 的 grant
+    允许任意窄化（全权语义），窄 grant 仅允许自己的房间。**偷听实证**
+    （QA A10）：窄 grant `agent:qa-a` 连接订阅后，qa-a 行收到、qa-b 行
+    收不到（对照全权连接两行都收到）。
+  - **秘密管理 env 化**：emit token 与签名钥均 env 优先
+    （`SKILL_EVENTS_EMIT_TOKEN` / `SKILL_EVENTS_SIGNING_KEY`）+ 文件回退
+    （服务 boot 生成 gitignored 0600 文件；应用侧 events.ts 同优先级读）。
+  - **轮换双向传播 ≤5s 不停服（#64）**：服务端秘密缓存 5s TTL + 失配
+    重读——QA A16 实证旧 grant 拒绝 + 旧 token 401 + 新 token 202 + 新
+    铸造连接成功 + health 全程 200（服务零重启）。浏览器侧 hook 在
+    grant 被拒的 connect_error 上重铸（服务端每次铸造强制重读钥）并
+    更新下次握手的 auth。
+- **R2 工具循环预猜抑制（已交付，#65）**：技能 manifest 加
+  "CRITICAL — stop after each skill fence" 指令（陈述为什么：围栏后任何
+  结果描述必然是猜测；给出机械动作：END reply immediately after the
+  closing ```）。**浏览器级双采样零残留**：Computational Biologist +
+  custom.template-echo、Principal Investigator + bio.pdb——两轮的第一轮
+  回复均在围栏闭合处精确结束（拼接边界机械验证：`content = fullText +
+  "\n\n" + followUpText`，fullText 末字符恒为 ```），第二轮携带真实数据
+  （真实时间戳 / 真实 score）。Q1（接地）+ R2（停笔）构成双保险：反馈
+  前不写结果 + 反馈后逐字引用。
+- **R3 包身份持久化（已交付）**：`CustomSkill.packName` 列（bundle v2
+  导入时从 `metadata.name` 回填；手工注册/单文档/v1 bundle 无包 null）；
+  Registry 卡片 amber "pack: X" 徽章 + 展开区 Origin 行（含卸载指引）；
+  disabled 行保留投影（徽章/卸载在禁用期可见）；`POST
+  /api/skills/pack/uninstall` 按包身份整体卸载——`WHERE packName = X`
+  精确匹配（改名副本随包删除、无包技能免疫、审计历史保留；QA C10
+  免疫实证）；Templates 包卡 Uninstall pack 按钮（owned > 0）+ AlertDialog
+  确认（披露改名副本/审计保留/无包免疫）。QA 实证：含 disabled 行的包
+  卸载 → enabled+disabled 双删 + 审计行存续 + 注册表真注销（#53 收敛
+  窗口后 404 invalid）+ packName 非 PATCH 面（单独提交 = "Nothing to
+  update" 400）。
+
+**QA/e2e 证据**：API 冒烟 **31/31**（A R1 身份 16 例：铸造形状/四路拒绝
+/全权默认/窄 grant 钳制/偷听对照/网关泳道/语法全有或全无/显式清空/emit
+鉴权 401/grant≠token 泳道分离/**轮换双向传播**；B R2 3 例：指令渲染/
+位置（示例后修订段前）/无泄漏；C R3 10 例：四路无包来源/v2 回填/disabled
+投影/PATCH 免疫/卸载校验 404-400×2/整包卸载含审计与注销/模板包往返/无包
+免疫；D 清理归零）。浏览器级金路径全绿：网关源页面自动铸造并连接（health
+grants entitledAll:1）→ 页面上下文无 token 直连被拒 → **Activity LIVE 推送
+金路径**（页面 fetch 触发真实 bio.pdb → 免刷新 data-inv-id 行 + 真实 5
+hits + 归因 + 497ms 真实时长）→ **R2 双采样停笔**（见上）→ **R3 包导入
+→ 双卡徽章 + Origin → Uninstall 对话框 → 目录清空 → 按钮消失 → 审计
+保留**；移动端 375×812 零溢出 + footer 贴底 + 44px 触控；console/page
+errors 零；VLM 复核 6 截图全过。基线字段级核对：2/19/16/0/0/12/3/86/9/4
+与冻结基线一致。过程产出 4 条新结论（#64 轮换双向传播/#65 停笔指令实证/
+#66 网关代理持留边界/#67 连接计数定位顺序）。
+
+## S 线 — 下一阶段候选（基于 R 线测试结果排序）
+
+R 线把技能层的身份、反幻觉、可移植性三块收口后，测试结果暴露的剩余
+排序依据：**真实身份前置**（R1 的 grant 机制已是"身份决策的服务端钩
+子"，但当前决策恒为全权——NextAuth 落地后按会话身份收窄即激活全部
+既有钳制基建，且聊天/面板等 UI 面全部无需改动）；**推送会话治理**
+（#66：代理持留的僵尸会话需要服务端 activity 清扫，health clients 计数
+才可采信）；**Insights 服务端聚合**（Q 线遗留：聚合在客户端做，多面板
+各自重算）。按价值排序：
+
+1. **S1 NextAuth 会话身份接入 R1 grant**：NextAuth 认证 →
+   `events-session` 路由按会话身份计算权限集（全权 → 按工作区/角色
+   窄化）→ R1 的签名/钳制/吊销基建零改动继承。测试面：匿名请求无
+   grant（503/401）、已认证用户窄 grant 生效、越权订阅被钳制。
+2. **S2 推送通道空闲会话清扫（#66）**：skill-events 周期性（如 5min）
+   清扫无活动 socket（最后 subscribe/ping 时间超阈值 → 主动断开），
+   health clients 回归可采信。测试面：伪造长闲置连接被清扫、活跃连
+   接不受影响。
+3. **S3 Insights 服务端聚合**：把 /api/skills/insights 的聚合计算移到
+   服务端（SQL 聚合或服务端 reduce），面板只渲染。测试面：聚合与直查
+   一致、多面板共享单次请求（TanStack Query 或路由缓存）。
+4. **低优先池滚动（历线遗留）**：stop 路由 detail 措辞；Runs sheet
+   cancelled 行 Retry 直达；file-missing 筛选列；Escape 分层语义成文；
+   叠合深化（多链/per-region RMSD/worker 对称性）；真实 SSH 集群通道。
+

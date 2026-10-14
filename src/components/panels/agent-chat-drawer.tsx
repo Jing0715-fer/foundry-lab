@@ -2,7 +2,19 @@
 
 import * as React from "react";
 import ReactMarkdown from "react-markdown";
-import { Loader2, Send, Trash2, Wrench, Database, Globe, type LucideIcon } from "lucide-react";
+import {
+  ArrowUpRight,
+  Database,
+  Globe,
+  KeyRound,
+  Loader2,
+  RefreshCw,
+  Send,
+  Trash2,
+  Webhook,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 import {
   Sheet,
   SheetContent,
@@ -13,6 +25,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { useAppStore } from "@/lib/store";
+import { useSkillEvents, type SkillInvocationEvent } from "@/hooks/use-skill-events";
 import type { AgentDTO, ChatMessageDTO, ToolCall } from "@/lib/types";
 
 export function AgentChatDrawer({
@@ -80,6 +93,174 @@ export function AgentChatDrawer({
     const el = scrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages, open]);
+
+  // O2/P2a: QUEUED-card live refresh. While the drawer is open and any
+  // message carries a still-queued tool call with an audit row, the push
+  // channel (skill-events socket.io) flips the card the moment the row
+  // lands; the point-query poll remains as the FALLBACK — 4s while the
+  // socket is offline, a 30s heartbeat while connected (belt and braces:
+  // a dropped push costs at most half a minute, never a wrong verdict).
+  // The persisted ChatMessage row is never rewritten: the refreshedAt
+  // marker distinguishes a live status from the message's original
+  // snapshot, and both channels stop the moment no queued card remains.
+  const queuedIdsKey = React.useMemo(() => {
+    const ids: string[] = [];
+    for (const m of messages) {
+      for (const tc of m.toolCalls ?? []) {
+        if (tc.status === "queued" && tc.invocationId && !tc.refreshedAt) {
+          ids.push(tc.invocationId);
+        }
+      }
+    }
+    return ids.join(",");
+  }, [messages]);
+
+  // The shared flip: given terminal rows, flip the matching queued cards
+  // IN PLACE (status + honest text with the real duration + refreshedAt).
+  // Both the push channel and the poll funnel through here so the card
+  // can never render differently depending on which lane delivered.
+  const applyTerminalRows = React.useCallback(
+    (rows: Array<{ id: string; status: string; text: string }>) => {
+      if (rows.length === 0) return;
+      const terminal = new Map(
+        rows.map((r) => [r.id, r] as const),
+      );
+      setMessages((prev) =>
+        prev.map((m) => {
+          if (!m.toolCalls) return m;
+          let changed = false;
+          const toolCalls = m.toolCalls.map((tc) => {
+            if (
+              tc.status === "queued" &&
+              tc.invocationId &&
+              !tc.refreshedAt &&
+              terminal.has(tc.invocationId)
+            ) {
+              changed = true;
+              const t = terminal.get(tc.invocationId)!;
+              return {
+                ...tc,
+                status:
+                  t.status === "ok"
+                    ? ("completed" as const)
+                    : t.status === "cancelled"
+                      ? ("cancelled" as const)
+                      : ("failed" as const),
+                skillStatus: t.status,
+                ...(t.text ? { result: t.text } : {}),
+                refreshedAt: new Date().toISOString(),
+              };
+            }
+            return tc;
+          });
+          return changed ? { ...m, toolCalls } : m;
+        }),
+      );
+    },
+    [],
+  );
+
+  // P2a: the PUSH lane — every invocation event checks against the
+  // drawer's tracked queued ids and flips immediately when terminal.
+  // tickRef lets a reconnect trigger an immediate poll probe (the gap
+  // missed events; declared first so the status callback can reach it).
+  // Q2: the subscription narrows to this agent's room — the drawer's
+  // queued cards are all invocations attributed to THIS agent, so other
+  // agents' rows never even arrive (the server routes by agentId).
+  // A CLOSED drawer (agentId null) subscribes to NOTHING — the drawer is
+  // always mounted, so defaulting to the firehose would put every page
+  // load on the full event stream.
+  const tickRef = React.useRef<(() => void) | null>(null);
+  const pushConnected = useSkillEvents(
+    React.useCallback(
+      (event: SkillInvocationEvent) => {
+        if (queuedIdsKey === "") return;
+        if (
+          event.status === "ok" ||
+          event.status === "error" ||
+          event.status === "cancelled"
+        ) {
+          const text =
+            (event.status === "ok"
+              ? (event.resultSummary ?? "")
+              : (event.error ?? event.resultSummary ?? "")) +
+            (event.durationMs != null
+              ? ` (${(event.durationMs / 1000).toFixed(1)}s)`
+              : "");
+          applyTerminalRows([{ id: event.id, status: event.status, text }]);
+        }
+      },
+      [queuedIdsKey, applyTerminalRows],
+    ),
+    React.useCallback((reconnected: boolean) => {
+      // A reconnect closes a gap in which events were missed — re-probe
+      // the point-query lane immediately instead of waiting a heartbeat.
+      if (reconnected && queuedIdsKey !== "") {
+        tickRef.current?.();
+      }
+    }, [queuedIdsKey]),
+    agentId ? [`agent:${agentId}`] : [],
+  );
+
+  // The poll fallback (O2's lane, now conditional on connectivity).
+  React.useEffect(() => {
+    if (!open || queuedIdsKey === "") {
+      tickRef.current = null;
+      return;
+    }
+    let disposed = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(
+          `/api/skills/invocations?ids=${encodeURIComponent(queuedIdsKey)}`,
+        );
+        if (!res.ok || disposed) return;
+        const data = (await res.json()) as {
+          invocations?: Array<{
+            id: string;
+            status: string;
+            resultSummary: string | null;
+            error: string | null;
+            durationMs: number | null;
+          }>;
+        };
+        const rows = Array.isArray(data.invocations) ? data.invocations : [];
+        const terminal: Array<{ id: string; status: string; text: string }> = [];
+        for (const row of rows) {
+          if (
+            row.status === "ok" ||
+            row.status === "error" ||
+            row.status === "cancelled"
+          ) {
+            const text =
+              (row.status === "ok"
+                ? (row.resultSummary ?? "")
+                : (row.error ?? row.resultSummary ?? "")) +
+              (row.durationMs != null
+                ? ` (${(row.durationMs / 1000).toFixed(1)}s)`
+                : "");
+            terminal.push({ id: row.id, status: row.status, text });
+          }
+        }
+        if (!disposed) applyTerminalRows(terminal);
+      } catch {
+        // Network hiccup — the next tick retries; a failed poll must never
+        // disturb the conversation.
+      }
+    };
+    tickRef.current = () => void tick();
+    // Fast poll while OFFLINE (the push channel is down); slow heartbeat
+    // while connected (only catches a push the service dropped).
+    const interval = setInterval(tick, pushConnected ? 30_000 : 4_000);
+    // One immediate probe: a run that landed while the drawer was closed
+    // flips on open instead of waiting a full interval.
+    tick();
+    return () => {
+      disposed = true;
+      clearInterval(interval);
+      tickRef.current = null;
+    };
+  }, [open, queuedIdsKey, pushConnected, applyTerminalRows]);
 
   // Track whether the message list is scrolled to the top (for the gradient overlay).
   const handleScroll = React.useCallback(() => {
@@ -269,7 +450,25 @@ export function AgentChatDrawer({
                 </span>
               )}
               <div>
-                <SheetTitle className="text-base">{agent?.title ?? "Agent chat"}</SheetTitle>
+                <SheetTitle className="text-base">
+                  {agent?.title ?? "Agent chat"}
+                  {/* P2a: live-refresh indicator — the push channel is
+                      connected and queued cards flip on landing. Absent
+                      when offline (the 4s poll still refreshes). */}
+                  {pushConnected && (
+                    <span
+                      className="ml-2 inline-flex items-center gap-1 align-middle text-[10px] font-medium uppercase tracking-wide text-emerald-600 dark:text-emerald-400"
+                      title="Live updates connected — background runs flip the moment they land"
+                      aria-label="Live updates connected"
+                    >
+                      <span className="relative flex size-1.5">
+                        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                        <span className="relative inline-flex size-1.5 rounded-full bg-emerald-500" />
+                      </span>
+                      live
+                    </span>
+                  )}
+                </SheetTitle>
                 <SheetDescription className="text-xs">
                   {agent?.expertise ?? "Chat with this agent"}
                 </SheetDescription>
@@ -323,7 +522,7 @@ export function AgentChatDrawer({
                   ) {
                     return null;
                   }
-                  return <MessageBubble key={m.id} message={m} />;
+                  return <MessageBubble key={m.id} message={m} agent={agent} />;
                 })}
                 {loading && !streamingStarted && <TypingIndicator />}
               </div>
@@ -373,7 +572,13 @@ function TypingIndicator() {
   );
 }
 
-function MessageBubble({ message }: { message: ChatMessageDTO }) {
+function MessageBubble({
+  message,
+  agent,
+}: {
+  message: ChatMessageDTO;
+  agent: AgentDTO | null;
+}) {
   const isUser = message.role === "user";
   return (
     <div className={isUser ? "flex justify-end" : "flex flex-col items-start gap-2"}>
@@ -395,7 +600,7 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
       {message.toolCalls && message.toolCalls.length > 0 && (
         <div className="flex w-full flex-col gap-1.5">
           {message.toolCalls.map((tc, i) => (
-            <ToolCallCard key={`${tc.tool}-${i}`} call={tc} />
+            <ToolCallCard key={`${tc.tool}-${i}`} call={tc} agent={agent} />
           ))}
         </div>
       )}
@@ -403,10 +608,24 @@ function MessageBubble({ message }: { message: ChatMessageDTO }) {
   );
 }
 
-function ToolCallCard({ call }: { call: ToolCall }) {
+function ToolCallCard({ call, agent }: { call: ToolCall; agent: AgentDTO | null }) {
+  const setPendingSkillTab = useAppStore((s) => s.setPendingSkillTab);
+  const setPendingSkillInvocation = useAppStore((s) => s.setPendingSkillInvocation);
+  const setPendingAgentEdit = useAppStore((s) => s.setPendingAgentEdit);
+  const setPendingSkillEdit = useAppStore((s) => s.setPendingSkillEdit);
+  const setActivePanel = useAppStore((s) => s.setActivePanel);
+  const toast = useAppStore((s) => s.toast);
+
   const isComp = call.kind === "comp";
   const isWeb = call.kind === "web";
-  const Icon: LucideIcon = isComp ? Wrench : isWeb ? Globe : Database;
+  const isCustom = call.kind === "custom";
+  const Icon: LucideIcon = isComp
+    ? Wrench
+    : isWeb
+      ? Globe
+      : isCustom
+        ? Webhook
+        : Database;
   const resultText = call.result ?? "";
   const truncated = resultText.length > 240 ? resultText.slice(0, 240) + "…" : resultText;
   const statusPill =
@@ -416,7 +635,65 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         ? "bg-rose-500/10 text-rose-700 dark:text-rose-400"
         : call.status === "running"
           ? "bg-amber-500/10 text-amber-700 dark:text-amber-400"
-          : "bg-muted text-muted-foreground";
+          : call.status === "queued"
+            ? "bg-teal-500/10 text-teal-700 dark:text-teal-400"
+            : call.status === "cancelled"
+              // O2: the live refresh can flip a queued card to the queue
+              // lane's honest cancelled verdict (stopped before landing).
+              ? "border border-dashed border-zinc-400/70 bg-zinc-500/10 text-zinc-600 dark:text-zinc-400"
+              : "bg-muted text-muted-foreground";
+
+  // M1 deep-links: the card knows WHERE its outcome lives — queued runs
+  // point at the Skills Activity tab (invocation row flips to a terminal
+  // status when the run lands — engine or webhook, N1 made both queueable),
+  // denied cards point at the agent editor (the knowledge switches that
+  // caused the refusal), and limited cards point at their audit row (the
+  // retry hint lives there).
+  const watchInSkills = () => {
+    if (call.invocationId) {
+      setPendingSkillInvocation({
+        invocationId: call.invocationId,
+        ...(call.jobId ? { jobId: call.jobId } : {}),
+      });
+    }
+    setPendingSkillTab("activity");
+    setActivePanel("skills");
+    toast({
+      title: "Opening the Skills Activity tab",
+      description:
+        call.status === "queued" && call.jobId
+          ? "The queued run's invocation row flips to ok / error / cancelled when the run lands."
+          : "The invocation row for this call is highlighted when it's on the loaded page.",
+      variant: "default",
+    });
+  };
+
+  const fixAgentAccess = () => {
+    if (!agent) return;
+    setPendingAgentEdit({ id: agent.id, title: agent.title });
+    setActivePanel("agents");
+    toast({
+      title: "Opening agent settings",
+      description: `Enable the missing knowledge switch for "${agent.title}".`,
+      variant: "default",
+    });
+  };
+
+  // P3a: a WHITELIST denial is fixed on the skill, not the agent — the
+  // card deep-links into the Registry's edit dialog for that skill.
+  const editSkillAccess = () => {
+    if (!call.skillId) return;
+    setPendingSkillEdit({ skillId: call.skillId });
+    setPendingSkillTab("registry");
+    setActivePanel("skills");
+    toast({
+      title: "Opening the skill's whitelist",
+      description:
+        "Add this agent to the whitelist (or clear it) in the edit dialog that opens.",
+      variant: "default",
+    });
+  };
+
   return (
     <div className="rounded-md border bg-card p-2 text-xs">
       <div className="mb-1 flex items-center gap-1.5 font-medium">
@@ -440,6 +717,81 @@ function ToolCallCard({ call }: { call: ToolCall }) {
         <pre className="mt-1 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px]">
           {truncated}
         </pre>
+      )}
+      {call.status === "queued" && !call.refreshedAt && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          Running in the background — watch the Skills Activity tab (its
+          invocation row flips to ok / error / cancelled when the run
+          lands); this card is a snapshot from when the chat message was
+          sent.
+        </p>
+      )}
+      {/* O2: the live refresh flipped this card — the status above and the
+          result line are from the audit row, NOT from the persisted message
+          (which keeps its original snapshot). */}
+      {call.refreshedAt && (
+        <p className="mt-1 text-[11px] text-muted-foreground">
+          <span
+            className="inline-flex items-center gap-1"
+            aria-label={`Refreshed from the Activity log`}
+          >
+            <RefreshCw className="size-3" aria-hidden />
+            Updated from the Activity log — the background run landed; the
+            persisted chat message keeps its original snapshot.
+          </span>
+        </p>
+      )}
+      {/* M1: deep-link actions. O2: Watch progress stays available on
+          refreshed cards (the audit row is exactly where the outcome lives). */}
+      {(call.status === "queued" || call.refreshedAt) && call.invocationId && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-1.5 h-7 gap-1.5 text-[11px]"
+          onClick={watchInSkills}
+        >
+          <ArrowUpRight className="size-3.5" />
+          Watch progress
+        </Button>
+      )}
+      {call.skillStatus === "denied" && call.deniedBy === "whitelist" && call.skillId && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="mt-1.5 h-7 gap-1.5 text-[11px]"
+          onClick={editSkillAccess}
+        >
+          <KeyRound className="size-3.5" />
+          Edit skill whitelist
+        </Button>
+      )}
+      {call.skillStatus === "denied" &&
+        call.deniedBy !== "whitelist" &&
+        agent && (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-1.5 h-7 gap-1.5 text-[11px]"
+            onClick={fixAgentAccess}
+          >
+            <KeyRound className="size-3.5" />
+            Fix agent access
+          </Button>
+        )}
+      {call.skillStatus === "limited" && call.invocationId && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="mt-1.5 h-7 gap-1.5 text-[11px] text-muted-foreground"
+          onClick={watchInSkills}
+        >
+          <ArrowUpRight className="size-3.5" />
+          View audit row
+        </Button>
       )}
     </div>
   );

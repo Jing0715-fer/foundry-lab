@@ -296,6 +296,33 @@ export function AgentsPanel() {
     }
   };
 
+  // ── K2 deep-link consumption ────────────────────────────────────────────
+  // The Skills Activity tab's "Fix agent access" button (on denied
+  // invocations) asks this panel to open the editor for the agent whose
+  // knowledge switches caused the denial. Consume the pending request once
+  // the agent list has loaded: open the editor for a live agent, or toast
+  // honestly when the agent was deleted since (agentId is a soft reference
+  // on the audit row — the denormalized title keeps the message useful).
+  const pendingAgentEdit = useAppStore((s) => s.pendingAgentEdit);
+  const setPendingAgentEdit = useAppStore((s) => s.setPendingAgentEdit);
+  React.useEffect(() => {
+    if (!pendingAgentEdit || loading) return;
+    const target = agents.find((a) => a.id === pendingAgentEdit.id);
+    if (target) {
+      setEditing(target);
+      setEditorOpen(true);
+    } else {
+      toast({
+        title: "Agent no longer exists",
+        description:
+          `"${pendingAgentEdit.title ?? pendingAgentEdit.id}" was deleted — ` +
+          "the denied invocation came from that agent.",
+        variant: "destructive",
+      });
+    }
+    setPendingAgentEdit(null);
+  }, [pendingAgentEdit, loading, agents, setPendingAgentEdit, toast]);
+
   return (
     <div className="space-y-6 p-4 md:p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">

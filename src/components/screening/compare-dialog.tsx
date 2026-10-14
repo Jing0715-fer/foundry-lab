@@ -62,20 +62,14 @@ export function CompareDialog({
   if (rows.length === 0) return null;
 
   const winner = rows.reduce((best, r) => (r.score > best.score ? r : best), rows[0]);
-  // I1a (QA I-line P2-2): pdbPath alone is a stale-column trap — both files
-  // must EXIST (the superpose overlay would inline-error on a missing file;
-  // better to not offer the dead trip at all).
   const bothHavePdb =
-    rows.length === 2 &&
-    rows.every((r) => !!r.candidate.pdbPath && r.candidate.pdbExists);
+    rows.length === 2 && rows.every((r) => !!r.candidate.pdbPath);
   const superposeTitle =
     rows.length !== 2
       ? "Select exactly 2 candidates to superpose"
       : bothHavePdb
         ? "Rigid-fit these two structures and inspect per-residue deviations"
-        : rows.some((r) => r.candidate.pdbPath && !r.candidate.pdbExists)
-          ? "A selected candidate's PDB file is no longer on disk"
-          : "Both candidates need a linked PDB file";
+        : "Both candidates need a linked PDB file";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>

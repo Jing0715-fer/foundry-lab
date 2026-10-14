@@ -47,9 +47,7 @@
   （四色可选）保存到工作流（`Workflow.groups`），刷新 / 切换 / 版本恢复后都在；
   删除成员节点时组引用自动清理。点击组框可选中（✎/× 按钮），✎ 打开内联编辑器
   **重命名 / 换色**（防抖持久化）；组框**键盘可达**（Tab 停靠 + Enter/Space 选择 +
-  Escape 取消——画布首个键盘可操作面）；**Escape 分层**：拉起连线时组框不抢
-  Escape——单次取消连线、组保持选中，再次 Escape 才反选组（连线是模式、选择是
-  状态，模式优先）。成员全部折叠进 sweep 聚合卡时组框淡化为
+  Escape 取消——画布首个键盘可操作面）。成员全部折叠进 sweep 聚合卡时组框淡化为
   **ghost 幽灵框**——几何为各 sweep 聚合卡的**联合包围盒**（跨 sweep 组精确覆盖
   两个聚合位置），拖拽聚合卡时 ghost **实时跟随**（DOM transform 订阅，无帧渲染），
   仍可选中编辑。
@@ -64,22 +62,192 @@
 - **工具调用循环**（最多 5 轮，并行 bio + comp 工具调用）：智能体聊天中可自主调用
   BLAST / PDB / PubMed / UniProt 等真实 API。
 - **技能标准化层（Skill Layer）**：所有智能体操作统一为技能 —— 单一注册表（18 技能
-  4 族：comp / bio / web / canvas）、单一执行管道（解析→校验→门控→执行→审计）、
-  单一审计表（SkillInvocation，含 source/agent/时长/五态状态）。能力门控
+  4 族：comp / bio / web / canvas）、单一执行管道（解析→校验→门控→**限流**→执行→
+  审计）、单一审计表（SkillInvocation，含 source/agent/时长/八态状态）。能力门控
   （bioToolsEnabled / webSearchEnabled）在**执行层强制**；提示词清单从注册表实时渲染，
   与执行门控永不漂移；旧 ```tool / ```bio 围栏向后兼容归一。
-- **Web 搜索技能**：智能体可真实联网检索（z-ai-web-dev-sdk），当前信息/文献/新闻
-  直接折入回复。
+- **技能级速率配额（K3）**：per-agent 滑动窗口限流（comp 6 次/15 分钟、bio 12 次/分钟、
+  web 6 次/分钟、canvas 30 次/分钟；技能定义可覆盖），拒绝落审计表为 `limited`
+  态并携带重试提示；匿名 REST/用户发起的泳道不限流。
+- **慢技能异步入队（K5）**：聊天/会议/研究/任务泳道中的 comp 引擎技能不再阻塞泳道
+  分钟级执行，也不再被流式泳道拒发（旧 “skipped”）—— 现在入 ToolJob 队列后台真引擎
+  执行（runKey=jobId，停止路由真实击杀进程），返回 “queued” 信封：聊天卡即刻可见
+  “已后台启动”（卡片如实标注为发送时快照，模型被明确禁止编造结果），审计行在
+  引擎落地时转移为 ok / error / cancelled（条件写守卫），进度在 Skills Activity
+  tab 可见；服务器重启的孤儿行由启动清扫诚实翻转。工作流 agent 节点保持同步执行
+  （节点即异步底座）。
 - **持久化运行时参数**：微调对话框可配置 temperature / max-tokens / top-p /
   附加系统指令 / 流式输出，作用于该智能体的每一次 LLM 调用。
 - **团队会议**：多智能体多轮辩论，产出结构化纪要。
 - **研究管线**：规划 → 检索 → 撰写三阶段深度研究，输出 Markdown 报告。
 - **PI Copilot**：悬浮于画布之上的 PI 助手，边看工作流边讨论。
 - **技能面板（Skills）**：注册表浏览器（族分组/参数文档/搜索）+ 调用审计日志
-  （状态/源/agent 归因/时长），每个智能体操作（聊天工具调用、工作流节点、
-  PI 画布变更、REST 工具运行）都可观测。
+  （状态/源/agent 归因/时长，denied 行一键直达该智能体的知识开关编辑对话框）
+  + **Insights 聚合视图**（时间窗单选：调用总数/八态分布/OK 率/P50/P95 延迟
+  + Top skills / Most active agents / By lane 三表，百分位只覆盖真实执行过的
+  调用），每个智能体操作（聊天工具调用、工作流节点、PI 画布变更、REST 工具运行）
+  都可观测。
+- **聊天卡深链闭环（M1）**：QUEUED 卡 “Watch progress” 一键直达 Skills
+  Activity tab 并高亮该次调用审计行（行自动展开 + 滚入视口）；denied 卡
+  “Fix agent access” 直达智能体编辑对话框（知识开关就在眼前）；limited 卡
+  “View audit row” 直达审计行 —— 卡片携带 invocationId + 原始 skillStatus
+  （历史卡无字段时优雅降级，不显示按钮）。
+- **审计治理（M2）**：invocations 接口 keyset 分页（createdAt+id 双键全序、
+  limit+1 判 hasMore、total 恒为全量匹配数）+ 面板过滤器（source/status）
+  + Load more；审计保留策略（终端行 >90 天 + 超 20k 行上限剪枝，queued
+  行永不删）——服务器启动时自动清扫 + 面板 Retention 卡（干跑预览与实际删除
+  同一谓词，确认对话框引用干跑数字）+ `createdAt` 专用索引（窗口查询护栏）。
+- **动态技能注册（M3）**：POST /api/skills 注册 webhook 技能（custom.* 族）
+  ——参数 schema 校验、`custom.` 前缀强制、与内置/现有冲突 409；技能经统一
+  管道执行（校验/门控/限流 12 次/分钟/审计/Insights 全链路继承），提示词清单
+  自动纳入（下一轮即生效）；handler POST 已验证参数到端点（20 秒超时，非 2xx/
+  超时诚实 error）；注册表从 DB 同步（TTL ≤1 秒，miss 强制同步），DELETE
+  注销保留审计历史；面板注册对话框（表单 + 参数行编辑器）+ 每卡删除按钮。
+- **慢技能入队（N1）**：注册时选 Execution policy "Slow · queued" ——
+  custom 技能 latency=slow 后，智能体聊天与 REST invoke（`/api/skills/invoke`
+  返回 202）都把它排入 K5 后台队列（ToolJob + SkillInvocation queued 行 →
+  fire-and-forget webhook，10 分钟超时）；**真实停止**：停止路由经
+  AbortController 注册表（runKey=jobId，globalThis 背书跨 bundle）真杀在途
+  fetch，确定性 cancelled 终态（条件写守卫防复活）；孤儿行启动清扫、
+  QUEUED 聊天卡、Watch progress 深链、Insights/限流全部继承零额外代码。
+- **custom 技能管理面（N2）**：PATCH /api/skills/:skillId 局部更新（label/
+  description/endpoint/params/headers/latency/enabled，空 body 400、内置
+  400、未知 404）；enabled 软开关 —— 停用后离开活跃注册表（不可调用、
+  提示词不再广告）但目录仍列出（打 disabled/locked 标，可一键恢复）；
+  编辑对话框复用注册表单（预填 + latency 单选 + headers 行编辑器，
+  headers/null 清除）；注册与编辑共用同一校验模块（custom-validation.ts），
+  卡片三按钮（电源/铅笔/垃圾桶）+ 展开区显示 Endpoint/Execution/Headers。
+- **授权声明（O1）**：注册/编辑对话框新增“Agent knowledge requirements”
+  多选（bioToolsEnabled / webSearchEnabled 闭合集）；CustomSkill.requires
+  列（JSON 数组，空 = 全员可调，向后兼容）→ 注册表透传 → **门控与提示词
+  清单自动继承零新执行代码**（runSkill 第 3 步已存在，manifest 过滤已存在）；
+  POST/PATCH 校验未知 id 400、重复 400；denied 聊天卡带 “Fix agent access”
+  深链（M1 模式对 custom 生效）；目录 eligible 投影对齐（含 disabled 行
+  requires 投影）。
+- **QUEUED 卡活性刷新（O2）**：聊天抽屉从“时点快照”升级为“订阅刷新”——
+  抽屉打开且有未落定的 queued 卡时，每 4 秒轮询
+  `GET /api/skills/invocations?ids=…`（新增点查通道，≤ 50 id、忽略过滤器）；
+  行翻转后卡上状态药丸原地翻转（ok→completed / error→failed /
+  cancelled→cancelled 新药丸），结果行带真实时长，并显示“Updated from
+  the Activity log”披露（持久化消息永不改写，审计诚实）；刷新卡保留
+  Watch progress 深链；无 queued 卡即停轮询。
+- **技能导入导出（O3）**：`GET /api/skills/export?skillId=` 返回可移植
+  JSON 文档（kind foundry-lab-skill / version 1 / 全字段投影含 requires，
+  Content-Disposition 附件）；`POST /api/skills/import` 复用同一校验管道
+  （信封 kind/version 400），冲突 409 附确定性改名建议
+  （custom.<base>-2/-3…首个空闲 id）→ 客户端“Import as …”一键重提；
+  导入落 enabled=true；面板每张 custom 卡新增导出按钮（第四键）+
+  顶部 Import 按钮（文件选择器 → 409 冲突确认对话框 → 重命名导入）。
+- **技能级 agent 白名单（P3a）**：CustomSkill.agents 列（JSON agent-id
+  数组，空 = 仅由 requires 决定，向后兼容；**刻意不校验本地 Agent 表**
+  ——导出的白名单可跨实例移植，不存在的 id 诚实永不过门）；
+  runSkill / runSkillQueued 第 3.25 步门控（名单非空且不在其中 → denied，
+  修复在技能侧而非智能体侧）；目录 eligible = requires ∧ 白名单；提示词
+  清单同样过滤（受限技能不再向非名单智能体展示）；注册/编辑对话框
+  “Agent whitelist” 多选（未知 id 渲染为可移除的虚线行）；denied 卡
+  deniedBy=whitelist → “Edit skill whitelist” 深链直达编辑对话框；
+  导入导出/单文档与 bundle 均携带 agents（A8 实证跨实例可移植）。
+- **技能集打包导出（P1）**：`GET /api/skills/export?ids=a,b,c` 或
+  `?all=1` 返回 bundle 文档（kind foundry-lab-skill-bundle / version 1 /
+  skills[]，三选择器互斥 400，内置 400、未知 404、重复 400、全量导出
+  含 disabled 行）；`POST /api/skills/import` 接受 bundle —— **逐技能独立
+  处理、部分失败不回滚**，响应 200 携带诚实报告（imported[] /
+  skipped[]（附确定性改名建议）/ failed[]（按条目报告索引与错误））；
+  `renames` 映射支持报告对话框“Import skipped as suggested”一键重提；
+  UI：选择模式（custom 卡复选框 + Select/Export selected/Select all/
+  Cancel 工具栏）+ Export all + 导入报告对话框；文件上限升至 512KB。
+- **推送式活性刷新（P2a，Q2 房间化）**：新增 `mini-services/skill-events`
+  （:3031 socket.io，POST /emit + GET /health；engine 路径保持默认
+  /socket.io——path "/" 会让 engine.io 吃掉全部 HTTP 请求，实测）；runSkill
+  审计落行 + K5 队列全部终态翻转（transitionInvocation 统一入口 = 条件写
+  + 广播）→ 服务广播 → 前端 `useSkillEvents` 单例连接
+  （`io("/?XTransformPort=3031")`，引用计数、断线重连、重连即点查）
+  → 聊天抽屉 QUEUED 卡**推送即翻转**（轮询降级为离线 4s / 在线 30s
+  心跳）+ Skills Activity tab **新行免刷新实时插入**（过滤器匹配时
+  置顶、已加载行原地翻转）；抽屉标题与 Activity 过滤行显示“live”
+  呼吸灯指示（离线时隐藏）；事件与轮询同池 applyTerminalRows ——
+  谁先到都渲染同一真相。**Q2**：POST /emit 需共享 Bearer token
+  （服务首次 boot 生成 → gitignored `.token` 文件 → 应用侧 TTL 缓存读
+  同文件，浏览器经网关伪造 emit 被 401 挡住）；事件按 agentId /
+  workflowId 路由到封闭语法房间（`all` / `agent:<id>` /
+  `workflow:<id>`，全有或全无校验）；客户端订阅窄化——聊天抽屉只订
+  自己的 agent 房（**关闭态零订阅**），Activity tab 默认全量；health
+  携带房间计数。
+- **技能反馈接地（Q1）**：`skillFeedback` ok 分支携带**截断的真实响应
+  片段**（JSON-compact、800 字符上限、截断显式标注）+ 逐字保真指令
+  ——P 线 E2E 实证模型会为一行摘要编造 data 数组，把真实载荷喳回去
+  后浏览器级金路径中模型逐字段引用真实响应（含真实时间戳），幻觉
+  渲染消除（denied/error 反馈本就诚实，不变）。
+- **技能模板库（Q3）**：bundle 文档升级 **version 2** 技能包（`metadata:
+  {name, description?, tags?}`——带叙事的可分享单元；v1 文档永久接受，
+  校验规则 export/import 双向镜像；导入报告回显包身份）；`GET
+  /api/skills/export?ids=…&name=…&description=…&tags=…` opt-in 升级为
+  v2（slug 文件名）；Skills 面板第四个 **Templates tab**：内置三个策展
+  包（Echo Diagnostics 快+慢双泳道 / Failure Lab 错误路径 / Trusted
+  Header Echo 自定义头验证）——已导入徽章（目录 id 交叉）、可展开
+  技能清单、一键导入（**与文件导入同一 /api/skills/import 泳道**：
+  同校验、同冲突重命名建议、同报告对话框含“Import skipped as
+  suggested” 一键重提）；Registry “Export selected” 升级为打包对话框
+  （name/README/tags → v2 pack，或保留 v1 裸备份）。
+- **推送通道身份化（R1）**：Q2 房间化的收口——房间本是自愿订阅（任何
+  客户端可声明任意 agentId 偷听），`/emit` token 只挡伪造不挡偷听。
+  现在**每个连接必须携带服务端铸造的 HMAC 会话 grant**（`GET
+  /api/skills/events-session` → `v1.<exp>.<payload>.<hmac>`，HMAC-SHA256
+  签名 + 12h 过期，浏览器永远看不到签名钥）；skill-events 连接中间件
+  拒绝无 grant/过期/篡改的握手；连接的默认房间集 = **grant 自身的权限
+  集**（不再盲目入 all）；每次 subscribe 被**服务端钳制**到权限（越权
+  房间被过滤并在 ack 中披露 `filtered`；含 all 的 grant 允许任意窄化，
+  窄 grant 仅允许自己的房间）——QA 实证窄 grant 偷听其他 agent 房间
+  被服务端过滤（对照全权连接两行都收到）。秘密管理升级 **env 优先 +
+  文件回退**（`SKILL_EVENTS_EMIT_TOKEN` / `SKILL_EVENTS_SIGNING_KEY`）；
+  **轮换双向传播 ≤5s 不停服**（服务端 5s TTL + 失配重读；QA 实证旧
+  grant/旧 token 吊销 + 新铸造立即生效 + health 全程 200）；浏览器 hook
+  铸造失败或 grant 被拒时诚实降级轮询（connect_error 触发重铸并更新
+  下次握手的 auth）。
+- **工具循环预猜抑制（R2）**：技能 manifest 加“**围栏后停笔**”指令——
+  Q1 接地修正了模型拿到反馈后的行为，但 E2E 实证模型会在围栏同轮的
+  正文里预猜工具结果（先验幻觉段）；现在指令要求**发出 ```skill 围栏
+  后立即结束回复**（此时任何结果描述都必然是猜测），等待系统返回真实
+  结果后再继续。浏览器级双采样实证：两个 agent（Computational
+  Biologist + Principal Investigator）、两种技能（custom webhook +
+  built-in bio）的第一轮回复均**在围栏闭合处精确结束（零正文）**，
+  第二轮携带真实数据接地。
+- **包身份持久化（R3）**：`CustomSkill.packName` 列——bundle v2 导入
+  时从 `metadata.name` 回填（手工注册 / 单文档导入 / v1 bundle 无包）；
+  Registry 卡片 **amber "pack: X" 徽章** + 展开区 **Origin 行**（含卸载
+  指引）；disabled 行保留投影；`POST /api/skills/pack/uninstall`
+  **按包身份整体卸载**（`WHERE packName = X` 精确匹配——改名副本随包
+  删除、无包技能免疫、审计历史保留；0 行 404 诚实拒绝）；Templates
+  包卡 **Uninstall pack 按钮**（owned > 0 时出现）+ AlertDialog 确认
+  （披露改名副本/审计保留/无包免疫语义）。QA 实证：卸载含 disabled
+  行的包 → enabled+disabled 双删 + 审计行存续 + 注册表真注销（收敛
+  窗口后 404 invalid）。
 
 ![技能面板](docs/images/28-skills-panel.png)
+![聊天 QUEUED 卡深链](docs/images/40-m-queued-deeplink.png)
+![自定义 webhook 技能注册](docs/images/42-m-registry-custom.png)
+![custom 技能管理卡（N2）](docs/images/47-n-registry-custom-card.png)
+![聊天慢技能 QUEUED 卡（N1）](docs/images/49-n-chat-queued-card.png)
+![注册卡 requires 药丸（O1/O3）](docs/images/51-o-registry-requires.png)
+![导入冲突重命名对话框（O3）](docs/images/52-o-import-conflict-rename.png)
+![QUEUED 卡活性刷新（O2）](docs/images/54-o-queued-card-refreshed.png)
+![白名单药丸与导出工具栏（P3a/P1）](docs/images/57-p-registry-whitelist.png)
+![白名单拒绝卡与深链按钮（P3a）](docs/images/58-p-denied-whitelist-card.png)
+![白名单编辑深链预填（P3a）](docs/images/59-p-deeplink-whitelist-dialog.png)
+![选择模式导出（P1）](docs/images/60-p-select-mode.png)
+![bundle 导入报告（P1）](docs/images/61-p-bundle-import-report.png)
+![Activity 实时插入与 live 指示（P2a）](docs/images/62-p-activity-live.png)
+![推送翻转的 QUEUED 卡与 live 灯（P2a）](docs/images/63-p-queued-card-pushed.png)
+![移动端白名单对话框（P3a）](docs/images/64-p-mobile-whitelist-dialog.png)
+![技能模板库（Q3）](docs/images/65-q-templates-tab.png)
+![Activity 实时插入与 live 指示（Q2 房间化推送）](docs/images/66-q-activity-live.png)
+![移动端模板库（Q3）](docs/images/67-q-mobile-templates.png)
+![Registry 包徽章与 Origin 行（R3）](docs/images/68-r3-registry-pack-badge.png)
+![包卸载确认对话框（R3）](docs/images/69-r3-pack-uninstall-dialog.png)
+![Activity live 推送与审计保留（R1/R3）](docs/images/70-r1-activity-live-push.png)
+![围栏后停笔的真 LLM 回复（R2）](docs/images/71-r2-fence-stop-chat.png)
+![移动端聊天抽屉（R2）](docs/images/72-mobile-chat-drawer.png)
+![移动端模板库（R3 卸载按钮）](docs/images/73-mobile-templates.png)
 ![智能体聊天与工具调用](docs/images/12-agent-chat.png)
 
 ### 🧬 计算工具（12 种独立节点）
@@ -138,14 +306,24 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
   冲突自动偏移到最近空位——两次 sweep 同源、连续快速新建都不会叠卡。
 - **全局运行队列（Runs）**：顶栏 Runs 按钮（运行中数量徽标）打开跨工作流
   的实时队列：运行中/排队（3 秒轮询 + 进度条）、近 48h 失败节点一键
-  **重试**（即时反馈 + 单节点重跑并级联下游）、最近完成（时长统计）；
-  行点击直接跳到对应工作流并选中该节点。运行中的节点可以**中止**
-  （Stop / Stop all：节点立即标记为 failed；在途执行的结果被丢弃，
-  下游随之按失败语义解锁——已派发到集群的作业会一并取消，被取消的
-  ToolJob 行在集群/AlphaFold 面板显示 `cancelled` + `via node stop`
-  溯源徽标）；本地执行的每个节点受 15 分钟**看门狗**保护（集群长任务
-  豁免——集群通道自带 30/120 分钟诚实轮询天花板），引擎挂死不再楔死
-  并行池。
+  **重试**（`?async=1` 异步模式：领占即返回，按钮 spinner 只覆盖 claim
+  阶段，执行后台继续由轮询接手呈现）、最近完成（时长统计）+ **已取消**
+  （划线行 + Ban 图标，与失败/完成视觉三分）；行点击直接跳到对应工作流
+  并选中该节点（行内 Stop/Retry 按钮的键盘 Enter 激活不会被行劫持）。
+  运行中的节点可以**真实中止**（Stop / Stop all）：本地引擎进程被
+  SIGTERM + 2s 后 SIGKILL 升级击杀（spawn 前落地的停止则由 pre-spawn
+  守卫直接不启动引擎）；行立即翻转为 **`cancelled` 终态**（非 failed）
+  + 链接的集群/本地 ToolJob 一并取消（`via node stop` 溯源徽标）；
+  在途执行的迟到结果被条件写守卫丢弃，永不复活用户的停止裁决；
+  取消的节点可像失败节点一样重跑（领占式 re-claim）。
+  **执行令牌（I 线 #47）**：每次领占原子地写入全新 `runToken`，所有 persist
+  守卫升级为 `where status running AND runToken = 本次领占`——停止后重试的场景，
+  旧泳道（不可击杀的 LLM 长车道）迟到落笔持有陈旧令牌、匹配零行，**新运行
+  的行永不被旧结果覆盖**（QA 以 ALPHA/BETA 双泳道竞态实证：终态结果恒为新
+  运行的参数产出）；SSE 集群 reconcile 同样令牌化（只落定它读到的那次运行）。
+  本地执行的每个
+  节点受 15 分钟**看门狗**保护（集群长任务豁免——集群通道自带
+  30/120 分钟诚实轮询天花板），引擎挂死不再楔死并行池。
 
 ### 🖼️ 3D 结构查看器
 
@@ -174,10 +352,13 @@ BLAST（NCBI URL-API + RID 轮询）、RCSB PDB 检索、PubMed EUtils、UniProt
 - **结构 RMSD 筛选指标**：选定一个参考候选 → 服务端为每个带 PDB 的候选计算全局
   Cα RMSD（序列比对 + 最优刚体拟合）并**写入指标体系**——与 pLDDT/clashes 等引擎
   指标完全同权：可排序、可区间过滤、可加权、随 CSV/报告导出；原子事务提交，
-  参考标签与数值永不分离；重算换参考无陈旧残留。参考行带 **REF 徽章**（其 0 Å 是
-  自比标签，已从指标域计算中排除——其余候选的归一化区间不再被压扁）；**参考选择器
-  只列出磁盘上真实存在的 PDB**（悬空引用显示计数与修复指引）；rescan 新增的候选
-  尚无 RMSD 值时给出 amber 提示 + 一键 **Recompute vs 当前参考**。
+  参考标签与数值永不分离；重算换参考无陈旧残留。
+  I 线打磨（#38/#39）：参考选择器按**磁盘存在性预检**——PDB 悬空的候选以禁用项 +
+  琥珀 "file missing" 标记呈现（不再"能选不能算"）；当前参考的 PDB 丢失时参考
+  chip 诚实警告；rescan 新增候选缺 rmsd 键时显示**补算提示**；**域排除开关**
+  （`rmsdExcludeRef` 持久化）把参考的 rmsd=0 锚点移出指标域——其余候选的归一化
+  区间不再被常数 0 压扁（参考行仍在表内显示 0 + 常显 "REF" 徽标，报告披露
+  排除状态）。
 - **Promote 回画布**：把选中的候选提升为画布输入节点，下游工具节点
   **自动接线** pdb/fasta 文件（已用真实 ProteinMPNN 运行验证闭环）。
 - **导出 CSV / Markdown 报告**：选择子集或全量，报告含权重、全候选表、
@@ -363,8 +544,8 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | GET | `/api/tools/jobs/:id` | 任务状态 / 日志 / 文件 |
 | GET/POST | `/api/workflow` | 工作流读取 / 全量运行 |
 | POST | `/api/workflow/nodes` · `/edges` | 增删节点 / 连线 |
-| POST | `/api/workflow/nodes/:id/run` | 单节点运行 |
-| POST | `/api/workflow/nodes/:id/stop` | 中止运行/排队中的节点（标记 failed + 解锁下游） |
+| POST | `/api/workflow/nodes/:id/run` | 单节点运行（`?async=1`：领占即返回，执行后台继续） |
+| POST | `/api/workflow/nodes/:id/stop` | 真实中止：击杀本地引擎进程 + 取消链接作业 + 行翻转为 `cancelled` |
 | POST | `/api/workflow/nodes/:id/sweep` | 参数扫描（网格展开为变体节点组） |
 | GET | `/api/workflow/nodes/:id/sweep-group` | 变体组对比数据（参数轴 + 聚合指标，只读） |
 | POST | `/api/screening`（`source.kind="sweep"`） | 一键收割整个变体组为筛选 campaign |
@@ -377,13 +558,22 @@ bun run e2e:cluster            # 基础验收（直连 + Slurm + 流式对账 + 
 | POST | `/api/meetings/:id/run` | 多智能体会议 |
 | POST | `/api/research/:id/run` | 研究管线 |
 | GET/POST | `/api/screening` | 筛选 campaign 列表 / 创建 |
-| PATCH | `/api/screening/:id` | 权重持久化 |
+| PATCH | `/api/screening/:id` | 权重持久化 + `rmsdExcludeRef` 域排除开关 |
 | GET | `/api/screening/:id/candidates` | 候选分页 |
 | POST | `/api/screening/:id/rmsd` | 结构 RMSD 指标轴计算（`{refId}`，原子事务） |
 | POST | `/api/screening/:id/promote` | 候选提升回画布 |
 | GET | `/api/bio-tools/:type` | BLAST / PDB / PubMed / UniProt |
-| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析） |
-| GET | `/api/skills/invocations` | 统一调用审计日志（limit/skillId/source/status/agentId 过滤） |
+| GET | `/api/skills` | 技能注册表目录（`?agentId=` 附资格解析；含 custom.* 端点；N2：disabled 行带 enabled:false 仍列出；O1：requires 投影 + eligible 对齐） |
+| POST | `/api/skills` | 注册自定义 webhook 技能（M3：label/description/endpoint/params 校验，冲突 409；N1：latency "fast"\|"slow"；O1：requires 闭合集校验；P3a：agents 白名单 ≤32、重复/非字符串 400） |
+| PATCH | `/api/skills/:skillId` | N2：局部更新 custom 技能（label/description/endpoint/params/headers/latency/enabled；空 body 400、内置 400、未知 404；O1：requires 数组替换/null 清除；P3a：agents 同语义） |
+| DELETE | `/api/skills/:skillId` | 注销自定义技能（内置 400 / 未知 404；审计历史保留） |
+| POST | `/api/skills/invoke` | REST 调用快速技能（200 ok / 400 invalid / 403 denied / 429 limited / 500 error）；N1：slow custom 返回 202 queued（后台队列 + jobId）；O1：custom requires 门控同样生效（denied 403） |
+| GET | `/api/skills/invocations` | 统一调用审计日志（M2：keyset 分页 cursor + limit/skillId/source/status/agentId 过滤；O2：`?ids=` 点查通道 ≤ 50 id、忽略过滤器，供 QUEUED 卡刷新轮询） |
+| GET | `/api/skills/export` | O3/P1/Q3：导出可移植文档 —— `?skillId=` 单技能 / `?ids=a,b` 列表 bundle / `?all=1` 全量（三选择器互斥 400；内置 400、未知 404、重复 400；含 requires + P3a agents；Content-Disposition 附件）；Q3：bundle 泳道附 `?name/description/tags=` → **version 2 技能包**（metadata 校验 name 1-80 / desc ≤500 / tags ≤8×≤24，超限 400；与 skillId 选择器并用 400） |
+| POST | `/api/skills/import` | O3/P1/Q3：导入 —— 单文档 201（复用注册校验管道，冲突 409 附确定性改名 suggestion，可选顶层 id 重命名）；bundle 文档（v1 ∪ v2）200 携带逐技能报告（imported/skipped+建议/failed 索引错误，部分失败不回滚；`renames` 映射重提；**Q3：v2 报告回显 bundle 元数据**；v2 缺 metadata 400）；均落 enabled=true |
+| GET/POST | `/api/skills/retention` | M2：审计保留策略预览（GET）/ 干跑与执行（POST：maxAgeDays/rowCap/dryRun） |
+| GET | `/api/skills/events-session` | R1：铸造推送通道会话 grant（HMAC-SHA256 签名 + 12h 过期；返回 `{token, rooms:["all"], expiresAt}`——单用户工作室的诚实全权，未来认证在此按身份收窄；签名钥不可用 → 503，浏览器降级轮询） |
+| POST | `/api/skills/pack/uninstall` | R3：按包身份整体卸载（`{packName}` 精确匹配 `WHERE packName=X`——enabled+disabled 随包删除、改名副本随包删除、无包技能免疫、审计历史保留；未知包 404 / 空名与超 80 字符 400） |
 
 ## 常见问题
 

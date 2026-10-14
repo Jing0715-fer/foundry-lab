@@ -4,11 +4,16 @@
 //
 // Cross-workflow execution view, opened from the header's Runs button:
 //   - Running & Queued: live progress bars per node (+ its workflow), polled
-//     every 3s while the sheet is open.
-//   - Failed (last 48h): each row has Retry → POST /api/workflow/nodes/:id/run
-//     (single-node lane: claims the terminal node conditionally and cascades
-//     downstream whose upstreams are completed).
-//   - Recent (last 48h): terminal runs with duration.
+//     every 3s while the sheet is open. Each row carries Stop → POST
+//     /api/workflow/nodes/:id/stop (K lane: SIGTERMs the local engine
+//     process / cancels the linked cluster job and flips the row to
+//     cancelled).
+//   - Failed (last 48h): each row has Retry → POST /api/workflow/nodes/:id/run?async=1
+//     (K lane async mode: claim → immediate response; execution continues in
+//     the background and the 3s poll surfaces progress — the button spinner
+//     covers only the claim phase).
+//   - Recent (last 48h): terminal runs (incl. cancelled — struck through)
+//     with duration.
 //
 // Row click → loads that workflow (switcher contract: fetch by id →
 // setWorkflow), selects the node, jumps to the canvas.
@@ -16,6 +21,7 @@
 import * as React from "react";
 import {
   Activity,
+  Ban,
   CheckCircle2,
   ChevronRight,
   CircleDashed,
@@ -64,6 +70,7 @@ interface RunsPayload {
     running: number;
     queued: number;
     failed: number;
+    cancelled: number;
     completedInWindow: number;
   };
 }
@@ -112,11 +119,15 @@ function Row({
       aria-label={`${run.name} — ${run.status}. Activate to open on the canvas.`}
       onClick={onClick}
       onKeyDown={(e) => {
-        // P1-1 (restored from the parallel C+E line): only activate the ROW
-        // when the row itself is focused — a focused Stop/Retry button's
-        // Enter/Space must activate the button, not bubble here (which
-        // preventDefault-kills the button AND mis-navigates the canvas).
-        if (e.target !== e.currentTarget) return;
+        // Keyboard activation for the ROW only: keydowns originating inside
+        // an embedded interactive element (Stop / Retry button, link) must
+        // bubble to THAT element, not trigger the row jump — the old
+        // unconditional handler stole Enter from keyboard users (QA P1-4,
+        // S/E line). closest() is stronger than the e.target !== e.currentTarget
+        // identity check: it also covers focusable children of future rows.
+        if ((e.target as HTMLElement).closest("button, a, [role='button']")) {
+          return;
+        }
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onClick?.();
@@ -133,7 +144,9 @@ function Row({
               ? "bg-slate-500/15 text-slate-600 dark:text-slate-400"
               : run.status === "failed"
                 ? "bg-rose-500/15 text-rose-600 dark:text-rose-400"
-                : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+                : run.status === "cancelled"
+                  ? "bg-zinc-500/15 text-zinc-600 dark:text-zinc-400"
+                  : "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
         )}
       >
         {run.status === "running" ? (
@@ -142,13 +155,22 @@ function Row({
           <CircleDashed className="size-4" />
         ) : run.status === "failed" ? (
           <TriangleAlert className="size-4" />
+        ) : run.status === "cancelled" ? (
+          <Ban className="size-4" />
         ) : (
           <CheckCircle2 className="size-4" />
         )}
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
+          <span
+            className={cn(
+              "min-w-0 flex-1 truncate text-sm font-medium leading-tight",
+              // Cancelled runs are dead, not done — strike them through so
+              // the lane visually separates "produced output" from "aborted".
+              run.status === "cancelled" && "text-muted-foreground line-through",
+            )}
+          >
             {run.name}
           </span>
           {run.status === "failed" && run.failureReason && (
@@ -177,7 +199,9 @@ function Row({
         )}
         {run.status !== "running" && run.status !== "pending" && (
           <span className="mt-0.5 block text-[11px] text-muted-foreground">
-            {fmtDuration(durationOf(run))}
+            {run.status === "cancelled"
+              ? "cancelled — stopped by user"
+              : fmtDuration(durationOf(run))}
           </span>
         )}
       </span>
@@ -269,8 +293,9 @@ export function RunsSheet() {
 
   // Retry a failed node via the single-node run lane (claims terminal
   // nodes conditionally + BFS-cascades completed-upstream descendants).
-  // E2 fire-and-forget: the toast is immediate, the POST runs in the
-  // background, and the 3s poll flips the row to running/queued.
+  // K lane async mode (?async=1): the POST returns after the CLAIM (~ms),
+  // execution continues in the background, and the 3s poll flips the row
+  // into the active lane — the spinner covers the claim phase only.
   const retry = React.useCallback(
     (run: RunRow) => {
       setRetryingId(run.nodeId);
@@ -280,14 +305,14 @@ export function RunsSheet() {
       });
       void (async () => {
         try {
-          const res = await fetch(`/api/workflow/nodes/${run.nodeId}/run`, {
+          const res = await fetch(`/api/workflow/nodes/${run.nodeId}/run?async=1`, {
             method: "POST",
           });
           if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.error || `HTTP ${res.status}`);
           }
-          // The run lane finished — reconcile the row into Recent.
+          // Claim landed — reconcile the row into the active lane.
           const fresh = await fetch("/api/runs");
           if (fresh.ok) setData(await fresh.json());
         } catch (e) {
@@ -304,9 +329,10 @@ export function RunsSheet() {
     [toast],
   );
 
-  // E4: stop one active node (running or queued) — POST /stop marks it
-  // failed with a user-stop trace; late engine results are discarded by the
-  // conditional persist in every execution lane.
+  // K lane: stop one active node (running or queued) — the REAL stop:
+  // the local engine process is SIGTERMed, linked cluster/local jobs are
+  // cancelled, the row flips to `cancelled`, and late engine results are
+  // discarded by the conditional persist in every execution lane.
   const stop = React.useCallback(
     async (run: RunRow) => {
       setStoppingIds((ids) => (ids.includes(run.nodeId) ? ids : [...ids, run.nodeId]));
@@ -314,13 +340,15 @@ export function RunsSheet() {
         const res = await fetch(`/api/workflow/nodes/${run.nodeId}/stop`, {
           method: "POST",
         });
+        const body: { detail?: string } = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const err = await res.json().catch(() => ({}));
-          throw new Error(err.error || `HTTP ${res.status}`);
+          throw new Error(body.detail || (res.status === 409 ? "Node already settled" : `HTTP ${res.status}`));
         }
         toast({
           title: "Stopped",
-          description: `${run.name} marked failed (stopped by user)`,
+          description: body.detail
+            ? `${run.name} — ${body.detail}`
+            : `${run.name} cancelled (stopped by user)`,
           variant: "success",
         });
         const fresh = await fetch("/api/runs");
@@ -338,9 +366,9 @@ export function RunsSheet() {
     [toast],
   );
 
-  // E4 workflow-level stop: every currently active row (running + queued)
-  // across all workflows. Fires the same /stop lane per row; the runner's
-  // claim skips the now-failed queued rows and the pool drains.
+  // K lane workflow-level stop: every currently active row (running +
+  // queued) across all workflows. Fires the same /stop lane per row; the
+  // runner's claim skips the now-cancelled queued rows and the pool drains.
   const stopAll = React.useCallback(
     async (rows: RunRow[]) => {
       if (rows.length === 0) return;
@@ -371,7 +399,7 @@ export function RunsSheet() {
               ? `Stopped ${rows.length} run${rows.length === 1 ? "" : "s"}`
               : `Stopped ${rows.length - failures.length}/${rows.length} runs`,
           description:
-            failures.length > 0 ? failures[0] : "Active nodes were marked failed (stopped by user).",
+            failures.length > 0 ? failures[0] : "Active nodes were cancelled (stopped by user) — engines halted where local.",
           variant: failures.length === 0 ? "success" : "destructive",
         });
         const fresh = await fetch("/api/runs");
@@ -402,7 +430,7 @@ export function RunsSheet() {
             {loading && !data
               ? "Loading run queue…"
               : summary
-                ? `${summary.running} running · ${summary.queued} queued · ${summary.failed} failed (48h) · ${summary.completedInWindow} completed (48h)`
+                ? `${summary.running} running · ${summary.queued} queued · ${summary.failed} failed (48h)${summary.cancelled > 0 ? ` · ${summary.cancelled} cancelled (48h)` : ""} · ${summary.completedInWindow} completed (48h)`
                 : "Global run queue across all workflows"}
           </SheetDescription>
         </SheetHeader>
@@ -426,7 +454,7 @@ export function RunsSheet() {
                   size="sm"
                   className="h-6 gap-1 px-2 text-[11px] text-rose-600 hover:text-rose-700 dark:text-rose-400"
                   disabled={stoppingAll}
-                  title="Stop every running and queued node — they are marked failed (stopped) and downstream nodes unlock with failure semantics."
+                  title="Stop every running and queued node — local engines are killed, linked jobs cancelled, rows flip to cancelled, and downstream nodes unlock."
                   onClick={(e) => {
                     e.stopPropagation();
                     void stopAll([...running, ...queued]);
@@ -461,8 +489,8 @@ export function RunsSheet() {
                           disabled={stoppingIds.includes(r.nodeId)}
                           title={
                             r.status === "running"
-                              ? "Stop this node — marked failed; its late engine result is discarded."
-                              : "Cancel this queued node — marked failed so the runner skips it."
+                              ? "Stop this node — its local engine process is killed and the row flips to cancelled; late engine results are discarded."
+                              : "Cancel this queued node — flips the row to cancelled so the runner skips it."
                           }
                           onClick={(e) => {
                             e.stopPropagation();
@@ -553,9 +581,9 @@ export function RunsSheet() {
           <span className="inline-flex items-center gap-1.5">
             <Activity className="size-3" />
             Workflow runs execute up to 3 independent nodes in parallel; retries
-            cascade downstream. Stopped nodes are marked failed — downstream
-            nodes unlock with failure semantics, and a node stuck longer than
-            15m is failed by the watchdog.
+            cascade downstream. Stopped nodes land in cancelled — the local
+            engine is halted, downstream nodes unlock with failure semantics,
+            and a node stuck longer than 15m is failed by the watchdog.
           </span>
         </footer>
       </SheetContent>

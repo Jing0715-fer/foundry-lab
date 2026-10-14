@@ -64,7 +64,11 @@ for (const t of COMP_TOOLS) {
         t.key,
         `skill-${stamp}-${Date.now()}`,
       );
-      const res = await executeCompToolReal(t.key, params, workDir);
+      const res = await executeCompToolReal(t.key, params, workDir, {
+        // K lane: workflow-lane agent nodes that fire comp skills get the
+        // same real-stop story (process registry keyed by node id).
+        runKey: ctx.nodeId,
+      });
       if (res.exitCode !== 0) {
         throw new Error(
           `${t.label} exited with code ${res.exitCode}:\n${(res.stderr || res.stdout).slice(-400)}`,

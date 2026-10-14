@@ -61,14 +61,37 @@ export interface ChatMessageDTO {
 }
 
 export interface ToolCall {
-  kind: "comp" | "bio" | "web";
+  kind: "comp" | "bio" | "web" | "custom";
   tool: string; // rfdiffusion | proteinmpnn | alphafold | blast | pdb | search | ...
   /** Canonical skill id when the call flowed through the skill layer (J lane). */
   skillId?: string;
   params: Record<string, unknown>;
   result?: string;
-  status?: "pending" | "running" | "completed" | "failed";
+  status?: "pending" | "running" | "completed" | "failed" | "queued" | "cancelled";
+  /** K5: the background ToolJob row when a slow comp skill was queued. */
   jobId?: string;
+  /** M1: the SkillInvocation audit row the call landed on (deep-link
+   *  target for the chat card → Skills Activity tab). Absent on legacy
+   *  rows (pre-M1) and when the audit write itself failed. */
+  invocationId?: string;
+  /** M1: the RAW skill status (ok|error|denied|invalid|skipped|limited|
+   *  queued|cancelled) the pipeline reported — `status` above collapses
+   *  everything non-ok into "failed" for legacy display, so denied /
+   *  limited cards were indistinguishable from real errors. Chat cards
+   *  use this to offer the right deep-link (denied → agent editor). */
+  skillStatus?: string;
+  /** P3a: which authorization dimension refused the call — "whitelist"
+  *  (the skill's agent list doesn't include this agent; fix = edit the
+  *  SKILL in the Registry) vs "requires" (the agent's knowledge flags
+  *  lack a requirement; fix = the agent editor). Absent on legacy rows
+  *  and non-denied cards. */
+  deniedBy?: "requires" | "whitelist";
+  /** O2: set by the chat drawer's live refresh when the invocation row
+   *  this card points at has FLIPPED since the message was persisted —
+   *  the card's snapshot text swaps to "updated from the Activity log"
+   *  so the user can tell a live status from a stale snapshot. The
+   *  persisted ChatMessage row is NEVER rewritten (audit honesty). */
+  refreshedAt?: string;
 }
 
 export type TaskType = "general" | "design" | "analysis" | "research";
@@ -147,7 +170,7 @@ export type NodeType =
   | "rf3" | "esmfold" | "colabfold";
 
 export type NodeStatus =
-  | "idle" | "pending" | "running" | "completed" | "failed";
+  | "idle" | "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export type PortKind =
   | "agent" | "text" | "context" | "summary"
@@ -421,10 +444,10 @@ export interface ScreeningCandidateDTO {
   sequence: string | null;
   length: number | null;
   /**
-   * I1a: does the linked PDB actually exist on disk right now? The reference
-   * selector (and any structural compute) needs this — a harvested-then-
-   * deleted file would otherwise let the user pick a reference that the
-   * server honestly 400s on ("needs a linked PDB file on disk").
+   * I-1 (#38): pdbPath is set AND the file exists on disk (checked at
+   * DTO-serialization time on the server). The demo baseline carries
+   * dangling PDB references — this flag lets the RMSD reference selector
+   * DISABLE those candidates up front instead of letting Compute 400.
    */
   pdbExists: boolean;
   /** Raw metric values keyed by canonical metric key. */
@@ -454,6 +477,13 @@ export interface ScreeningDTO {
    * (null when never computed, or the reference was deleted since).
    */
   rmsdRef: { id: string; name: string } | null;
+  /**
+   * I-1c (#39): when true, the reference candidate's rmsd=0 anchor is
+   * EXCLUDED from the rmsd metric-domain computation (persisted per
+   * screening; the reference row still SHOWS rmsd 0 in the table — only
+   * the domain/normalization calc ignores it).
+   */
+  rmsdExcludeRef: boolean;
   status: string;
   candidateCount: number;
   starredCount: number;

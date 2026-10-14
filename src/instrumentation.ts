@@ -10,6 +10,18 @@
 //        jobs (params._meta.cluster === true) are left alone — the cluster
 //        sweep (reconcileClusterJobs) keeps advancing them from the remote
 //        side, and the node stream route reconciles their nodes later.
+//        K5 addition: "queued" ToolJob rows (skill-lane background runs
+//        whose fire-and-forget executor died with the old process) are
+//        failed the same way — nothing carries a queued queue across a
+//        restart.
+//      - every SkillInvocation stuck in "queued" (K5) → "error" with an
+//        honest orphan message. The queued state is only ever advanced by
+//        the background executor in the SAME process that created it; after
+//        a boot it can never land.
+//      - M2 (K6): skill-audit retention sweep with the DEFAULT policy
+//        (terminal rows > 90 days old, overflow beyond 20,000) — the
+//        audit table gets one governance checkpoint per server lifetime,
+//        log-only summary, best-effort.
 //   2. Starts the workflow scheduled-run sweeper, which persists + fires
 //      WorkflowSchedule rows through the real execution engine.
 //
@@ -42,9 +54,21 @@ export async function register() {
   // ── 2. Scheduled-run sweeper (has its own HMR guard) ─────────────────────
   const { startScheduleSweeper } = await import("./lib/scheduler");
   startScheduleSweeper();
+
+  // ── 3. Skill-audit retention sweep (M2/K6, default policy, log-only) ────
+  try {
+    const { sweepRetentionOnBoot } = await import("./lib/skills/retention");
+    await sweepRetentionOnBoot();
+  } catch (e) {
+    console.error(
+      "[instrumentation] skill-audit retention sweep failed:",
+      e instanceof Error ? e.message : e,
+    );
+  }
 }
 
-/** Fail nodes + local tool jobs orphaned by a server restart (see header). */
+/** Fail nodes + local tool jobs + queued skill rows orphaned by a restart
+ *  (see header). */
 async function reconcileStaleRuns(): Promise<void> {
   // Dynamic import keeps the Prisma client out of the edge/inspect phases.
   const { db } = await import("./lib/db");
@@ -80,13 +104,15 @@ async function reconcileStaleRuns(): Promise<void> {
     }
   }
 
-  // 1b. ToolJobs stuck in "running" WITHOUT a live local process. Local runs
-  //     never persist their pid, so any non-cluster "running" row is
-  //     orphaned. Cluster rows (params._meta.cluster === true) are skipped —
-  //     the sweep owns them.
+  // 1b. ToolJobs stuck in "running" WITHOUT a live local process, plus
+  //     "queued" rows (K5 skill-lane background runs — queued rows only
+  //     exist behind a fire-and-forget executor in the creating process).
+  //     Local runs never persist their pid, so any non-cluster "running"
+  //     row is orphaned. Cluster rows (params._meta.cluster === true) are
+  //     skipped — the sweep owns them.
   const stuckJobs = await db.toolJob.findMany({
-    where: { status: "running" },
-    select: { id: true, tool: true, params: true },
+    where: { status: { in: ["running", "queued"] } },
+    select: { id: true, tool: true, params: true, status: true },
   });
   for (const j of stuckJobs) {
     let isCluster = false;
@@ -109,13 +135,18 @@ async function reconcileStaleRuns(): Promise<void> {
         data: {
           status: "failed",
           stderr:
-            `Server restarted mid-run — the local process died with the old ` +
-            `server (no pid was persisted to verify/stop it). Re-run the tool.`,
+            j.status === "queued"
+              ? "Server restarted before the queued run started — the " +
+                "background executor died with the old process. Re-ask the skill."
+              : "Server restarted mid-run — the local process died with the old " +
+                "server (no pid was persisted to verify/stop it). Re-run the tool.",
           exitCode: 1,
           finishedAt: now,
         },
       });
-      console.log(`[instrumentation] failed stale local tool job ${j.tool} (${j.id})`);
+      console.log(
+        `[instrumentation] failed stale ${j.status} tool job ${j.tool} (${j.id})`,
+      );
     } catch (e) {
       console.error(
         `[instrumentation] could not fail stale tool job ${j.id}:`,
@@ -124,11 +155,30 @@ async function reconcileStaleRuns(): Promise<void> {
     }
   }
 
-  const total = stuckNodes.length + stuckJobs.length;
+  // 1c. SkillInvocations stuck in "queued" (K5) — the background executor
+  //     that owned them died with the old process; the row can never land.
+  const orphanedInvocations = await db.skillInvocation.updateMany({
+    where: { status: "queued" },
+    data: {
+      status: "error",
+      error:
+        "Server restarted before the background tool job completed — the " +
+        "run was orphaned. Re-invoke the skill.",
+    },
+  });
+  if (orphanedInvocations.count > 0) {
+    console.log(
+      `[instrumentation] failed ${orphanedInvocations.count} queued skill invocation(s) (orphaned by restart)`,
+    );
+  }
+
+  const total =
+    stuckNodes.length + stuckJobs.length + orphanedInvocations.count;
   if (total > 0) {
     console.log(
       `[instrumentation] boot reconciliation: ${stuckNodes.length} node(s) + ` +
-        `${stuckJobs.length} local tool job(s) marked failed (server restarted mid-run)`,
+        `${stuckJobs.length} tool job(s) + ${orphanedInvocations.count} queued skill ` +
+        `invocation(s) marked failed (server restarted mid-run)`,
     );
   }
 }

@@ -17,6 +17,10 @@
 
 import { db } from "@/lib/db";
 import { getSkill } from "./registry";
+import { checkSkillRateLimit } from "./rate-limit";
+// P2a: every audit write is also broadcast to connected browsers (the
+// O2 4s poll becomes a push channel; the row stays the source of truth).
+import { emitInvocationEvent } from "./events";
 import type {
   SkillContext,
   SkillDefinition,
@@ -103,8 +107,15 @@ export async function runSkill(
 ): Promise<SkillRunResult> {
   const t0 = Date.now();
 
-  // 1. Resolve.
-  const def = getSkill(skillId);
+  // 1. Resolve. M3: a miss may mean this module instance's custom-skill
+  //    registry is stale (per-route bundles, TTL sync) — force a re-sync
+  //    from the table and retry before declaring the id invalid.
+  let def = getSkill(skillId);
+  if (!def) {
+    const { syncCustomSkillsNow } = await import("./dynamic");
+    await syncCustomSkillsNow();
+    def = getSkill(skillId);
+  }
   if (!def) {
     return await finalize(
       {
@@ -144,11 +155,60 @@ export async function runSkill(
           skillId: def.id,
           status: "denied",
           summary: `Denied — requires ${missing.join(", ")}`,
+          deniedBy: "requires",
           error:
             `This agent has ${missing.join(" and ")} disabled in its knowledge ` +
             "configuration, so the skill was refused at execution time. Tell the " +
             "user to enable it in the agent's settings if they want this capability — " +
             "do not pretend the tool ran.",
+          durationMs: Date.now() - t0,
+        },
+        ctx,
+        params,
+      );
+    }
+
+    // 3.25. P3a gate — the per-skill agent whitelist. Non-empty list and
+    // this agent not on it → refused BEFORE any rate-limit slot or handler
+    // runs. The fix for this denial lives on the SKILL (edit its whitelist
+    // in the Registry) — pointedly NOT in the agent's own settings.
+    if (def.agents && def.agents.length > 0 && !def.agents.includes(ctx.agent.id)) {
+      return await finalize(
+        {
+          skillId: def.id,
+          status: "denied",
+          summary: `Denied — agent not on the skill's whitelist (${def.agents.length} allowed)`,
+          deniedBy: "whitelist",
+          error:
+            `This skill is restricted to a whitelist of ${def.agents.length} ` +
+            `agent${def.agents.length === 1 ? "" : "s"}, and "${ctx.agent.title}" ` +
+            "is not on it, so the skill was refused at execution time. Tell the " +
+            "user to edit the skill's agent whitelist in the Skills Registry (or " +
+            "ask a whitelisted agent) if they want this capability — do not " +
+            "pretend the tool ran.",
+          durationMs: Date.now() - t0,
+        },
+        ctx,
+        params,
+      );
+    }
+
+    // 3.5. Rate limit (K3) — per-agent sliding window, checked AND consumed
+    // only when the invocation is about to execute. Anonymous lanes (no
+    // ctx.agent) are unlimited. The refusal itself is audited as "limited".
+    const rl = checkSkillRateLimit(ctx.agent.id, def);
+    if (!rl.allowed) {
+      const retryIn = Math.ceil((rl.retryAfterMs ?? 0) / 1000);
+      return await finalize(
+        {
+          skillId: def.id,
+          status: "limited",
+          summary: `Rate limited — max ${rl.max} per ${Math.round(rl.windowMs / 1000)}s per agent`,
+          error:
+            `Rate limit reached for skill "${def.id}" — at most ${rl.max} ` +
+            `invocations per ${Math.round(rl.windowMs / 1000)}s per agent. ` +
+            `Try again in ~${retryIn}s. Do not retry immediately and do not ` +
+            "pretend the tool ran — answer from what you already have.",
           durationMs: Date.now() - t0,
         },
         ctx,
@@ -237,6 +297,8 @@ export async function recordSkillInvocation(entry: {
         durationMs: entry.durationMs ?? null,
       },
     });
+    // P2a: broadcast the fresh row (best-effort, never blocks).
+    emitInvocationEvent(row);
     return row.id;
   } catch (e) {
     console.warn("[skills] audit write failed:", (e as Error).message);
@@ -282,12 +344,58 @@ function safeJson(v: unknown): string {
   }
 }
 
+// ── Q1: response snippet grounding ──────────────────────────────────────────
+
+/** Cap for the raw-response snippet fed back to the model. Large enough to
+ *  carry a real webhook echo or a bio-search result list verbatim; small
+ *  enough that a tool loop with several calls cannot bloat the conversation
+ *  history (P-line E2E evidence: models fabricate around 1-line summaries,
+ *  not around real payloads). */
+const MAX_SNIPPET_CHARS = 800;
+
+/** Render the handler payload as a compact, capped, honest snippet.
+ *  - undefined / null / empty → null (no snippet section — nothing to ground).
+ *  - JSON-compact (no indent): the wire shape is what the model should quote.
+ *  - Truncation is EXPLICIT (`… +N chars`) so the model knows the payload
+ *    continues and says so instead of treating the cut as the whole story. */
+export function dataSnippet(data: unknown): string | null {
+  if (data === undefined || data === null) return null;
+  let text: string;
+  try {
+    text = JSON.stringify(data);
+  } catch {
+    text = String(data);
+  }
+  if (!text || text === "null" || text === "{}" || text === "[]") return null;
+  if (text.length <= MAX_SNIPPET_CHARS) return text;
+  const omitted = text.length - MAX_SNIPPET_CHARS;
+  return `${text.slice(0, MAX_SNIPPET_CHARS)} … (+${omitted} chars truncated — the payload continues; do not guess the remainder)`;
+}
+
 /** Build the feedback message the LLM sees after an invocation — honest for
- *  every terminal status (the old lanes only fed back successes/exceptions). */
+ *  every terminal status (the old lanes only fed back successes/exceptions).
+ *
+ *  Q1 (feedback grounding): the ok branch now carries a TRUNCATED RAW
+ *  RESPONSE SNIPPET. P-lane E2E proved the model will fabricate response
+ *  details when the feedback is a single summary line — it invented a
+ *  `data: [...]` array for a webhook that returned a flat object. Feeding
+ *  the real payload back (capped, JSON-compact) is the shortest path to
+ *  grounded rendering: the model can quote what actually came back
+ *  instead of improvising around a one-line summary. */
 export function skillFeedback(res: SkillRunResult): string {
   switch (res.status) {
-    case "ok":
-      return `[Skill ${res.skillId} succeeded]\n${res.summary}\n\nRevise your answer using these results.`;
+    case "ok": {
+      const snippet = dataSnippet(res.data);
+      return (
+        `[Skill ${res.skillId} succeeded]\n${res.summary}\n` +
+        (snippet
+          ? `\nRaw response (truncated to ${MAX_SNIPPET_CHARS} chars):\n${snippet}\n`
+          : "\n") +
+        "\nRevise your answer using ONLY these results — when you describe " +
+        "the response, use exactly the fields and values shown above; do " +
+        "not invent fields, values, or structure the response does not have."
+      );
+    }
     case "error":
       return `[Skill ${res.skillId} failed]\n${res.error}\n\nReport the failure honestly and suggest an alternative.`;
     case "denied":
@@ -296,5 +404,18 @@ export function skillFeedback(res: SkillRunResult): string {
       return `[Skill ${res.skillId} rejected — invalid request]\n${res.error}\n\nEmit a corrected skill call if you still need it.`;
     case "skipped":
       return `[Skill ${res.skillId} skipped]\n${res.error}`;
+    case "limited":
+      return `[Skill ${res.skillId} rate limited]\n${res.error}`;
+    case "queued":
+      return (
+        `[Skill ${res.skillId} queued]\n${res.summary}\n\n` +
+        "The run executes in the background and is NOT finished yet. Tell the " +
+        "user the job has been started, where to watch it (the Skills Activity " +
+        "tab — its invocation row flips to ok / error / cancelled when the " +
+        "run lands), and that results will appear there when it completes. " +
+        "Do not fabricate results — answer from your own knowledge in the meantime."
+      );
+    case "cancelled":
+      return `[Skill ${res.skillId} cancelled]\n${res.error ?? res.summary}`;
   }
 }

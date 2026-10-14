@@ -124,7 +124,11 @@ export async function GET(
       });
 
       // Short-circuit if the node is already terminal on connection.
-      if (initial.status === "completed" || initial.status === "failed") {
+      if (
+        initial.status === "completed" ||
+        initial.status === "failed" ||
+        initial.status === "cancelled"
+      ) {
         send("done", { status: initial.status });
         close();
         return;
@@ -139,7 +143,7 @@ export async function GET(
        * synced artifacts). Returns the fresh node row when it changed.
        */
       const reconcileClusterOutcome = async (
-        nodeRow: { id: string; status: string; logs: string | null },
+        nodeRow: { id: string; status: string; logs: string | null; runToken: string | null },
       ): Promise<{ status: string; progress: number; logs: string; result: string | null; writtenAt: Date } | null> => {
         if (nodeRow.status !== "running") return null;
         const jobId = clusterJobIdFromLogs(nodeRow.logs ?? "");
@@ -152,8 +156,11 @@ export async function GET(
           return null; // still running remotely — nothing to settle yet
         }
 
-        // Map the ToolJob outcome onto node semantics.
-        const nodeStatus = job.status === "completed" ? "completed" : "failed";
+        // Map the ToolJob outcome onto node semantics. A cancelled job
+        // (node-stop lane or its own panel) maps to a cancelled NODE —
+        // honest, and distinct from an engine failure.
+        const nodeStatus =
+          job.status === "completed" ? "completed" : job.status === "cancelled" ? "cancelled" : "failed";
         let files: string[] = [];
         try {
           const parsed = job.outputFiles ? JSON.parse(job.outputFiles) : [];
@@ -176,10 +183,14 @@ export async function GET(
         // takes the cluster outcome — a user Stop (or the local watchdog)
         // may have settled this node between the poll's read and this write,
         // and a late cluster completion must never resurrect that verdict.
+        // I-6 (#47): the token fence also protects a row that a stop→retry
+        // RE-CLAIMED between the read and this write — the reconcile only
+        // settles the exact run it observed (rows carry their token from
+        // the claim on; pre-token rows match on null == null).
         const writeMark = new Date();
         const settled = await db.node
           .updateMany({
-            where: { id: nodeRow.id, status: "running" },
+            where: { id: nodeRow.id, status: "running", runToken: nodeRow.runToken },
             data: {
               status: nodeStatus,
               result,
@@ -240,7 +251,11 @@ export async function GET(
             result,
             rowUpdatedAt: (settled ? settled.writtenAt : current.updatedAt).toISOString(),
           });
-          if (status === "completed" || status === "failed") {
+          if (
+            status === "completed" ||
+            status === "failed" ||
+            status === "cancelled"
+          ) {
             send("done", { status });
             close();
             return;

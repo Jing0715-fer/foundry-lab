@@ -98,6 +98,28 @@ interface AppState {
    * screening" chip on a promote node). Consumed by the panel on mount /
    * list load, then cleared. */
   pendingScreeningId: string | null;
+  /** K2 gating-feedback deep-link: an agent another panel asked the Agents
+   * panel to open + edit (e.g. the Skills Activity tab's "Fix agent access"
+   * button on a denied invocation — the knowledge switches live in the
+   * editor dialog). Consumed by the panel on list load, then cleared. */
+  pendingAgentEdit: { id: string; title: string | null } | null;
+  /** M1 deep-link: the Skills panel tab another surface asked to open
+   * (e.g. a chat QUEUED card's "Watch progress" button → "activity").
+   * Q3: "templates" targets the curated skill-pack tab (the pack cards'
+   * "View in Registry" deep-link's sibling). Consumed by the Skills panel
+   * on mount, then cleared. */
+  pendingSkillTab: "registry" | "activity" | "insights" | "templates" | null;
+  /** M1 deep-link: a specific SkillInvocation row the Skills panel's
+   * Activity tab should load, expand, and scroll to (e.g. the audit row
+   * behind a chat QUEUED card). invocationId is the precise target;
+   * jobId is a fallback matcher when the invocation id wasn't persisted
+   * on the card. Consumed after the invocations load, then cleared. */
+  pendingSkillInvocation: { invocationId: string; jobId?: string | null } | null;
+  /** P3a deep-link: a custom skill the Skills panel's Registry tab should
+   *  open in the EDIT dialog (e.g. a chat card denied by that skill's
+   *  agent whitelist — the whitelist lives on the skill, not the agent).
+   *  Consumed after the catalog loads, then cleared. */
+  pendingSkillEdit: { skillId: string } | null;
 
   // actions: workflow
   setWorkflow: (w: WorkflowDTO | null) => void;
@@ -151,6 +173,16 @@ interface AppState {
   toggleSweepCollapse: (groupId: string) => void;
   /** Request the Screening panel to open + select this screening (C2). */
   setPendingScreeningId: (id: string | null) => void;
+  /** Request the Agents panel to open + edit this agent (K2). */
+  setPendingAgentEdit: (a: { id: string; title: string | null } | null) => void;
+  /** M1: request the Skills panel to open a specific tab (deep-link). */
+  setPendingSkillTab: (t: "registry" | "activity" | "insights" | null) => void;
+  /** M1: request the Skills Activity tab to highlight a specific
+   *  invocation row (deep-link). */
+  setPendingSkillInvocation: (inv: { invocationId: string; jobId?: string | null } | null) => void;
+  /** P3a: request the Skills Registry tab to open a custom skill in the
+   *  edit dialog (deep-link). */
+  setPendingSkillEdit: (s: { skillId: string } | null) => void;
   toast: (t: Omit<ToastItem, "id">) => void;
   dismissToast: (id: string) => void;
 }
@@ -183,6 +215,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   runsSheetOpen: false,
   collapsedSweepGroups: [],
   pendingScreeningId: null,
+  pendingAgentEdit: null,
+  pendingSkillTab: null,
+  pendingSkillInvocation: null,
+  pendingSkillEdit: null,
 
   setWorkflow: (w) => {
     const switching = !!w && !!get().workflow && w.id !== get().workflow!.id;
@@ -465,6 +501,10 @@ export const useAppStore = create<AppState>((set, get) => ({
         : [...s.collapsedSweepGroups, groupId],
     })),
   setPendingScreeningId: (id) => set({ pendingScreeningId: id }),
+  setPendingAgentEdit: (a) => set({ pendingAgentEdit: a }),
+  setPendingSkillTab: (t) => set({ pendingSkillTab: t }),
+  setPendingSkillInvocation: (inv) => set({ pendingSkillInvocation: inv }),
+  setPendingSkillEdit: (s) => set({ pendingSkillEdit: s }),
 
   toast: (t) => {
     const id = Math.random().toString(36).slice(2, 9);

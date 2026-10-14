@@ -12,6 +12,7 @@ import {
   ArrowRightToLine,
   Flag,
   Box,
+  Ban,
   Check,
   Loader2,
   Play,
@@ -79,6 +80,7 @@ const STATUS_STRIP: Record<string, string> = {
   running: "bg-teal-500",
   completed: "bg-emerald-500",
   failed: "bg-rose-500",
+  cancelled: "bg-zinc-500",
 };
 
 const STATUS_PILL: Record<string, string> = {
@@ -87,6 +89,7 @@ const STATUS_PILL: Record<string, string> = {
   running: "bg-teal-500/10 text-teal-600 dark:text-teal-400",
   completed: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400",
   failed: "bg-rose-500/10 text-rose-600 dark:text-rose-400",
+  cancelled: "bg-zinc-500/10 text-zinc-600 dark:text-zinc-400 line-through",
 };
 
 // Edge DOM patching during drags lives in the shared
@@ -513,6 +516,8 @@ function NodeCardImpl({ node }: NodeCardProps) {
                 status === "completed" && "ring-1 ring-emerald-500/30",
                 // Subtle red glow for failed nodes.
                 status === "failed" && "ring-1 ring-rose-500/30",
+                // Subtle zinc ring for cancelled nodes (K lane: user stop).
+                status === "cancelled" && "ring-1 ring-zinc-500/30",
               )}
             >
               {/* Left color bar */}
@@ -537,6 +542,14 @@ function NodeCardImpl({ node }: NodeCardProps) {
                   }
                 >
                   !
+                </span>
+              )}
+              {status === "cancelled" && (
+                <span
+                  className="absolute right-1.5 top-1.5 flex size-5 items-center justify-center rounded-full bg-zinc-500 text-white shadow-sm"
+                  title="Cancelled — stopped by user before completion"
+                >
+                  <Ban className="size-3.5" />
                 </span>
               )}
               {status === "running" && (
@@ -633,6 +646,14 @@ function NodeCardImpl({ node }: NodeCardProps) {
                     title={node.result || undefined}
                   >
                     {node.result ? node.result.slice(0, 80) : "Error"}
+                  </div>
+                )}
+                {status === "cancelled" && (
+                  <div
+                    className="max-w-full truncate text-[11px] text-muted-foreground"
+                    title={node.result || undefined}
+                  >
+                    {node.result ? node.result.slice(0, 80) : "Stopped"}
                   </div>
                 )}
                 {(status === "idle" || status === "pending") && (

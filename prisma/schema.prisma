@@ -204,7 +204,7 @@ model Node {
   name        String
   x           Float    @default(0)
   y           Float    @default(0)
-  status      String   @default("idle") // idle|pending|running|completed|failed
+  status      String   @default("idle") // idle|pending|running|completed|failed|cancelled
   progress    Int      @default(0)
   params      String   @default("{}") // JSON
   result      String?
@@ -213,6 +213,12 @@ model Node {
   // this id (the source node itself is NOT part of the group). Drives the
   // sweep compare view and the sweep→screening one-click campaign.
   sweepGroup  String?
+  // I-6 execution token (#47): written ATOMICALLY with every claim
+  // (idle/pending/terminal → running). Persist lanes add it to their
+  // conditional-write `where` — a late lane (unkillable LLM call) that
+  // resolves after a stop→retry cycle holds a STALE token and its write
+  // matches zero rows, so it can never overwrite the new run's row.
+  runToken    String?
   startedAt   DateTime?
   completedAt DateTime?
   createdAt   DateTime @default(now())
@@ -256,7 +262,8 @@ model SkillInvocation {
   agentTitle    String?
   workflowId    String?
   nodeId        String?
-  // ok | error | denied | invalid | skipped
+  // ok | error | denied | invalid | skipped | limited | queued | cancelled
+  // (String column, zero-migration status union — see skills/types.ts.)
   status        String
   params        String   // JSON (post-validation)
   resultSummary String?
@@ -264,8 +271,72 @@ model SkillInvocation {
   durationMs    Int?
   createdAt     DateTime @default(now())
 
+  // M2 (K6): window queries (insights `WHERE createdAt >= X`, retention
+  // `WHERE createdAt < cutoff`) filter on createdAt ALONE — the composite
+  // indexes below lead with skillId/source, so they never serve those
+  // scans. A dedicated createdAt index is the large-window performance
+  // guard the roadmap called out.
+  @@index([createdAt])
   @@index([skillId, createdAt])
   @@index([source, createdAt])
+}
+
+// ─── Custom skills (M lane M3/K4: dynamic skill registration) ────────────────
+// Runtime-registered webhook skills (`custom.*` family) created via
+// POST /api/skills. Loaded into the in-process registry at boot / first
+// catalog read (skills/dynamic.ts ensureCustomSkillsLoaded) and invoked
+// through the SAME runSkill pipeline as built-ins — validation, gating
+// (none required by default), rate limiting (custom family default),
+// audit, insights and the Activity log all inherit with zero extra code.
+model CustomSkill {
+  id          String   @id @default(cuid())
+  // Canonical registry id — ALWAYS the `custom.<slug>` form (validated at
+  // registration; collisions with built-ins and existing customs are 409).
+  skillId     String   @unique
+  label       String
+  description String
+  // JSON array of SkillParamDef — the same param schema contract built-ins
+  // declare (validateParams coerces/clamps against it unchanged).
+  params      String   // JSON SkillParamDef[]
+  // Webhook target — http(s) URL POSTed {skillId, params, source, agent?}
+  // with a 20s timeout. Non-2xx or timeout → honest "error" envelope.
+  endpoint    String
+  // Optional extra request headers (JSON Record<string,string>).
+  headers     String?  // JSON Record<string,string>
+  // Soft-disable (registered but skipped) — PATCH surface (N2). Disabled
+  // rows stay OUT of the live registry (agents can't invoke them) but the
+  // catalog still lists them (flagged) so they can be re-enabled.
+  enabled     Boolean  @default(true)
+  // N1 execution policy: "fast" (≤10s inline, 20s webhook timeout) |
+  // "slow" (agent/REST lanes enqueue it as a background ToolJob through
+  // the K5 queue — QUEUED cards, real mid-flight stop via abort, orphan
+  // sweep, audit transitions all inherit).
+  latency     String   @default("fast") // fast | slow
+  // O1 authorization declaration: JSON array of SkillRequirement ids
+  // ("bioToolsEnabled" | "webSearchEnabled"). Registered empty by default
+  // (back-compatible — the pre-O1 "all agents" behavior); non-empty rows
+  // are GATED at execution time by runSkill step 3 and EXCLUDED from the
+  // prompt manifest for agents lacking the flags — the same two-rule
+  // enforcement built-ins get, now declarable per webhook skill.
+  requires    String   @default("[]") // JSON SkillRequirement[]
+  // P3a authorization declaration, third dimension: JSON array of agent
+  // ids — when non-empty, ONLY those agents may invoke (requires is still
+  // ANDed on top: the caller must clear BOTH). Registered empty by default
+  // (back-compatible — requires alone decides, the pre-P3a behavior).
+  // Ids are NOT validated against the Agent table on purpose: a whitelist
+  // exported from another instance (O3 portability) may name agents that
+  // don't exist here — an id that matches no local agent simply never
+  // clears the gate, which is the honest deny-all semantics.
+  agents      String   @default("[]") // JSON agent-id string[]
+  // R3 pack identity: backfilled from the bundle-v2 metadata.name when the
+  // row arrived through a PACK import (template packs, downloaded bundle
+  // files with pack metadata). Manually registered and single-skill
+  // imports have NO pack (null) — pack identity lives at the pack level,
+  // not the skill level. Powers the Registry "from pack X" badge and the
+  // pack-level uninstall lane (DELETE all rows WHERE packName = X).
+  packName    String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 }
 
 // ─── Screening (large-scale result evaluation & ranking) ─────────────────────
@@ -292,6 +363,10 @@ model Screening {
   // string, no FK — defensively resolved to null in the DTO when the
   // candidate was deleted; same pattern as sourceRef).
   rmsdRefId   String?
+  // I-1c (#39): when true, the reference candidate's rmsd=0 anchor is
+  // EXCLUDED from the rmsd metric-domain computation, so the other
+  // candidates' normalized spread isn't squashed by a constant 0 min.
+  rmsdExcludeRef Boolean @default(false)
   status      String   @default("ready") // ready | harvesting | failed
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

@@ -20,6 +20,7 @@ import { spawn, execSync } from "child_process";
 import { promises as fs, existsSync } from "fs";
 import { join, resolve } from "path";
 import { resolveEnginePythonCmd, resolveCommandPath, osKey, resolveInstallSpec } from "./platform-env";
+import { isStopRequested } from "./stop-registry";
 import {
   getToolRegistryEntry,
   engineForTool,
@@ -69,6 +70,110 @@ export function resetEnginePythonCache(): void {
 }
 
 const ALGORITHMS_DIR = resolve(process.cwd(), "scripts", "algorithms");
+
+// ── Active process registry (K lane, ported from S/E line) ──────────────────
+
+// runKey (the canvas node id) → the currently-spawned engine child process.
+// Every spawn point registers its child here while it lives, so the node-stop
+// lane (node-run-control.ts → killActiveProcess) can SIGTERM the REAL local
+// engine process — "stop" actually halts the work instead of just flipping
+// the row and letting the engine burn CPU to an audience of nobody.
+// Chat/REST lanes have no node id → runKey undefined → unregistered (their
+// stop story is the ToolJob pid lane, unchanged).
+const ACTIVE_PROCS = new Map<string, ReturnType<typeof spawn>>();
+
+function registerProc(
+  runKey: string | undefined,
+  proc: ReturnType<typeof spawn>,
+): void {
+  if (!runKey) return;
+  ACTIVE_PROCS.set(runKey, proc);
+}
+
+function unregisterProc(
+  runKey: string | undefined,
+  proc: ReturnType<typeof spawn>,
+): void {
+  if (!runKey) return;
+  // Only the CURRENT registration may clear the slot — a stale unregister
+  // from a superseded run must not evict a newer run's process.
+  if (ACTIVE_PROCS.get(runKey) === proc) ACTIVE_PROCS.delete(runKey);
+}
+
+/** Kill the engine process registered under runKey (node-stop lane).
+ *  Returns true when a live process was found and signalled. SIGTERM first,
+ *  with a best-effort SIGKILL escalation after a 2s grace window.
+ *  N1: ALSO aborts a queued webhook fetch registered under the same runKey
+ *  (the K5 custom-skill lane) — one call, one stop story, any substrate. */
+export function killActiveProcess(runKey: string): boolean {
+  let stopped = false;
+  const proc = ACTIVE_PROCS.get(runKey);
+  if (proc) {
+    ACTIVE_PROCS.delete(runKey);
+    stopped = true;
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+      /* already gone */
+    }
+    // Escalation: SIGKILL after a 2s grace window (best-effort).
+    setTimeout(() => {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, 2000).unref?.();
+  }
+  const ctl = ACTIVE_ABORTS.get(runKey);
+  if (ctl) {
+    ACTIVE_ABORTS.delete(runKey);
+    stopped = true;
+    try {
+      ctl.abort();
+    } catch {
+      /* already aborted */
+    }
+  }
+  return stopped;
+}
+
+// ── Queued-webhook abort registry (N1) ───────────────────────────────────────
+//
+// runKey (the ToolJob id) → the AbortController of the in-flight webhook
+// fetch for a SLOW custom skill. killActiveProcess aborts it, so the same
+// stop route that SIGTERMs engine processes halts queued webhook runs for
+// real. Backed by globalThis (not a module-level Map) on purpose: route
+// bundles can hold duplicated module instances (#53) — the process-global
+// map is the one object every instance shares, so a stop routed through a
+// different bundle still reaches the controller.
+const GLOBAL_FOR_ABRTS = globalThis as unknown as {
+  __foundryActiveWebhookAborts?: Map<string, AbortController>;
+};
+const ACTIVE_ABORTS: Map<string, AbortController> =
+  (GLOBAL_FOR_ABRTS.__foundryActiveWebhookAborts ??= new Map());
+
+/** Register the abort controller of an in-flight queued-webhook fetch
+ *  (runKey = ToolJob id). Call BEFORE awaiting the fetch so the stop lane
+ *  can reach it the whole time it is in flight. */
+export function registerWebhookAbort(
+  runKey: string | undefined,
+  ctl: AbortController,
+): void {
+  if (!runKey) return;
+  ACTIVE_ABORTS.set(runKey, ctl);
+}
+
+/** Unregister — only the CURRENT registration may clear the slot (same
+ *  identity discipline as unregisterProc: a superseded run's cleanup must
+ *  not evict a newer run's controller). */
+export function unregisterWebhookAbort(
+  runKey: string | undefined,
+  ctl: AbortController,
+): void {
+  if (!runKey) return;
+  if (ACTIVE_ABORTS.get(runKey) === ctl) ACTIVE_ABORTS.delete(runKey);
+}
 
 // ── Detection ───────────────────────────────────────────────────────────────
 
@@ -214,12 +319,18 @@ function normalizePathParams(
 /**
  * Execute a comp tool — native upstream tool if installed, otherwise the
  * built-in real algorithm engine. NEVER simulates.
+ *
+ * opts.runKey — an opaque stop-lane key (the canvas node id): the spawned
+ * child process is registered under it while it lives, so
+ * killActiveProcess(runKey) can halt a running node's engine for real.
  */
 export async function executeCompToolReal(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
+  opts: { runKey?: string } = {},
 ): Promise<ExecutionResult> {
+  const runKey = opts.runKey;
   const def = getCompTool(toolKey);
   if (!def) {
     return {
@@ -242,19 +353,19 @@ export async function executeCompToolReal(
   // family jobs run the REAL trained network.
   if (FOUNDRY_MPNN_TOOLS.has(toolKey) && isFoundryMpnnReady()) {
     try {
-      return await runFoundryMpnn(toolKey, params, workDir, Date.now());
+      return await runFoundryMpnn(toolKey, params, workDir, Date.now(), runKey);
     } catch (e) {
       // Foundry failed to spawn (never a tool-level result) — fall through
       // to the native/built-in tiers with a clear notice.
       const notice =
         `[FOUNDRY UNAVAILABLE — ${e instanceof Error ? e.message : String(e)}]\n` +
         `Falling back to native/built-in execution.\n\n`;
-      const next = await executeNativeOrEngine(toolKey, params, workDir);
+      const next = await executeNativeOrEngine(toolKey, params, workDir, runKey);
       return { ...next, stdout: notice + next.stdout };
     }
   }
 
-  return executeNativeOrEngine(toolKey, params, workDir);
+  return executeNativeOrEngine(toolKey, params, workDir, runKey);
 }
 
 /** Native-then-builtin dispatch (the pre-foundry execution flow). */
@@ -262,6 +373,7 @@ async function executeNativeOrEngine(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const entry = getToolRegistryEntry(toolKey);
   const installed = isToolInstalled(toolKey);
@@ -273,7 +385,7 @@ async function executeNativeOrEngine(
     if (entry.nativeExecution) {
       // NATIVE: run the real upstream tool.
       try {
-        const native = await runNativeTool(toolKey, params, workDir);
+        const native = await runNativeTool(toolKey, params, workDir, runKey);
         // Environment-level failures (missing python deps, missing script)
         // fall back to the built-in engine; genuine tool errors (bad input
         // etc.) are reported honestly as native failures.
@@ -286,7 +398,7 @@ async function executeNativeOrEngine(
         const notice =
           `[NATIVE TOOL UNAVAILABLE — falling back to the built-in real algorithm engine]\n` +
           `Reason: ${native.stderr.trim().split("\n").slice(-1)[0]?.slice(0, 300) || `exit ${native.exitCode}`}\n\n`;
-        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
         return { ...engine, stdout: notice + engine.stdout };
       } catch (e) {
         // Native tool failed to spawn — fall through to the built-in engine
@@ -294,14 +406,14 @@ async function executeNativeOrEngine(
         const notice =
           `[NATIVE TOOL FAILED — falling back to the built-in real algorithm engine]\n` +
           `Error: ${(e as Error).message ?? String(e)}\n\n`;
-        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+        const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
         return { ...engine, stdout: notice + engine.stdout };
       }
     }
     // Installed but engine-executed (no CLI entry point — e.g. pip packages
     // used via their Python API). Run the built-in real algorithm engine and
     // surface that the package is present.
-    const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt);
+    const engine = await runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
     return {
       ...engine,
       stdout:
@@ -311,7 +423,7 @@ async function executeNativeOrEngine(
   }
 
   // BUILT-IN ENGINE (real algorithm, no upstream tool needed).
-  return runBuiltinEngine(toolKey, params, workDir, startedAt);
+  return runBuiltinEngine(toolKey, params, workDir, startedAt, runKey);
 }
 
 /**
@@ -324,6 +436,7 @@ async function runFoundryMpnn(
   params: Record<string, unknown>,
   workDir: string,
   startedAt: number,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const py = resolveFoundryPython();
   if (!py) throw new Error("foundry python not resolvable");
@@ -376,6 +489,8 @@ async function runFoundryMpnn(
     displayCommand,
     startedAt,
     10 * 60 * 1000,
+    undefined,
+    runKey,
   );
   return {
     ...res,
@@ -399,6 +514,7 @@ async function runNativeTool(
   toolKey: string,
   params: Record<string, unknown>,
   workDir: string,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey)!;
   const entry = getToolRegistryEntry(toolKey)!;
@@ -407,7 +523,7 @@ async function runNativeTool(
   const mode = entry.nativeExecution;
   if (!mode) {
     // Should not happen (executeCompToolReal checks), but be safe.
-    return runBuiltinEngine(toolKey, params, workDir, Date.now());
+    return runBuiltinEngine(toolKey, params, workDir, Date.now(), runKey);
   }
 
   // Structured arg tokens (values with spaces survive intact).
@@ -457,6 +573,7 @@ async function runNativeTool(
       Date.now(),
       mode.timeoutMs,
       childEnv,
+      runKey,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -470,6 +587,7 @@ async function runNativeTool(
       Date.now(),
       mode.timeoutMs,
       childEnv,
+      runKey,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -484,6 +602,7 @@ async function runNativeTool(
       Date.now(),
       mode.timeoutMs,
       childEnv,
+      runKey,
     );
     return { ...res, executor: "native", realToolUsed: true };
   }
@@ -497,6 +616,7 @@ async function runNativeTool(
     Date.now(),
     mode.timeoutMs,
     childEnv,
+    runKey,
   );
   return { ...res, executor: "native", realToolUsed: true };
 }
@@ -507,6 +627,7 @@ async function runBuiltinEngine(
   params: Record<string, unknown>,
   workDir: string,
   startedAt: number,
+  runKey?: string,
 ): Promise<ExecutionResult> {
   const def = getCompTool(toolKey)!;
   const engine = engineForTool(toolKey);
@@ -542,6 +663,8 @@ async function runBuiltinEngine(
     displayCommand,
     startedAt,
     10 * 60 * 1000,
+    undefined,
+    runKey,
   );
   return {
     ...res,
@@ -550,7 +673,9 @@ async function runBuiltinEngine(
   };
 }
 
-/** Run a process and capture stdout/stderr/exit code + output files. */
+/** Run a process and capture stdout/stderr/exit code + output files.
+ *  runKey registers the child in the stop registry while it lives, so the
+ *  node-stop lane can kill it mid-run. */
 async function runProcess(
   cmd: string,
   args: string[],
@@ -559,8 +684,24 @@ async function runProcess(
   startedAt: number,
   timeoutMs = 5 * 60 * 1000,
   env?: NodeJS.ProcessEnv,
+  runKey?: string,
 ): Promise<Omit<ExecutionResult, "executor" | "realToolUsed">> {
   return new Promise((resolvePromise) => {
+    // Pre-spawn stop check (K lane): a stop that landed BETWEEN the run's
+    // claim and this spawn (python import takes ~1-2s) must not start the
+    // engine at all — the process registry kill can't see a proc that
+    // doesn't exist yet. The in-flight lane's post-race check still reports
+    // cancelled; this just avoids burning CPU on work nobody will read.
+    if (runKey && isStopRequested(runKey)) {
+      resolvePromise({
+        stdout: "",
+        stderr: "[stop] cancelled before spawn — the engine never started.",
+        exitCode: 1,
+        outputFiles: [],
+        command: displayCommand,
+      });
+      return;
+    }
     const stdoutChunks: string[] = [];
     const stderrChunks: string[] = [];
     let proc: ReturnType<typeof spawn>;
@@ -589,11 +730,19 @@ async function runProcess(
       stderrChunks.push(`\n[TIMEOUT after ${timeoutMs / 1000}s — killed]`);
     }, timeoutMs);
 
+    // Stop-lane registration: while this child lives, killActiveProcess
+    // (runKey) can SIGTERM it. Unregistered on close/error — and only if
+    // the registration still points at THIS proc (a newer run may have
+    // superseded the slot).
+    registerProc(runKey, proc);
+    const unreg = () => unregisterProc(runKey, proc);
+
     proc.stdout?.on("data", (d) => stdoutChunks.push(d.toString()));
     proc.stderr?.on("data", (d) => stderrChunks.push(d.toString()));
 
     const finish = async (code: number | null) => {
       clearTimeout(timer);
+      unreg();
       // Collect output files created during this run (real artifacts only).
       // Scans two levels deep — native tools often write into subfolders
       // (e.g. ProteinMPNN writes to <out>/seqs/…).
@@ -638,6 +787,7 @@ async function runProcess(
     };
 
     proc.on("error", (err) => {
+      unreg();
       stderrChunks.push(`Failed to spawn process: ${err.message}`);
       void finish(1);
     });

@@ -89,8 +89,11 @@ interface CandidateDetailProps {
    * H1a: same-screening candidates (with a linked PDB) this candidate can be
    * superposed against — rendered as the "Structural comparison" picker.
    * Omitted/undefined keeps the section hidden (older call sites).
+   * I-1 (#38): pdbExists carries the server-checked disk state — options
+   * whose file is missing render DISABLED with a marker (honest, not a
+   * surprise 400 on launch).
    */
-  superposeOptions?: { id: string; name: string }[];
+  superposeOptions?: { id: string; name: string; pdbExists: boolean }[];
   /** H1a: launch the 3D superposition overlay (this candidate = reference). */
   onSuperposeWith?: (otherId: string) => void;
 }
@@ -545,8 +548,16 @@ export function CandidateDetail({
                     </SelectTrigger>
                     <SelectContent>
                       {superposeOptions.map((o) => (
-                        <SelectItem key={o.id} value={o.id}>
+                        /* I-1 (#38): dangling pdbPath references (the demo
+                           baseline ships some) stay visible but unselectable —
+                           disabled beats hidden, and the marker says why. */
+                        <SelectItem key={o.id} value={o.id} disabled={!o.pdbExists}>
                           <span className="truncate">{o.name}</span>
+                          {!o.pdbExists && (
+                            <span className="ml-1 shrink-0 text-[11px] text-amber-600 dark:text-amber-400">
+                              · file missing
+                            </span>
+                          )}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -555,21 +566,13 @@ export function CandidateDetail({
                     variant="outline"
                     size="sm"
                     className="h-11 shrink-0 gap-1.5 md:h-9"
-                    disabled={
-                      !superposeTarget ||
-                      !candidate.pdbPath ||
-                      // I1a (QA I-line P2-1): the CURRENT candidate's file must
-                      // exist too — a dangling reference opens a dead overlay.
-                      !candidate.pdbExists
-                    }
+                    disabled={!superposeTarget || !candidate.pdbPath}
                     title={
                       !candidate.pdbPath
                         ? "This candidate has no linked PDB file"
-                        : candidate.pdbPath && !candidate.pdbExists
-                          ? "This candidate's PDB file is no longer on disk"
-                          : superposeTarget
-                            ? "Open the 3D superposition overlay (this candidate is the reference)"
-                            : "Pick a candidate to superpose against"
+                        : superposeTarget
+                          ? "Open the 3D superposition overlay (this candidate is the reference)"
+                          : "Pick a candidate to superpose against"
                     }
                     data-testid="detail-superpose-launch"
                     onClick={() => {

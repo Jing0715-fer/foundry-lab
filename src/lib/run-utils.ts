@@ -24,7 +24,9 @@ import {
   renderSkillManifest,
   extractSkillCalls,
   runSkill,
+  runSkillQueued,
   skillFeedback,
+  ensureCustomSkillsLoaded,
   type SkillRunResult,
   type SkillSource,
   type SkillCall,
@@ -54,6 +56,19 @@ export interface AgentRunOptions {
    * The reflected text becomes the returned `text`. Default `false` (backward-compat).
    */
   reflect?: boolean;
+  /**
+   * K5 slow-skill policy for this turn (default "sync"):
+   *   "sync"  — slow comp skills execute inline (the legacy behavior; the
+   *             workflow agent-node lane keeps it: the NODE itself is the
+   *             async substrate + real-stop story).
+   *   "queue" — slow comp skills are enqueued as background ToolJobs via
+   *             runSkillQueued: the turn returns a "queued" envelope
+   *             immediately, the engine runs fire-and-forget (runKey=jobId,
+   *             stoppable), and the audit row lands its terminal status
+   *             when the job lands. Chat / meeting / research / task lanes
+   *             pass "queue" so multi-minute engines never block the lane.
+   */
+  slowSkillPolicy?: "sync" | "queue";
   /** Audit attribution for skill invocations from this turn (default "chat").
    *  Meetings pass "meeting", research "research", tasks "task", the workflow
    *  engine "workflow" (+ node/workflow ids via skillCtx). */
@@ -172,7 +187,10 @@ function resolveAgentLLMOptions(
  *  the stream + non-stream chat lanes (single source of truth). */
 export function buildAgentSystemPrompt(agent: AgentDTO): string {
   const base = generateAgentSystemPrompt(agent);
-  const manifest = renderSkillManifest(catalogEntries(), agent.knowledge);
+  // P3a: the manifest also gates the per-skill agent whitelist — the same
+  // rule runSkill step 3.25 enforces, so a restricted skill is never
+  // advertised to an agent that would be refused for it.
+  const manifest = renderSkillManifest(catalogEntries(), agent.knowledge, agent.id);
   const withManifest = manifest ? `${base}\n\n${manifest}` : base;
   const suffix = agent.runtime?.systemPromptSuffix?.trim();
   if (!suffix) return withManifest;
@@ -192,6 +210,9 @@ export async function runAgentTurn(
   opts: AgentRunOptions = {},
 ): Promise<AgentRunResult> {
   const maxRounds = opts.maxRounds ?? 3;
+  // M3: hydrate custom skills BEFORE the prompt is rendered so the manifest
+  // teaches the agent everything registered (idempotent, once per process).
+  await ensureCustomSkillsLoaded();
   const llmDefaults = resolveAgentLLMOptions(agent, opts) ?? {};
   const temperature = opts.temperature ?? llmDefaults.temperature ?? 0.7;
   const llmOpts = {
@@ -226,13 +247,29 @@ export async function runAgentTurn(
     // Unknown ids, invalid params, and permission denials return honest
     // envelopes to the model instead of being silently dropped (or, worse,
     // executing despite the agent's knowledge flags being off).
+    //
+    // K5: with slowSkillPolicy "queue" (chat/meeting/research/task lanes)
+    // slow comp skills are enqueued as background ToolJobs instead of
+    // blocking this turn for minutes; "sync" (the default — workflow agent
+    // nodes) keeps the legacy inline execution (the node is the async
+    // substrate there and carries the real-stop story via runKey=nodeId).
     for (const call of calls) {
-      const res = await runSkill(call.skillId, call.params, {
-        source: opts.source ?? "chat",
-        agent,
-        workflowId: opts.skillCtx?.workflowId,
-        nodeId: opts.skillCtx?.nodeId,
-      });
+      const def = getSkill(call.skillId);
+      const slowQueued =
+        opts.slowSkillPolicy === "queue" && !!def && def.latency === "slow";
+      const res = slowQueued
+        ? await runSkillQueued(call.skillId, call.params, {
+            source: opts.source ?? "chat",
+            agent,
+            workflowId: opts.skillCtx?.workflowId,
+            nodeId: opts.skillCtx?.nodeId,
+          })
+        : await runSkill(call.skillId, call.params, {
+            source: opts.source ?? "chat",
+            agent,
+            workflowId: opts.skillCtx?.workflowId,
+            nodeId: opts.skillCtx?.nodeId,
+          });
       toolCalls.push(skillCallToToolCall(call, res));
       convo.push({ role: "user", content: skillFeedback(res) });
     }
@@ -263,17 +300,50 @@ export async function runAgentTurn(
 
 /** Map a skill invocation result onto the legacy ToolCall shape the chat UI
  *  renders (kind/tool stay compatible; skillId carries the canonical id).
- *  Shared by the non-stream and stream chat lanes. */
+ *  Shared by the non-stream and stream chat lanes.
+ *  K5: a "queued" envelope maps to a queued card carrying the jobId — the
+ *  chat snapshot honestly says "started in the background" (the terminal
+ *  status lands on the same audit row in the Activity tab when the job
+ *  completes; the persisted card is a point-in-time snapshot, like every
+ *  chat message).
+ *  M1: the card also carries invocationId (the audit-row deep-link target)
+ *  and the RAW skillStatus so denied / limited cards are distinguishable
+ *  from real errors (legacy rows without these fields simply render as
+ *  before). M3: family "custom" maps to the custom card kind. */
 export function skillCallToToolCall(call: SkillCall, res: SkillRunResult): ToolCall {
   const def = getSkill(call.skillId);
   const kind: ToolCall["kind"] =
-    def?.family === "bio" ? "bio" : def?.family === "web" ? "web" : "comp";
+    def?.family === "bio"
+      ? "bio"
+      : def?.family === "web"
+        ? "web"
+        : def?.family === "custom"
+          ? "custom"
+          : "comp";
   const tool = def ? def.id.split(".")[1] : call.rawId;
-  return {
+  const base = {
     kind,
     tool,
     skillId: res.skillId,
     params: call.params,
+    ...(res.invocationId ? { invocationId: res.invocationId } : {}),
+    ...(res.status ? { skillStatus: res.status } : {}),
+    // P3a: which authorization dimension refused a denied call — the
+    // chat card picks the right fix deep-link from it (whitelist → edit
+    // the SKILL; requires → edit the AGENT).
+    ...(res.deniedBy ? { deniedBy: res.deniedBy } : {}),
+  };
+  if (res.status === "queued") {
+    const data = res.data as { jobId?: string } | undefined;
+    return {
+      ...base,
+      result: res.summary,
+      status: "queued",
+      ...(data?.jobId ? { jobId: data.jobId } : {}),
+    };
+  }
+  return {
+    ...base,
     result: res.status === "ok" ? res.summary : (res.error ?? res.summary),
     status: res.status === "ok" ? "completed" : "failed",
   };
@@ -312,6 +382,9 @@ export async function runTeamMeeting(
         temperature,
         maxRounds: 1,
         source: "meeting",
+        // K5: an engine fence mid-meeting must not freeze the round for
+        // minutes — queue it and keep the discussion moving.
+        slowSkillPolicy: "queue",
       });
       messages.push({
         agentName: agent.title,
@@ -373,6 +446,7 @@ export async function runIndividualMeeting(
       temperature,
       maxRounds: 1,
       source: "meeting",
+      slowSkillPolicy: "queue",
     });
     messages.push({ agentName: agent.title, agentColor: agent.color, message: text, roundIndex: r });
 
@@ -430,7 +504,7 @@ export async function runResearch(
       [
         { role: "user", content: `[Planning phase] Propose a research plan for: ${topic}. ${description ?? ""} (≤200 words)` },
       ],
-      { temperature, maxRounds: 1, source: "research" },
+      { temperature, maxRounds: 1, source: "research", slowSkillPolicy: "queue" },
     );
     messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: 0, phase: "planning" });
   }
@@ -449,6 +523,7 @@ export async function runResearch(
         temperature,
         maxRounds: 1,
         source: "research",
+        slowSkillPolicy: "queue",
       });
       messages.push({ agentName: a.title, agentColor: a.color, message: text, roundIndex: r, phase: "researching" });
     }
@@ -534,11 +609,17 @@ export function extractClusterTarget(raw: unknown): ClusterRunTarget | null {
  *  until the remote job finishes. Returns {summary, stdout, files, command}.
  *  `exitCode` is null + `pollCeiling: true` when the cluster poll ceiling
  *  was reached while the remote job was still running (NOT a failure and NOT
- *  a success — callers must keep the node running and reconcile later). */
+ *  a success — callers must keep the node running and reconcile later).
+ *
+ *  opts.runKey (K lane, ported from S/E line): an opaque stop-lane key (the
+ *  canvas node id). Local runs register the spawned engine process under it
+ *  (killActiveProcess can SIGTERM it); cluster runs tag their ToolJob rows
+ *  `triggeredBy: "node:<runKey>"` so the node-stop lane finds and cancels
+ *  them without scraping node logs. */
 export async function executeCompTool(
   toolKey: string,
   params: Record<string, unknown>,
-  opts: { cluster?: ClusterRunTarget } = {},
+  opts: { cluster?: ClusterRunTarget; runKey?: string } = {},
 ): Promise<{
   summary: string;
   stdout: string;
@@ -552,10 +633,12 @@ export async function executeCompTool(
     return { summary: `Unknown tool: ${toolKey}`, stdout: "", files: [], command: "", exitCode: 1 };
   }
   if (opts.cluster) {
-    return executeCompToolOnCluster(def, toolKey, params, opts.cluster);
+    return executeCompToolOnCluster(def, toolKey, params, opts.cluster, opts.runKey);
   }
   const workDir = resolve(process.cwd(), "outputs", toolKey, `wf-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
-  const res = await executeCompToolReal(toolKey, params, workDir);
+  const res = await executeCompToolReal(toolKey, params, workDir, {
+    runKey: opts.runKey,
+  });
   const summary = def.resultSummary(params, res.stdout);
   // Honest failure surfacing: non-zero exits carry stderr + a clear banner
   // so the node logs show the REAL error (never a silent success).
@@ -581,6 +664,7 @@ async function executeCompToolOnCluster(
   toolKey: string,
   params: Record<string, unknown>,
   target: ClusterRunTarget,
+  runKey?: string,
 ): Promise<{
   summary: string;
   stdout: string;
@@ -590,6 +674,9 @@ async function executeCompToolOnCluster(
   pollCeiling?: true;
 }> {
   // (a) Job row first — its id keys the workDir, run record, and poll target.
+  // K lane: runKey (the canvas node id) tags the row `node:<id>` so the
+  // node-stop lane can discover + cancel it directly (fallback: node-log
+  // marker scraping, kept for pre-K rows).
   let jobId: string;
   try {
     const job = await db.toolJob.create({
@@ -609,7 +696,7 @@ async function executeCompToolOnCluster(
         stdout: "",
         stderr: "",
         outputFiles: JSON.stringify([]),
-        triggeredBy: "workflow",
+        triggeredBy: runKey ? `node:${runKey}` : "workflow",
         startedAt: new Date(),
       },
     });

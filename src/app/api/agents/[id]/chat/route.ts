@@ -82,8 +82,11 @@ export async function POST(
 
     // Run the agent turn (tool-calling loop). No explicit temperature —
     // the agent's saved runtime config (fine-tune dialog) is the default.
+    // K5: slow comp skills queue as background ToolJobs instead of blocking
+    // this POST for minutes (fast skills still run inline through runSkill).
     const result = await runAgentTurn(agent, history, {
       maxRounds: 3,
+      slowSkillPolicy: "queue",
     });
 
     // Persist the assistant message.

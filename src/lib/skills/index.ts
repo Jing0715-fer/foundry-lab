@@ -8,6 +8,21 @@ import "./catalog";
 
 export * from "./types";
 export { registerSkill, getSkill, listSkills, catalogEntries, resolveSkillId, skillsForAgent } from "./registry";
-export { runSkill, skipSkill, recordSkillInvocation, skillFeedback, validateParams } from "./runner";
+export { runSkill, skipSkill, recordSkillInvocation, skillFeedback, validateParams, dataSnippet } from "./runner";
+export { runSkillQueued } from "./queue";
+export {
+  checkSkillRateLimit,
+  effectiveRateLimit,
+  FAMILY_RATE_LIMITS,
+  resetSkillRateLimits,
+} from "./rate-limit";
 export { renderSkillManifest } from "./prompt";
 export { extractSkillCalls, type SkillCall, type SkillFence } from "./fences";
+export {
+  ensureCustomSkillsLoaded,
+  syncCustomSkillsNow,
+  reloadCustomSkills,
+  registerCustomSkill,
+  type CustomSkillRow,
+} from "./dynamic";
+export { unregisterSkill } from "./registry";

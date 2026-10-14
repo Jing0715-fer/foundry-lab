@@ -98,9 +98,13 @@ export interface ScreeningTableProps {
   /** Total filtered rows (for the pagination footer). */
   totalRows: number;
   metricDefs: ScreeningMetricDef[];
-  /** I1c: the RMSD-axis reference candidate id (null = no axis) — the row
-   *  gets a REF badge so "why is this one rmsd 0" never needs explaining. */
-  rmsdRefId: string | null;
+  /**
+   * I-1c (#39): candidate id the RMSD axis was computed against — that row
+   * gets a small "REF" badge next to its name (always on, whether or not
+   * the domain-exclusion option is set: the anchor row is worth spotting
+   * while browsing the ranking either way). null = no reference.
+   */
+  rmsdRefId?: string | null;
   sortKey: string;
   sortDir: "asc" | "desc" | null;
   onSort: (key: string) => void;
@@ -234,7 +238,7 @@ export function ScreeningTable(props: ScreeningTableProps) {
                     key={row.candidate.id}
                     row={row}
                     metricDefs={props.metricDefs}
-                    isRmsdRef={!!props.rmsdRefId && row.candidate.id === props.rmsdRefId}
+                    isRmsdRef={props.rmsdRefId === row.candidate.id}
                     selected={props.selectedIds.has(row.candidate.id)}
                     onToggleSelect={props.onToggleSelect}
                     onStar={props.onStar}
@@ -259,7 +263,7 @@ export function ScreeningTable(props: ScreeningTableProps) {
               key={row.candidate.id}
               row={row}
               metricDefs={props.metricDefs}
-              isRmsdRef={!!props.rmsdRefId && row.candidate.id === props.rmsdRefId}
+              isRmsdRef={props.rmsdRefId === row.candidate.id}
               selected={props.selectedIds.has(row.candidate.id)}
               onToggleSelect={props.onToggleSelect}
               onStar={props.onStar}
@@ -517,21 +521,21 @@ function CandidateRow({
       </TableCell>
       <TableCell className="max-w-[260px] whitespace-normal">
         <div className="flex flex-col gap-0.5">
-          <div className="flex items-center gap-1.5">
+          <span className="flex items-center gap-1">
             <span className="truncate text-sm font-medium">{c.name}</span>
-            {/* I1c: the axis reference — its rmsd 0 is a self-comparison, and
-                its normalized bar is full BY DEFINITION. The badge makes the
-                row's special rmsd semantics legible at a glance. */}
             {isRmsdRef && (
-              <span
-                className="inline-flex shrink-0 items-center rounded-md border border-teal-500/50 bg-teal-500/10 px-1.5 py-px text-[10px] font-semibold tracking-wide text-teal-700 dark:text-teal-400"
-                data-testid="rmsd-ref-badge"
-                title="RMSD axis reference — its 0 Å is a self-comparison (excluded from the metric domain)"
+              /* I-1c (#39): always-on marker for the RMSD axis anchor row —
+                 tiny and quiet, but findable while scanning the ranking. */
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[9px] uppercase tracking-wide"
+                data-testid="rmsd-ref-row-badge"
+                title="RMSD axis reference"
               >
                 REF
-              </span>
+              </Badge>
             )}
-          </div>
+          </span>
           {c.sourceLabel && (
             <span className="truncate text-[11px] text-muted-foreground">
               {c.sourceLabel}
@@ -710,17 +714,19 @@ function MobileCandidateCard({
           className="flex min-h-11 min-w-0 flex-1 flex-col items-start rounded-md px-1 text-left"
           aria-label={`View ${c.name} details`}
         >
-          <div className="flex w-full items-center gap-1.5">
-            <span className="min-w-0 flex-1 truncate text-sm font-medium">{c.name}</span>
+          <span className="flex w-full items-center gap-1">
+            <span className="w-full truncate text-sm font-medium">{c.name}</span>
             {isRmsdRef && (
-              <span
-                className="inline-flex shrink-0 items-center rounded-md border border-teal-500/50 bg-teal-500/10 px-1.5 py-px text-[9px] font-semibold tracking-wide text-teal-700 dark:text-teal-400"
-                title="RMSD axis reference — its 0 Å is a self-comparison (excluded from the metric domain)"
+              <Badge
+                variant="secondary"
+                className="shrink-0 text-[9px] uppercase tracking-wide"
+                data-testid="rmsd-ref-row-badge"
+                title="RMSD axis reference"
               >
                 REF
-              </span>
+              </Badge>
             )}
-          </div>
+          </span>
           <span className="flex w-full items-center gap-1.5 text-[11px] text-muted-foreground">
             <Badge variant="outline" className="text-[9px] lowercase">
               {c.source}

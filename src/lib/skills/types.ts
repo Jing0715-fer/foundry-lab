@@ -13,8 +13,9 @@
 
 import type { AgentDTO } from "../types";
 
-/** Skill family — also the wire `kind` for backward-compatible ToolCall rows. */
-export type SkillFamily = "comp" | "bio" | "web" | "canvas";
+/** Skill family — also the wire `kind` for backward-compatible ToolCall rows.
+ *  M3: "custom" = runtime-registered webhook skills (custom.*). */
+export type SkillFamily = "comp" | "bio" | "web" | "canvas" | "custom";
 
 /** Where an invocation came from — recorded on every audit row. */
 export type SkillSource =
@@ -27,8 +28,28 @@ export type SkillSource =
   | "meeting"
   | "research";
 
-/** Terminal statuses of a skill invocation (persisted on SkillInvocation). */
-export type SkillStatus = "ok" | "error" | "denied" | "invalid" | "skipped";
+/** Terminal (or K5 transient-queued) statuses of a skill invocation
+ *  (persisted on SkillInvocation — String column, no migration needed).
+ *
+ *  J lane base: ok | error | denied | invalid | skipped.
+ *  K lane additions:
+ *    limited  — K3 rate limit refused the invocation BEFORE execution
+ *               (per-agent sliding window; the refusal itself is audited).
+ *    queued   — K5 slow-skill lane accepted the call into the ToolJob queue;
+ *               the row transitions to ok | error | cancelled when the
+ *               background engine run lands (conditional write — a stopped
+ *               job never overwrites a fresh verdict).
+ *    cancelled — K5 stop path: the linked ToolJob was stopped before the
+ *               engine finished, so the invocation honestly never completed. */
+export type SkillStatus =
+  | "ok"
+  | "error"
+  | "denied"
+  | "invalid"
+  | "skipped"
+  | "limited"
+  | "queued"
+  | "cancelled";
 
 /**
  * Knowledge flags an agent must have set for the skill to run. Enforced by
@@ -65,8 +86,26 @@ export interface SkillCatalogEntry {
   requires: SkillRequirement[];
   /** fast (<~10s) | slow (minutes — engines). Streaming lane policy key. */
   latency: "fast" | "slow";
+  /** K3: per-skill rate-limit override. Absent → the FAMILY default
+   *  (see rate-limit.ts) applies. Only enforced per-agent (anonymous
+   *  REST/user-initiated lanes are unlimited, same trust level as
+   *  POST /api/tools/run). */
+  rateLimit?: { max: number; windowMs: number };
   /** Prompt-facing usage example rendered into system prompts. */
   example?: Record<string, unknown>;
+  /** M3: present only on custom.* entries — the registered webhook
+   *  endpoint (built-in projections never carry one). */
+  endpoint?: string;
+  /** P3a: present only on custom.* entries with a non-empty agent
+   *  whitelist — the agent ids allowed to invoke (requires is ANDed on
+   *  top). Empty/absent = every agent (the pre-P3a default). Ids are
+   *  opaque strings on purpose (portable across instances, O3). */
+  agents?: string[];
+  /** R3: present only on custom.* rows imported from a named PACK
+   *  (bundle-v2 metadata.name) — powers the Registry "from pack X" badge
+   *  and the pack-level uninstall. Manually registered / single-skill
+   *  imported rows have no pack (absent on the wire). */
+  packName?: string;
 }
 
 export interface SkillDefinition extends SkillCatalogEntry {
@@ -104,6 +143,10 @@ export interface SkillRunResult {
   summary: string;
   /** Full error/reason text (present iff status !== "ok"). */
   error?: string;
+  /** P3a: which authorization dimension refused a "denied" envelope —
+   *  "requires" (knowledge flags) vs "whitelist" (agent list). Lets
+   *  downstream consumers offer the right fix deep-link. */
+  deniedBy?: "requires" | "whitelist";
   /** Honest wall-clock duration of the executed (or rejected) operation. */
   durationMs: number;
   /** SkillInvocation row id when the audit write succeeded. */
@@ -122,5 +165,6 @@ export function toCatalogEntry(def: SkillDefinition): SkillCatalogEntry {
     requires: def.requires,
     latency: def.latency,
     ...(def.example !== undefined ? { example: def.example } : {}),
+    ...(def.agents && def.agents.length > 0 ? { agents: def.agents } : {}),
   };
 }

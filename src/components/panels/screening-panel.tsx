@@ -732,13 +732,15 @@ export function ScreeningPanel() {
   // H1a: launch the overlay from the DETAIL drawer — the open candidate is
   // the reference (stays put), the picked partner is rigid-fitted onto it;
   // the dialog's Swap button flips the roles afterwards.
-  // I1a (QA I-line P2-1): partners must have a PDB that STILL exists — the
-  // selector is a trap otherwise (baseline demo: all 86 PDBs dangling).
+  // I-1 (#38): candidates with a pdbPath but a MISSING FILE are kept (the
+  // drawer renders them as honestly disabled options with a marker), so a
+  // dangling reference from the demo baseline is discoverable, not a
+  // surprise 400 on launch.
   const superposeOptions = React.useMemo(
     () =>
       candidates
-        .filter((c) => c.id !== detailId && !!c.pdbPath && c.pdbExists)
-        .map((c) => ({ id: c.id, name: c.name })),
+        .filter((c) => c.id !== detailId && !!c.pdbPath)
+        .map((c) => ({ id: c.id, name: c.name, pdbExists: c.pdbExists })),
     [candidates, detailId],
   );
   const superposeWith = React.useCallback(
@@ -814,37 +816,79 @@ export function ScreeningPanel() {
     [currentId, toast],
   );
 
-  // H1c: candidates eligible as the RMSD reference — a linked PDB that STILL
-  // EXISTS on disk (I1a: the old `!!c.pdbPath` check trusted a stale column;
-  // a harvested-then-deleted file would pass the filter and the server would
-  // honestly 400 "needs a linked PDB file on disk" — QA 38-a P2-8 / #38).
+  // I-1c (#39): flip the persisted rmsdExcludeRef option. The PATCH response
+  // carries the screening DTO with metricDefs recomputed under the new
+  // domain policy — replacing `screening` here reflows scores, ranking and
+  // sorting automatically (candidates' metric VALUES are unchanged, only
+  // the normalization domain moves). rmsdOptBusy guards against double-PATCH
+  // races from double-clicks / Enter key repeats.
+  const [rmsdOptBusy, setRmsdOptBusy] = React.useState(false);
+  const toggleRmsdExcludeRef = React.useCallback(async () => {
+    if (!currentId || rmsdOptBusy) return;
+    const next = !(screening?.rmsdExcludeRef ?? false);
+    setRmsdOptBusy(true);
+    try {
+      const res = await fetch(`/api/screening/${currentId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rmsdExcludeRef: next }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(data?.error ?? `HTTP ${res.status}`);
+      }
+      // The DTO recomputes metricDefs server-side under the new policy —
+      // one replacement re-scores everything downstream of `screening`.
+      setScreening(data?.screening ?? null);
+      toast({
+        title: "RMSD domain updated",
+        description: next
+          ? "Reference excluded — other candidates' scores spread across the full range."
+          : "Reference re-anchored — rmsd 0 Å pins the domain minimum again.",
+        variant: "success",
+      });
+    } catch (e) {
+      toast({
+        title: "RMSD domain update failed",
+        description: e instanceof Error ? e.message : String(e),
+        variant: "destructive",
+      });
+    } finally {
+      setRmsdOptBusy(false);
+    }
+  }, [currentId, rmsdOptBusy, screening, toast]);
+
+  // H1c: candidates eligible as the RMSD reference (linked PDB — the
+  // computeRmsdAxis contract). I-1 (#38): file-MISSING pdbPath references
+  // are kept too (mapped with pdbExists=false) so the selector can render
+  // them as disabled, marker-carrying items instead of silently hiding the
+  // demo baseline's dangling references behind a Compute that would 400.
   const rmsdCandidates = React.useMemo(
     () =>
       candidates
-        .filter((c) => !!c.pdbPath && c.pdbExists)
-        .map((c) => ({ id: c.id, name: c.name })),
+        .filter((c) => !!c.pdbPath)
+        .map((c) => ({ id: c.id, name: c.name, pdbExists: c.pdbExists })),
     [candidates],
   );
 
-  // I1a: candidates whose PDB column points at a file that is GONE — shown as
-  // a muted count under the reference selector so the gap is visible (and the
-  // fix is obvious: re-run the source node / re-sync, then rescan).
-  const rmsdDangling = React.useMemo(
-    () => candidates.filter((c) => !!c.pdbPath && !c.pdbExists).length,
+  // I-1 (rescan hint): candidates whose PDB files exist but which carry no
+  // rmsd key yet — a reference is set and the axis is STALE for them (they
+  // appeared after the last compute, e.g. via rescan). Only meaningful
+  // when a reference exists; the card gates the hint on that.
+  const rmsdStaleCount = React.useMemo(
+    () => candidates.filter((c) => c.pdbExists && c.metrics?.rmsd === undefined).length,
     [candidates],
   );
 
-  // I1b: after a rescan (or an alignment that failed server-side), candidates
-  // with a real PDB can lack the rmsd key while the axis itself exists — the
-  // ranking silently treats the missing metric as "not present" (weights
-  // renormalize), which is correct scoring but invisible UX. Surface the
-  // count + a one-click recompute against the CURRENT reference.
-  const rmsdMissing = React.useMemo(() => {
-    if (!screening?.rmsdRef) return 0;
-    return candidates.filter(
-      (c) => !!c.pdbPath && c.pdbExists && c.metrics?.rmsd === undefined,
-    ).length;
-  }, [candidates, screening?.rmsdRef]);
+  // I-1 (#38): the CURRENT reference's file is gone on disk — the chip must
+  // warn (recompute will 400 until a rescan relinks it). A deleted
+  // reference resolves to rmsdRef=null server-side, so no warning then.
+  const rmsdRefFileMissing = React.useMemo(() => {
+    const refId = screening?.rmsdRef?.id;
+    if (!refId) return false;
+    const ref = candidates.find((c) => c.id === refId);
+    return !!ref && !ref.pdbExists;
+  }, [screening, candidates]);
 
   /** D3: export the Markdown screening report (same row semantics as the CSV). */
   function exportReport() {
@@ -907,13 +951,13 @@ export function ScreeningPanel() {
     rmsdRefPick,
     onRmsdRefPick: setRmsdRefPick,
     onComputeRmsd: (refId: string) => void computeRmsd(refId),
-    // I1a/I1b: disk-truth + missing-rmsd visibility.
-    rmsdDangling,
-    rmsdMissing,
-    onRecomputeRmsd: () => {
-      const refId = screening?.rmsdRef?.id;
-      if (refId) void computeRmsd(refId);
-    },
+    // I lane (#38 / rescan hint / #39): honest file-missing state, stale-axis
+    // count, and the persisted domain-exclusion option.
+    rmsdStaleCount,
+    rmsdRefFileMissing,
+    rmsdExcludeRef: screening?.rmsdExcludeRef ?? false,
+    onToggleRmsdExcludeRef: () => void toggleRmsdExcludeRef(),
+    rmsdOptBusy,
   };
 
   return (
@@ -1196,6 +1240,9 @@ export function ScreeningPanel() {
                   rows={pageRows}
                   totalRows={sortedRows.length}
                   metricDefs={metricDefs}
+                  // I-1c (#39): the table badges the reference row ("REF")
+                  // so the axis anchor is visible while browsing rows.
+                  rmsdRefId={screening?.rmsdRef?.id ?? null}
                   sortKey={sortKey}
                   sortDir={sortDir}
                   onSort={handleSort}
@@ -1208,7 +1255,6 @@ export function ScreeningPanel() {
                   onTogglePageAll={togglePageAll}
                   onStar={(id, starred) => void patchCandidates([id], { starred })}
                   onView={(id) => setDetailId(id)}
-                  rmsdRefId={screening?.rmsdRef?.id ?? null}
                   onBulkStar={() => void patchCandidates(selectedIds, { starred: true })}
                   onBulkStatus={(status) =>
                     void patchCandidates(selectedIds, { status })

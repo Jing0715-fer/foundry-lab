@@ -865,6 +865,9 @@ function ResultTab({
           {node.status === "failed" && (
             <span className="ml-1 text-rose-600 dark:text-rose-400">· failed</span>
           )}
+          {node.status === "cancelled" && (
+            <span className="ml-1 text-zinc-600 dark:text-zinc-400">· cancelled</span>
+          )}
         </p>
         <Button
           variant="ghost"
@@ -1083,13 +1086,22 @@ function NodeInspectorImpl() {
           data.logs,
           data.rowUpdatedAt,
         );
-        if (data.status === "completed" || data.status === "failed") {
+        if (
+          data.status === "completed" ||
+          data.status === "failed" ||
+          data.status === "cancelled"
+        ) {
           if (!finished) {
             finished = true;
             toast({
               title: "Node finished",
               description: data.status,
-              variant: data.status === "failed" ? "destructive" : "success",
+              variant:
+                data.status === "failed"
+                  ? "destructive"
+                  : data.status === "cancelled"
+                    ? "default"
+                    : "success",
             });
             es.close();
           }
@@ -1118,7 +1130,12 @@ function NodeInspectorImpl() {
           toast({
             title: "Node finished",
             description: data.status ?? "completed",
-            variant: data.status === "failed" ? "destructive" : "success",
+            variant:
+              data.status === "failed"
+                ? "destructive"
+                : data.status === "cancelled"
+                  ? "default"
+                  : "success",
           });
         }
       } catch {

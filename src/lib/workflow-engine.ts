@@ -12,6 +12,7 @@ import {
   extractClusterTarget,
 } from "@/lib/run-utils";
 import { runSkill, recordSkillInvocation } from "@/lib/skills";
+import { clearStop, isStopRequested } from "@/lib/stop-registry";
 import { parseFastaInput } from "@/lib/tools";
 import type {
   NodeDTO,
@@ -24,7 +25,7 @@ import type {
 export type NodeExecResult = {
   result: string;
   logs: string;
-  status: "completed" | "failed" | "running";
+  status: "completed" | "failed" | "running" | "cancelled";
 };
 
 /**
@@ -540,7 +541,11 @@ export async function executeNode(
           await executeCompTool(
             toolKey,
             filtered,
-            clusterTarget ? { cluster: clusterTarget } : {},
+            {
+              ...(clusterTarget ? { cluster: clusterTarget } : {}),
+              // K lane: node id = stop-lane key (process kill + job discovery).
+              runKey: node.id,
+            },
           );
         // J lane: unified audit — comp nodes keep their specialized executor
         // (cluster routing + auto-wiring + ##OUTPUTS## protocol) but every
@@ -626,7 +631,11 @@ export async function executeNode(
           await executeCompTool(
             toolKey,
             filtered,
-            clusterTarget ? { cluster: clusterTarget } : {},
+            {
+              ...(clusterTarget ? { cluster: clusterTarget } : {}),
+              // K lane: node id = stop-lane key (process kill + job discovery).
+              runKey: node.id,
+            },
           );
         // J lane: unified audit — same rule as the alphafold branch above.
         const { __inputs: _ai, ...auditParams } = filtered;
@@ -791,46 +800,79 @@ const CLUSTER_ROUTED_TYPES = new Set([
  * persist outcomes CONDITIONALLY on the node still being "running" (see the
  * runner / single-node run lane), so a late resolution can never resurrect a
  * node the watchdog (or a user Stop) already settled.
+ *
+ * K lane — post-race STOP GUARD: after execution returns (natural or
+ * watchdog-cut), a stop request registered by POST /nodes/:id/stop wins over
+ * the natural outcome: the node reports `cancelled` instead of
+ * completed/failed, so the persist lanes write an honest terminal state even
+ * when the engine ignored (or outlived) the SIGTERM. A fresh execution
+ * discards any STALE stop flag first — a stop aimed at a previous run must
+ * never burn this run (reference-branch QA P1-1).
  */
 export async function executeNodeGuarded(
   node: NodeDTO,
   inputs: string,
   workflowId: string,
 ): Promise<NodeExecResult> {
-  // Cluster-routed tool node → no watchdog race (see docblock).
-  if (
+  // Fresh execution discards any stale stop flag: the user stopped the OLD
+  // run, this is a NEW one. Stops registered DURING this execution are still
+  // honored by the post-race check below.
+  clearStop(node.id);
+
+  // Cluster-routed tool node → no watchdog race (see docblock), but the
+  // post-race stop guard still applies — a user Stop that cancels the remote
+  // job mid-poll reports `cancelled`, not the poll loop's failed outcome.
+  const clusterRouted =
     CLUSTER_ROUTED_TYPES.has(node.type) &&
-    extractClusterTarget((node.params as Record<string, unknown>)._cluster)
-  ) {
-    return executeNode(node, inputs, workflowId);
+    extractClusterTarget((node.params as Record<string, unknown>)._cluster);
+
+  let outcome: NodeExecResult;
+  if (clusterRouted) {
+    outcome = await executeNode(node, inputs, workflowId);
+  } else {
+    const execution = executeNode(node, inputs, workflowId);
+    // executeNode maps internal errors to { status: "failed" } results, but a
+    // defensive catch keeps a throwing helper from surfacing as an unhandled
+    // rejection after the race is decided.
+    void execution.catch(() => undefined);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      outcome = await Promise.race([
+        execution,
+        new Promise<NodeExecResult>((resolve) => {
+          timer = setTimeout(() => {
+            resolve({
+              result:
+                `Error: execution timed out after ${fmtTimeoutLabel(NODE_TIMEOUT_MS)} (watchdog) — ` +
+                "the node was marked failed and downstream nodes were unlocked.",
+              logs:
+                `[watchdog] No terminal state within ${fmtTimeoutLabel(NODE_TIMEOUT_MS)} — ` +
+                "node marked failed by the execution watchdog (E1). The underlying " +
+                "engine may still be finishing in the background; its late result " +
+                "is discarded.",
+              status: "failed",
+            });
+          }, NODE_TIMEOUT_MS);
+        }),
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
   }
 
-  const execution = executeNode(node, inputs, workflowId);
-  // executeNode maps internal errors to { status: "failed" } results, but a
-  // defensive catch keeps a throwing helper from surfacing as an unhandled
-  // rejection after the race is decided.
-  void execution.catch(() => undefined);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    return await Promise.race([
-      execution,
-      new Promise<NodeExecResult>((resolve) => {
-        timer = setTimeout(() => {
-          resolve({
-            result:
-              `Error: execution timed out after ${fmtTimeoutLabel(NODE_TIMEOUT_MS)} (watchdog) — ` +
-              "the node was marked failed and downstream nodes were unlocked.",
-            logs:
-              `[watchdog] No terminal state within ${fmtTimeoutLabel(NODE_TIMEOUT_MS)} — ` +
-              "node marked failed by the execution watchdog (E1). The underlying " +
-              "engine may still be finishing in the background; its late result " +
-              "is discarded.",
-            status: "failed",
-          });
-        }, NODE_TIMEOUT_MS);
-      }),
-    ]);
-  } finally {
-    if (timer !== undefined) clearTimeout(timer);
+  // K lane post-race STOP GUARD — a stop requested mid-run wins over the
+  // natural outcome (a killed engine usually reports failed; an LLM lane cut
+  // mid-flight may even report completed). The stop route has already flipped
+  // the row to cancelled, so the persist lanes' conditional write discards
+  // this either way — this check makes the RESULT honest for callers that
+  // read it directly.
+  if (isStopRequested(node.id)) {
+    clearStop(node.id);
+    return {
+      result: "Stopped by user",
+      logs: "Stopped by user — node execution was halted mid-run.",
+      status: "cancelled",
+    };
   }
+  return outcome;
 }

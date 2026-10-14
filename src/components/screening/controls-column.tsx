@@ -23,6 +23,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import type { ScreeningMetricDef } from "@/lib/types";
 import { PRESETS, formatMetric, type WeightPreset } from "./scoring";
 
@@ -63,8 +64,11 @@ export interface ControlsColumnProps {
   onSaveWeights: () => void;
   weightsDirtyFlag: boolean;
   savingWeights: boolean;
-  /** H1c: candidates eligible as the RMSD reference (linked PDB only). */
-  rmsdCandidates: { id: string; name: string }[];
+  /** H1c: candidates eligible as the RMSD reference (non-null pdbPath).
+   *  I-1 (#38): pdbExists carries the server-checked disk state — items
+   *  whose file is missing render DISABLED with a marker instead of luring
+   *  the user into a Compute that would 400. */
+  rmsdCandidates: { id: string; name: string; pdbExists: boolean }[];
   /** H1c: the reference the axis was last computed against (null = never). */
   rmsdRef: { id: string; name: string } | null;
   rmsdBusy: boolean;
@@ -73,12 +77,16 @@ export interface ControlsColumnProps {
   onRmsdRefPick: (id: string) => void;
   /** Compute (or recompute against a new reference) — fires the POST. */
   onComputeRmsd: (refId: string) => void;
-  /** I1a: candidates whose linked PDB no longer exists on disk. */
-  rmsdDangling: number;
-  /** I1b: candidates with a PDB but no rmsd value while an axis exists. */
-  rmsdMissing: number;
-  /** I1b: one-click recompute against the CURRENT reference. */
-  onRecomputeRmsd: () => void;
+  /** I-1 (rescan hint): PDB-backed candidates still lacking an rmsd key. */
+  rmsdStaleCount: number;
+  /** I-1 (#38): the CURRENT reference's PDB file is gone on disk. */
+  rmsdRefFileMissing: boolean;
+  /** I-1c (#39): persisted domain-exclusion option state. */
+  rmsdExcludeRef: boolean;
+  /** I-1c (#39): flip the persisted domain-exclusion option (PATCH). */
+  onToggleRmsdExcludeRef: () => void;
+  /** I-1c (#39): PATCH in flight — disables the toggle (double-click guard). */
+  rmsdOptBusy?: boolean;
 }
 
 export function ControlsColumn({
@@ -107,9 +115,11 @@ export function ControlsColumn({
   rmsdRefPick,
   onRmsdRefPick,
   onComputeRmsd,
-  rmsdDangling,
-  rmsdMissing,
-  onRecomputeRmsd,
+  rmsdStaleCount,
+  rmsdRefFileMissing,
+  rmsdExcludeRef,
+  onToggleRmsdExcludeRef,
+  rmsdOptBusy,
 }: ControlsColumnProps) {
   return (
     <Card className="shadow-sm">
@@ -327,63 +337,54 @@ export function ControlsColumn({
         {/* H1c: structural-RMSD axis — compute a real "rmsd" metric for every
             candidate against one reference (server-side superposition). The
             values land in candidate metrics, so sorting / range filters /
-            weights / CSV / report all treat it like any engine metric.
-            I1a/I1b: the selector only offers candidates whose PDB STILL
-            exists (pdbExists served per row), and gaps in the axis are
-            surfaced instead of silently scored-around. */}
+            weights / CSV / report all treat it like any engine metric. */}
         <div className="space-y-2 border-t pt-3">
           <Label className="flex items-center gap-1.5">
             <Box className="size-3.5" />
             Structural RMSD
           </Label>
-          {rmsdRef && (
-            <p
-              className="rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground"
-              data-testid="rmsd-ref-chip"
-            >
-              Axis reference: <span className="font-medium text-foreground">{rmsdRef.name}</span>
-              <span className="text-muted-foreground"> (rmsd 0 Å)</span>
-            </p>
-          )}
           {rmsdCandidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              {rmsdDangling > 0
-                ? `${rmsdDangling} candidate${rmsdDangling === 1 ? "" : "s"} reference a PDB file that is no longer on disk — re-run the source node, then rescan.`
-                : "No candidates with a linked PDB file yet."}
+              No candidates with a linked PDB file yet.
             </p>
           ) : (
             <>
-              {/* I1b: the axis exists but some PDB-backed candidates carry no
-                  rmsd value (rescan added them after the compute, or their
-                  alignment failed) — the scorer quietly renormalizes around
-                  the gap; this banner makes the gap + the fix visible. */}
-              {rmsdRef && rmsdMissing > 0 && (
-                <div
-                  className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400"
-                  data-testid="rmsd-missing-hint"
-                  role="status"
+              {rmsdRef && (
+                <p
+                  className="rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground"
+                  data-testid="rmsd-ref-chip"
                 >
-                  <p>
-                    {rmsdMissing} candidate{rmsdMissing === 1 ? "" : "s"} with a PDB
-                    {rmsdMissing === 1 ? " has" : " have"} no RMSD value yet (added after
-                    the last compute, or alignment failed).
-                  </p>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-11 w-full gap-1 px-2 text-[11px] md:h-8"
-                    disabled={rmsdBusy}
-                    onClick={onRecomputeRmsd}
-                    title={`Recompute the RMSD axis against ${rmsdRef.name}`}
-                  >
-                    {rmsdBusy ? (
-                      <Loader2 className="size-3 animate-spin" />
-                    ) : (
-                      <RotateCcw className="size-3" />
-                    )}
-                    Recompute vs {rmsdRef.name}
-                  </Button>
-                </div>
+                  Axis reference: <span className="font-medium text-foreground">{rmsdRef.name}</span>
+                  <span className="text-muted-foreground">
+                    {/* I-1c (#39): the suffix mirrors the domain policy so the
+                        chip states WHY the reference's score looks the way it
+                        does (anchoring vs excluded). */}
+                    {rmsdExcludeRef
+                      ? " (rmsd 0 Å · excluded from domain)"
+                      : " (rmsd 0 Å)"}
+                  </span>
+                  {rmsdRefFileMissing && (
+                    /* I-1 (#38): dangling PDB reference — honest warning beats
+                       a surprise 400 on the next recompute. */
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {" "}
+                      — PDB file missing on disk (recompute will fail until rescan)
+                    </span>
+                  )}
+                </p>
+              )}
+              {rmsdRef && rmsdStaleCount > 0 && (
+                /* I-1 (rescan hint): the axis is stale for candidates that
+                   arrived AFTER the last compute (e.g. via rescan) — they have
+                   real PDB files but no rmsd key, so they silently sit outside
+                   the metric. Nudge instead of hiding it. */
+                <p
+                  className="text-[11px] leading-relaxed text-amber-600 dark:text-amber-400"
+                  data-testid="rmsd-stale-hint"
+                >
+                  {rmsdStaleCount} candidate(s) with PDB files have no RMSD value
+                  yet — recompute against the current reference to score them.
+                </p>
               )}
               <Select
                 // "" (not undefined): Radix treats it as cleared → placeholder,
@@ -401,21 +402,22 @@ export function ControlsColumn({
                 </SelectTrigger>
                 <SelectContent>
                   {rmsdCandidates.map((c) => (
-                    <SelectItem key={c.id} value={c.id}>
+                    /* I-1 (#38): file-missing candidates stay LISTED (the
+                       demo baseline's dangling references are real data) but
+                       are unselectable — disabled beats hidden: the user can
+                       see the candidate exists AND why it can't be a
+                       reference. */
+                    <SelectItem key={c.id} value={c.id} disabled={!c.pdbExists}>
                       <span className="truncate">{c.name}</span>
+                      {!c.pdbExists && (
+                        <span className="ml-1 shrink-0 text-[11px] text-amber-600 dark:text-amber-400">
+                          · file missing
+                        </span>
+                      )}
                     </SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-              {rmsdDangling > 0 && (
-                <p
-                  className="text-[11px] leading-relaxed text-muted-foreground"
-                  data-testid="rmsd-dangling-hint"
-                >
-                  {rmsdDangling} candidate{rmsdDangling === 1 ? "" : "s"} not offered —
-                  linked PDB missing from disk.
-                </p>
-              )}
               <Button
                 size="sm"
                 className="h-11 w-full gap-1.5 md:h-9"
@@ -438,6 +440,38 @@ export function ControlsColumn({
                   </>
                 )}
               </Button>
+              {rmsdRef && (
+                /* I-1c (#39): persisted domain-exclusion option. The
+                   reference's rmsd=0 is a mathematical identity, not a
+                   measured spread — leaving it in the domain pins the min at
+                   0 and squashes every other candidate's normalization. This
+                   switch opts the campaign out of that anchoring (the
+                   reference row keeps showing 0 Å). Only rendered once a
+                   reference exists — excluding "nothing" is meaningless. */
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between gap-2">
+                    <label
+                      htmlFor="rmsd-exclude-ref-toggle"
+                      className="text-xs font-medium text-foreground"
+                    >
+                      Exclude reference from domain
+                    </label>
+                    <Switch
+                      id="rmsd-exclude-ref-toggle"
+                      checked={rmsdExcludeRef}
+                      onCheckedChange={onToggleRmsdExcludeRef}
+                      disabled={rmsdOptBusy}
+                      aria-label="Exclude the reference candidate from the RMSD domain"
+                      data-testid="rmsd-exclude-ref-toggle"
+                    />
+                  </div>
+                  <p className="text-[11px] leading-relaxed text-muted-foreground">
+                    Reference keeps rmsd 0 Å but no longer anchors the axis
+                    domain — other candidates&apos; scores spread across the
+                    full range.
+                  </p>
+                </div>
+              )}
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 Adds a weightable <span className="font-medium">rmsd</span> metric (Å, lower
                 is more similar) to every candidate with a PDB file — computed
