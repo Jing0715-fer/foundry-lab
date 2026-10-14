@@ -80,6 +80,23 @@
     web.search 首执行 + done.toolCalls 即时合并修复 + Activity 双行核对 + 移动端 + console
     零告警；基线纪律遵守（schema 变更重冻 + e2e 后恢复 + 字段级核对）。
 
+- **I 线 · RMSD 轴打磨与 Escape 分层（本轮交付）**：ROADMAP 上轮规划的 P1 项全部落地，
+  开发 → QA → e2e 全闭环：
+  - **I1a 磁盘真相行级服务**：候选 DTO 新增 pdbExists（详情端点 existsSync 快照；列表
+    端点 lite 投影不受影响）——悬空引用从"用户点进去才 400"变为"选择器层就不可见 +
+    计数提示"；基线 demo 全悬空态（86/86）UI 诚实显示引导文案。QA 普查把同病修到相邻
+    两处（详情抽屉 Superpose 伙伴 + Compare 门控）。
+  - **I1b 缺口可见化**：rescan 新增/对齐失败的候选（有 PDB 无 rmsd 键）→ amber 提示 +
+    一键 "Recompute vs <ref>"——评分器静默重归一化的缺口现在有 UI 出口。
+  - **I1c 参考域语义修正**：参考的自比 0 从 rmsd 域计算中排除（标签≠数据点）——
+    三处统一（DTO / 落库 defs / promote 摘要，computeScreeningMetricDefs 单一实现）；
+    表格 REF 徽章；e2e 实证域 26.5–29.7（旧实现恒 0–29.7）。
+  - **I2 Escape 分层**：frame Escape 让位 pending wire（连线是模式、选择是状态——
+    模式优先）；e2e 真实键盘实证：单次 Escape 取消连线且组保持激活 → 第二次反选组；
+    优先级矩阵成文（CONTRIBUTING 代码约定节）。
+  - QA 无 P0/P1；2 个 P2（#46 同病普查）当场修复；e2e 抓到 1 个文案复数 bug（#43）
+    + 3 条新 e2e 工程教训（#44 modifier 不透传 / #45 rect 零检查 / #46 普查启发式）。
+
 ## 测试结论（驱动后续优先级）
 
 | # | 发现 | 影响 | 对应方向 |
@@ -92,24 +109,42 @@
 | 35 | **onboarding tour 调色板按钮会真实建节点**：用正则匹配按钮文本做"dismiss"可能误中节点描述按钮（本轮自我污染源）——e2e 必须精确匹配 "Skip" 并核对节点计数 | e2e 工程标准 | 验收参考 |
 | 36 | **开着的 Radix menu 全域阻断 elementFromPoint**：hit-test 断言返回 HTML——断言前必须先关菜单/Escape 清场 | e2e 工程标准 | 验收参考 |
 | 37 | **拖拽失败的 pan 副作用使坐标全漂**：失败拖拽 = 背景按下 → 画布平移 → 后续测量全部过期——每次拖拽前重新测量 + "Fit to content" 恢复；坐标经文件中转防转录错误 | e2e 工程标准 | 验收参考 |
-| 38 | **基线 demo screening 的 PDB 引用悬空**（预存 F4）：RMSD 轴需真实产出——服务端 400 "needs a linked PDB file on disk" 诚实报错；参考选择器只查 pdbPath 不查磁盘存在（P2-8） | UX | I 线 |
-| 39 | **参考 rmsd=0 锚定域**（设计取舍）：参考参与 metricDefs 域计算（min=0 恒定）→ 其余候选归一化区间被压扁 + 参考 rmsd 轴恒满分。chip 明示 + "与参考相似度"排序语义下可辩，但可考虑把参考排除出域计算 | 科研语义 | I 线（可选项） |
+| 38 | **基线 demo screening 的 PDB 引用悬空**（预存 F4）：RMSD 轴需真实产出——服务端 400 "needs a linked PDB file on disk" 诚实报错；参考选择器只查 pdbPath 不查磁盘存在（P2-8） | UX | **已修复（I1a，e2e 实证）**：pdbExists 服务行级快照 + 选择器/相邻选择器三处过滤（#46） |
+| 39 | **参考 rmsd=0 锚定域**（设计取舍）：参考参与 metricDefs 域计算（min=0 恒定）→ 其余候选归一化区间被压扁 + 参考 rmsd 轴恒满分。chip 明示 + "与参考相似度"排序语义下可辩，但可考虑把参考排除出域计算 | 科研语义 | **已交付（I1c）**：排除语义落地为默认（三处统一：DTO/落库/promote）+ REF 徽章 |
 | 40 | **barrel 副作用注册模式**：直接 import 子模块（skills/registry）绕过 barrel 的 `import "./catalog"` 副作用 → 注册表空、零报错静默失效。教训：**有副作用注册的中心化模块，消费方一律从 barrel 导入**；客户端安全子集（prompt/types）例外直连防服务端模块进 client bundle | 架构 | 已修复（e2e 实证 18/18） |
 | 41 | **Prisma schema 变更后运行中 dev server 持旧 client**：新模型 db.x undefined → 500。既有纪律 #20 的强化实例：**db push 后必须 daemon 重启**（不依赖报错发现） | 运维 | 已遵守 |
 | 42 | **流式 SSE done 事件字段丢失**：chat-stream 泳道执行的 toolCalls 只在持久化后 refetch 可见（done 处理器只 merge content/messageId）——新执行的操作卡片对用户不可见。修复：done 全字段合并 | UX | 已修复（e2e 实证卡片即时出现） |
+| 43 | **插值文案复数叠加 bug**（本轮 e2e 抓到）：`candidate{s} with a PDB{s have}` 两处复数化叠加渲染成 "a PDBs have"——模板语法正确≠文案正确。教训：**插值文案必须整体读一遍渲染文本；e2e 断言完整字符串**（role=status 文本拼接断言恰好抓到了） | 文案/测试 | 已修复（e2e 重载复验） |
+| 44 | **agent-browser 的 `keydown Shift` 不与合成 mouse 事件合并**（CDP Input.dispatchMouseEvent 不读键盘 modifier 状态）：Shift+拖拽橡皮筋无法用 CLI mouse 通道实现（拖了只触发 pan）。替代路径：**API 层准备状态（PATCH groups/DB）+ 真实指针做无修饰键交互 + 真实键盘做键路验证**；需修饰键的指针场景先用 eval 探针验证 modifier 是否透传 | e2e 工程标准 | 验收参考 |
+| 45 | **data-node-card 标记在包裹层而非定位卡片**（`[data-node-card] > div` 才有 bounding rect）——测得 0×0 = 查错层。教训：**e2e 坐标测量前先断言目标元素 rect 非零**（0×0 = 错层/隐藏层/裁剪），再取坐标 | e2e 工程标准 | 验收参考 |
+| 46 | **同模式选择器陷阱普查启发式**（QA 本轮实证）：修一个选择器的某类陷阱（悬空 pdbPath）后，QA 在相邻两处（详情抽屉 Superpose 伙伴 + Compare 对话框门控）抓到同病。教训：**修某类陷阱时，同一数据字段的所有消费者选择器都要过一遍**（grep pdbPath 的全部 UI 消费点） | 审查启发式 | 已修复 |
 
-## I 线 — RMSD 轴打磨与遗留收口（P1，下一阶段建议）
+## I 线 — RMSD 轴打磨与遗留收口（P1）
 
-1. **RMSD 轴打磨**（#38/#39）：参考候选选择器预检磁盘存在（标记/过滤悬空 PDB）；
-   rescan 后新候选无 rmsd 键的 UI 提示（"N 个新候选尚无 RMSD，请重算"）；参考排除出域
-   计算的可选项（或排序时参考行加视觉标记）。
-2. **Escape 分层语义成文**（QA 38-a P2-3）：pending 连线 + frame 激活时 Escape 需两次（先
-   反选组再取消连线）——已知矩阵，CONTRIBUTING/验收参考记录或改为单次冒泡到全局。
-3. **叠合深化遗留**（D 线延续）：多链叠合选择（当前自动取对齐链）；per-region RMSD
-   （CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）。
-4. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
+**本轮已交付（I1a/I1b/I1c/I2，e2e 实证）**：
+
+1. ✅ **I1a 磁盘预检**：ScreeningCandidateDTO 新增 pdbExists（行级 existsSync 快照，
+   列表端点仍走 lite 投影零开销）；RMSD 参考选择器只出真可用参考；悬空计数三处可见
+   （空态文案 / 选择器下 hint / e2e 钩子）；QA 普查后相邻两处同病修复（详情抽屉
+   Superpose 伙伴 + Compare 门控，#46）。
+2. ✅ **I1b rescan 新候选提示**：rmsdMissing（有 PDB 且存在但无 rmsd 键，仅当轴存在）
+   → amber 提示条（role=status）+ "Recompute vs <ref>" 一键重算；e2e 闭环（rescan →
+   4 新候选 → 提示出现 → 真实点击 Recompute → 提示消失 + 7 候选全获 rmsd）。
+3. ✅ **I1c 参考域排除 + REF 徽章**：参考自比 0 是轴的定义不是数据点——
+   computeScreeningMetricDefs 三处统一（DTO / 落库 defs / promote 摘要）；表格 REF
+   徽章（桌面 + 移动）+ title 语义说明；e2e 实证域 [26.5–29.7] 排除参考 0。
+4. ✅ **I2 Escape 分层语义**：frame Escape 让位 pendingFrom（连线是模式、选择是状态）；
+   e2e 实证单次 Escape 取消连线且组框保持激活、第二次反选；H2 键盘回归通过；
+   优先级矩阵成文 CONTRIBUTING 代码约定节。
+
+**剩余（下一阶段建议）**：
+
+5. **叠合深化遗留**（D 线延续）：多链叠合选择（当前自动取对齐链）；per-region RMSD
+   （CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）；promote Markdown
+   摘要中参考行的 RMSD 0 无注记（P3-1，UI 是注记面——可选补 REF 标记）。
+6. **认证与团队协作**（NextAuth，H4 延续）：工作流/campaign 共享与操作审计——依赖面大，
    建议独立分支推进。
-5. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
+7. **真实 SSH 集群通道**（G 线残留）：F3 徽标的真实集群场景（当前 mock e2e 背书）。
 
 ## K 线 — Skill 层运营化（P2，J 线后续建议）
 
@@ -163,3 +198,12 @@
 - **新增智能体操作路径必须走 runSkill 管道**（J 线后）：声明 SkillDefinition（含参数 schema
   + requires）→ 注册进 catalog → 不得手写旁路执行器；专门执行器（集群/队列）必须至少
   recordSkillInvocation 落审计表。
+- **引用磁盘文件的新选择器/门控必须消费 pdbExists（或等价磁盘真相）而非裸列**
+  （#38/#46：pdbPath 是落库快照——文件删除后列仍在；修某类陷阱时同字段全部 UI 消费点
+  普查一遍）。
+- **画布内可聚焦面消费 Escape 前必须让位 pendingFrom**（I2：连线是模式、选择是状态——
+  模式优先；优先级矩阵见 CONTRIBUTING）；**插值文案改动必须整体读渲染文本且 e2e 断言
+  完整字符串**（#43：复数化叠加 "a PDBs have"）；**e2e 坐标测量前断言 rect 非零**
+  （#45：0×0 = 错层/隐藏层）；**需修饰键的指针交互先用 eval 探针验证 modifier 透传**
+  （#44：agent-browser keydown Shift 不进合成 mouse 事件——替代 = API 备料 + 无修饰键
+  真实指针 + 真实键盘）。

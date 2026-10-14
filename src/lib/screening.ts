@@ -264,6 +264,33 @@ function computeMetricDefs(metricValues: Record<string, number>[]): ScreeningMet
   });
 }
 
+/**
+ * I1c (#39): screening-domain computation that EXCLUDES the reference
+ * candidate's own rmsd value from the rmsd domain. The reference's 0 Å is a
+ * self-comparison LABEL, not a measured data point — with it inside the
+ * domain, min collapses to 0 forever (the other candidates' normalized rmsd
+ * spread gets squashed) and the reference itself always scores a perfect rmsd
+ * axis. Excluded here, the domain spans the REAL candidate population; the
+ * reference's displayed 0 still normalizes to a full bar (clamp), which is
+ * the honest reading of "identical to itself".
+ *
+ * Every OTHER metric of the reference still participates — those are real
+ * measurements. Callers without an rmsd axis (rmsdRefId null) get plain
+ * computeMetricDefs semantics.
+ */
+function computeScreeningMetricDefs(
+  entries: { id: string; metrics: Record<string, number> }[],
+  rmsdRefId: string | null,
+): ScreeningMetricDef[] {
+  if (!rmsdRefId) return computeMetricDefs(entries.map((e) => e.metrics));
+  const metricValues = entries.map((e) => {
+    if (e.id !== rmsdRefId || e.metrics.rmsd === undefined) return e.metrics;
+    const { rmsd: _excluded, ...rest } = e.metrics;
+    return rest;
+  });
+  return computeMetricDefs(metricValues);
+}
+
 function defaultWeightFor(key: string): number {
   return PRIMARY_METRICS.includes(key) ? 2 : 1;
 }
@@ -446,6 +473,11 @@ function toCandidateDTO(c: CandidateRow): ScreeningCandidateDTO {
     fastaPath: c.fastaPath,
     sequence: c.sequence,
     length: c.length,
+    // I1a: disk truth served with the row (sync stat — ~µs per candidate, and
+    // only the DETAIL endpoints map full rows; the list endpoint uses the lite
+    // projection below). The reference selector + rescan hints key off this
+    // instead of trusting the stale pdbPath column.
+    pdbExists: !!c.pdbPath && existsSync(c.pdbPath),
     metrics: parseJson<Record<string, number>>(c.metrics, {}),
     starred: c.starred,
     status: c.status as ScreeningCandidateStatus,
@@ -459,7 +491,10 @@ function toCandidateDTO(c: CandidateRow): ScreeningCandidateDTO {
 
 /** Serialize a screening row + its candidates → DTO (domains recomputed NOW). */
 function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): ScreeningDTO {
-  const metricValues = candidates.map((c) => parseJson<Record<string, number>>(c.metrics, {}));
+  const entries = candidates.map((c) => ({
+    id: c.id,
+    metrics: parseJson<Record<string, number>>(c.metrics, {}),
+  }));
   // H1c: resolve the RMSD-axis reference candidate. A DELETED reference (or
   // a bare column) resolves to null — the DTO never lies about which
   // structure the rmsd metric was computed against.
@@ -476,7 +511,9 @@ function toScreeningDTO(row: ScreeningRow, candidates: CandidateLite[]): Screeni
     sourceRef: row.sourceRef,
     sourceLabel: row.sourceLabel,
     weights: parseJson<Record<string, number>>(row.weights, {}),
-    metricDefs: computeMetricDefs(metricValues),
+    // I1c: rmsd domain excludes the reference's own 0 (label, not data) —
+    // see computeScreeningMetricDefs.
+    metricDefs: computeScreeningMetricDefs(entries, row.rmsdRefId ?? null),
     rmsdRef,
     status: row.status,
     candidateCount: candidates.length,
@@ -937,10 +974,15 @@ async function refreshScreeningMetrics(id: string): Promise<void> {
   if (!row) return;
   const candidates = await db.screeningCandidate.findMany({
     where: { screeningId: id },
-    select: { metrics: true },
+    select: { id: true, metrics: true },
   });
-  const metricValues = candidates.map((c) => parseJson<Record<string, number>>(c.metrics, {}));
-  const defs = computeMetricDefs(metricValues);
+  const entries = candidates.map((c) => ({
+    id: c.id,
+    metrics: parseJson<Record<string, number>>(c.metrics, {}),
+  }));
+  // I1c: same domain semantics as the DTO — the reference's own rmsd (0 Å
+  // self-comparison) never distorts the persisted domain.
+  const defs = computeScreeningMetricDefs(entries, row.rmsdRefId ?? null);
   const weights = parseJson<Record<string, number>>(row.weights, {});
   for (const d of defs) {
     if (!(d.key in weights)) weights[d.key] = defaultWeightFor(d.key);
@@ -1210,9 +1252,17 @@ export async function getScreeningDetail(
  *    the reference candidate is deleted.
  *
  * After writing the metrics, refreshScreeningMetrics() recomputes metricDefs
- * (domains over the new values) and seeds the default weight — the rmsd
- * column then flows through EVERYTHING a normal metric does: sorting, range
- * filters, weightable ranking, CSV + Markdown report, Compare rows.
+ * and seeds the default weight — the rmsd column then flows through
+ * EVERYTHING a normal metric does: sorting, range filters, weightable
+ * ranking, CSV + Markdown report, Compare rows.
+ *
+ * Domain semantics (I1c, #39): the reference's own 0 Å is EXCLUDED from the
+ * rmsd domain everywhere defs are computed (DTO / persisted defs / promote
+ * summary — computeScreeningMetricDefs). The 0 is the definition of the axis,
+ * not a measured point: with it inside, domain min collapses to 0 forever,
+ * squashing every real candidate's normalized spread. The reference row still
+ * DISPLAYS 0 (full normalized bar) — "identical to itself" — and the UI marks
+ * the row with a REF badge.
  *
  * Atomicity: computation is write-free; candidate metrics + rmsdRefId commit
  * in a single $transaction, so the values and the reference label can never
@@ -1857,8 +1907,14 @@ export async function promoteCandidates(
 
   // Markdown summary listing each promoted candidate + score-relevant metrics.
   const weights = parseJson<Record<string, number>>(screening.weights, {});
-  const defs = computeMetricDefs(
-    ordered.map((c) => parseJson<Record<string, number>>(c.metrics, {})),
+  // I1c: reference's own rmsd excluded from the domain here too — one domain
+  // semantic across DTO, persisted defs, and the promote summary.
+  const defs = computeScreeningMetricDefs(
+    ordered.map((c) => ({
+      id: c.id,
+      metrics: parseJson<Record<string, number>>(c.metrics, {}),
+    })),
+    screening.rmsdRefId ?? null,
   );
   const title = nodeName?.trim() || `Screening Picks — ${screening.name}`;
   const mdLines: string[] = [

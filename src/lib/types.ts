@@ -420,6 +420,13 @@ export interface ScreeningCandidateDTO {
   fastaPath: string | null;
   sequence: string | null;
   length: number | null;
+  /**
+   * I1a: does the linked PDB actually exist on disk right now? The reference
+   * selector (and any structural compute) needs this — a harvested-then-
+   * deleted file would otherwise let the user pick a reference that the
+   * server honestly 400s on ("needs a linked PDB file on disk").
+   */
+  pdbExists: boolean;
   /** Raw metric values keyed by canonical metric key. */
   metrics: Record<string, number>;
   starred: boolean;

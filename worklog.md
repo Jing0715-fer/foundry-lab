@@ -4005,3 +4005,72 @@ Work Log:
 
 Stage Summary:
 - 用户问题的答案从"没有"变为"有"：18 技能 4 族单一注册表 + 单一执行管道 + 单一审计表 + 单一 prompt 清单，8 条历史协议全部收敛（旧围栏向后兼容），web.search 假能力补真。三门控语义全部执行层强制；流式泳道策略拒绝可见化（skipped 状态）；幻觉技能名进审计。浏览器级金路径（真模型+真 API+真审计+真 UI 卡片）+ 移动端 + console 零告警全过；基线纪律遵守（重冻+恢复+字段级核对）。新工程教训 2 条（barrel 副作用注册、db push 后必须重启）固化于本条目。
+
+---
+Task ID: 42
+Agent: main-orchestrator (Z.ai Code)
+Task: I 线开发（ROADMAP 下一阶段）：I1 RMSD 轴打磨三件套 + I2 Escape 分层语义
+
+Work Log:
+- 前置：恢复上下文（worklog 尾部 Task 36–41 已闭环 J 线）；发现工作库偏离基线（0 screening/0 node）→ demo:fresh 恢复 + daemon-run.py 重启（纪律 #20/#41）；基线三 screening 86 候选 PDB 全悬空 = #38 的真实案例（outputs/ 是运行时产物不随冻结库分发）。
+- I1a（磁盘预检）：ScreeningCandidateDTO 新增 pdbExists（toCandidateDTO 内 existsSync，列表端点仍走 lite 投影零开销）；rmsdCandidates 过滤 pdbPath&&pdbExists；Select 只出真可用参考；悬空计数三处可见（空态专属文案 / 选择器下 hint / data-testid=rmsd-dangling-hint）。
+- I1b（rescan 新候选提示）：rmsdMissing memo（有 PDB 且存在但无 rmsd 键，仅当 rmsdRef 存在）→ ControlsColumn amber 提示条（role=status）+ Recompute vs <ref> 一键按钮（h-11 移动端触控对齐）。
+- I1c（参考域锚定）：computeScreeningMetricDefs 包装——参考的 rmsd 自比 0 是轴的定义不是数据点，从域计算排除（其他指标照常参与）；三处统一（toScreeningDTO / refreshScreeningMetrics / promote 摘要）；表格 REF 徽章（桌面 data-testid=rmsd-ref-badge + title 语义说明，移动端同行 flex）；参考行 0 显示归一化满格 = "与自身相同"诚实读法；computeRmsdAxis 文档块补 Domain semantics 段。
+- I2（Escape 分层）：node-group frame Escape 处理器加 pendingFrom 让位守卫（连线是模式、选择是状态——模式优先）——修复前 pending 连线 + frame 激活需两次 Escape（frame stopPropagation 吞掉第一次）；LiveWire 与 page.tsx 全局链各自幂等取消；单次 Escape 现在取消连线、frame 保持选中；CONTRIBUTING 新增 Escape 优先级矩阵成文（4 层：pending wire > frame > inspector > node selection + Radix 浮层让位）。
+- 自查修复两处：rmsdRef chip 移出条件分支（全悬空时仍显示当前参考——信息不丢失）；提示内 Recompute 按钮 h-7→h-11 md:h-8（触控目标规范对齐 SelectionBar 模式）。
+- 验证：tsc 零新增（仅 examples/skills 4 条预存）；lint 零告警；API 冒烟（外科手术式：3 真实 PDB + 直插 screening）全过——POST /rmsd 200（scored 3，值 0/1.4/1.01）、DTO 域 [1.01,1.4] 排除参考 0、落库 metricDefs 同语义、空 body 400 / 未知 refId 404、删文件后 pdbExists=false + 悬空 ref POST 400、I1b 数据面（PDB+exists+无 rmsd 键计数=1）；冒烟后零残留（screening+文件已删）。
+
+Stage Summary:
+- I 线四项（I1a/I1b/I1c/I2）代码级完成且 API 冒烟全绿；域排除语义三处统一（DTO/落库/promote）；Escape 矩阵修复+成文；基线恢复纪律遵守。待 QA 审查（43-a）与浏览器级 e2e（44）。
+
+---
+Task ID: 43-a + 43-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 深度审查（I 线改动，模式对齐 38-a）+ P2 当场修复
+
+Work Log:
+- 全改动面精读 + 对照 #31–#42 验收标准逐条核查（记录于 qa-review-i-lane.md）。
+- 结论：无 P0 无 P1；2 P2 + 3 P3 备注。
+- **P2-1（I1a 同类陷阱残留）**：详情抽屉 Superpose 伙伴选择器 superposeOptions 只查 pdbPath 不查 pdbExists——基线全悬空态下列出全部悬空伙伴、launch 不查当前候选磁盘存在 → 打开必内联报错。修复：memo 加 pdbExists 过滤 + launch disabled 加 !candidate.pdbExists + title 三态文案；superpose-dialog 内联守卫保留为纵深防线。
+- **P2-2**：compare-dialog bothHavePdb 门控同病 → every 加 pdbExists + 悬空专属 title 文案。
+- P3-1/2/3（不修，备注）：promote Markdown 列参考 RMSD 0 无注记（UI 是注记面）；stats-strip 参考满格 clamp 语义一致；pdbExists 是请求时快照（服务端 400 兜底）。
+- 复验：tsc 零新增、lint 零告警、GET / 200。
+
+Stage Summary:
+- I 线 QA 闭环：2 个 I1a 同类陷阱在相邻选择器（详情抽屉 + Compare 对话框）当场修复——"修一个选择器时同一模式的所有选择器都要过一遍"是新固化的审查启发式；Escape 分层核查通过（事件时 getState / 幂等双取消 / 矩阵成文）；e2e 必测清单已产出（5 项）。
+
+---
+Task ID: 44
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 浏览器级验证：I 线四项 + H2 回归 + 基线零污染（真实引擎 + 真实指针 + 真实键盘）
+
+Work Log:
+- **素材（真实引擎链路）**：一次性工作流 + rfdiffusion 节点（num_designs=3, seed=42）真跑（run 响应同步完成）→ 从节点建 screening（3 真实候选 pdbExists 全 true、sourceType=node → rescan 可用）。
+- **I1c（UI+API 双侧一致）**：真实点击参考选择器选 run1/design_0 → 真实点击 Compute RMSD → toast + chip "Axis reference: run1/design_0 (rmsd 0 Å)" + 表格出现 RMSD 列（26.52/29.67/0）+ **REF 徽章恰好在 design_0 行**（行级 DOM 断言 name 含 REF）+ **度量过滤区显示域 26.5–29.7（参考 0 被排除——旧实现恒 0–29.7）**；无 missing 提示（全评分）。
+- **I1b（完整闭环）**：PATCH 节点参数 num_designs=4 + 重跑（新 run 目录）→ UI 真实点击 Rescan → 7 候选 + **amber 提示 "4 candidates with a PDB have no RMSD value yet…" + Recompute vs run1/design_0 按钮** → 真实点击 Recompute → **提示消失 + 7 候选全部获得 rmsd + REF 徽章保留**。
+- **e2e 抓到并修复 1 个 bug（#43）**：提示文案复数叠加渲染 "a PDBs have"（两处复数化模板叠加）→ 修为单处复数 + 重载复验完整字符串。
+- **I1a（基线全悬空真实场景）**：切到 Scaffold Campaign（60 候选 PDB 全悬空，#38 真实案例）→ RMSD 区诚实空态 "60 candidates reference a PDB file that is no longer on disk — re-run the source node, then rescan."；详情抽屉 Superpose 区 "No other candidates with a PDB file to superpose against."（P2-1 修复生效——悬空伙伴被过滤）。
+- **I2（真实键盘决定性验证）**：API PATCH 建组（Shift+橡皮筋被 #44 阻断后的替代路径）→ 真实指针点组框空白区（卡片层级高于组框——点卡片无效）→ 激活+聚焦（group-active + ✎/× 按钮 + activeElement 断言）→ 真实指针从 Design Brief 输出口拖出 **pending 连线（dashed path 断言）** → **单次真实 Escape：wirePending=false + frameActive=true（I2 修复前必为 frame 被反选 + 连线残留）** → 第二次 Escape：frame 反选。
+- **H2 回归（P1-1 不受 I2 守卫影响）**：真实键盘 Tab 到 ✎ 编辑按钮 → Enter 打开内联编辑器（input 聚焦 + 组框保持激活）→ Escape 关闭编辑器。
+- **移动端 375×812**：main 319 / docScrollWidth 375（零溢出）/ footer bottom 812 贴底 / REF 徽章 DOM 可见；console 零警告零 page errors。
+- **VLM 复核两截图全 PASS**（30-rmsd-ref-badge.png：REF 徽章 + chip + RMSD 列 + 域 14.7–29.7 不从 0 起 + 无视觉缺陷；31-mobile-ref.png：无溢出 + footer 贴底 + 无 glitch）——第二张首拍误捕残留删除确认浮层（Escape 关闭后重拍，教训同 #29 浮层清场）。
+- **零污染收尾**：E2E screening + 工作流 API 删除、两个 engine outputs 目录清理、临时脚本删除、demo:fresh + 守护器重启、字段级核对：My First 14/12 + groups null（测试组经 UI Remove + 基线恢复双保险）+ Antibody 5/3 + 3 screening 60/20/6 + rmsdRefId 全 null + toolJobs 16 + skillInvocations 0 + chatMessages 12 + GET / 200 + dev.log 干净。
+- **e2e 工程教训（新增 3 条固化）**：#44 agent-browser `keydown Shift` 不与合成 mouse 事件合并（CDP modifier 不透传 dispatchMouseEvent）——需修饰键的指针交互用 API 备料替代 + eval 探针先行验证；#45 data-node-card 标记在包裹层（`> div` 才有 rect）——坐标测量前必须断言 rect 非零（0×0 = 错层）；组框点击落点在成员卡片上无效（卡片层级高于组框）——点组框空白区。
+
+Stage Summary:
+- I 线四项全部浏览器级/DB 级实证：I1c 域排除 UI 侧实证（26.5–29.7）+ REF 徽章行级断言；I1b rescan→提示→Recompute→消失完整闭环；I1a 全悬空真实场景（基线 86 候选）诚实引导；I2 单次 Escape 取消连线且组保持激活（修复的决定性行为对比）；H2 键盘回归通过；e2e 抓到 1 个文案 bug（#43）+ 3 条新工程教训（#44/#45 + 组框层级）；移动端 + console + VLM + 基线零污染全过。
+
+---
+Task ID: 45
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：测试结果固化进 ROADMAP + README + CONTRIBUTING + git 提交推送 + 后续规划
+
+Work Log:
+- ROADMAP.md：本阶段成果新增 I 线条目（I1a/I1b/I1c/I2 四项含 e2e 证据）；测试结论表 42→46 项（#38/#39 标记已交付；新增 #43 插值文案复数叠加 / #44 CDP modifier 不透传 / #45 rect 零检查 / #46 同模式选择器普查启发式）；I 线段重写（已交付四项 ✅ + 剩余三项：叠合深化遗留含 P3-1 promote 摘要注记、NextAuth 独立分支、真实 SSH 集群）；验收标准扩充三条（pdbExists 消费面 / Escape 让位 pendingFrom / 文案整体读 + rect 非零 + modifier 探针）。
+- README.md：手绘分组条目补 Escape 分层语义（模式优先）；结构 RMSD 条目补 REF 徽章 + 域排除 + 选择器磁盘预检 + rescan 提示与一键重算。
+- CONTRIBUTING.md（Task 42 已完成）：Escape 优先级矩阵成文（pending wire > frame > inspector > node selection + Radix 浮层让位）。
+- 最终检查：lint 零告警、tsc 全仓仅 4 条预存（examples/skills）、GET / 200、dev.log 零运行时错误、基线字段级核对全一致（Task 44 收尾时）。
+- git 提交推送。
+
+Stage Summary:
+- I 线完成"开发（42）→ QA 审查（43-a）→ P2 修复（43-b）→ 浏览器级 e2e 含真实引擎/真实指针/真实键盘（44）→ 测试结果固化与 roadmap 重写（45）"全闭环；46 项测试结论累计；下一阶段候选：I 线剩余（叠合深化：多链/per-region/worker 对称性）、K 线（Skill 层运营化：聚合统计/速率配额/动态注册）、NextAuth 独立分支、真实 SSH 集群通道——以 46 项结论为据按 P1（叠合深化科研语义）→ P2（K 线运营化）排序。

@@ -480,6 +480,16 @@ export function NodeGroupLayer() {
                 e.stopPropagation();
                 setActiveGroup(isActive ? null : gb.id);
               } else if (e.key === "Escape" && isActive) {
+                // I2 (QA 38-a P2-3 — Escape layering): a PENDING CONNECTION
+                // outranks the frame selection. Escape's global priority
+                // chain is: live wire > frame selection > inspector > node
+                // selection (page.tsx). Before this guard the frame consumed
+                // the first Escape (stopPropagation), so a user mid-wire had
+                // to press Escape TWICE — the wire cancelled only after the
+                // frame had already stolen the first press. Now: when a wire
+                // is pending we do NOT consume; one Escape cancels the wire
+                // (the frame stays selected), the next deselects the frame.
+                if (useAppStore.getState().pendingFrom) return;
                 e.preventDefault();
                 e.stopPropagation();
                 setActiveGroup(null);

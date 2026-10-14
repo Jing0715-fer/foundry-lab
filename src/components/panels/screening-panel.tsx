@@ -732,10 +732,12 @@ export function ScreeningPanel() {
   // H1a: launch the overlay from the DETAIL drawer — the open candidate is
   // the reference (stays put), the picked partner is rigid-fitted onto it;
   // the dialog's Swap button flips the roles afterwards.
+  // I1a (QA I-line P2-1): partners must have a PDB that STILL exists — the
+  // selector is a trap otherwise (baseline demo: all 86 PDBs dangling).
   const superposeOptions = React.useMemo(
     () =>
       candidates
-        .filter((c) => c.id !== detailId && !!c.pdbPath)
+        .filter((c) => c.id !== detailId && !!c.pdbPath && c.pdbExists)
         .map((c) => ({ id: c.id, name: c.name })),
     [candidates, detailId],
   );
@@ -812,15 +814,37 @@ export function ScreeningPanel() {
     [currentId, toast],
   );
 
-  // H1c: candidates eligible as the RMSD reference (linked PDB only —
-  // computeRmsdAxis 400s otherwise).
+  // H1c: candidates eligible as the RMSD reference — a linked PDB that STILL
+  // EXISTS on disk (I1a: the old `!!c.pdbPath` check trusted a stale column;
+  // a harvested-then-deleted file would pass the filter and the server would
+  // honestly 400 "needs a linked PDB file on disk" — QA 38-a P2-8 / #38).
   const rmsdCandidates = React.useMemo(
     () =>
       candidates
-        .filter((c) => !!c.pdbPath)
+        .filter((c) => !!c.pdbPath && c.pdbExists)
         .map((c) => ({ id: c.id, name: c.name })),
     [candidates],
   );
+
+  // I1a: candidates whose PDB column points at a file that is GONE — shown as
+  // a muted count under the reference selector so the gap is visible (and the
+  // fix is obvious: re-run the source node / re-sync, then rescan).
+  const rmsdDangling = React.useMemo(
+    () => candidates.filter((c) => !!c.pdbPath && !c.pdbExists).length,
+    [candidates],
+  );
+
+  // I1b: after a rescan (or an alignment that failed server-side), candidates
+  // with a real PDB can lack the rmsd key while the axis itself exists — the
+  // ranking silently treats the missing metric as "not present" (weights
+  // renormalize), which is correct scoring but invisible UX. Surface the
+  // count + a one-click recompute against the CURRENT reference.
+  const rmsdMissing = React.useMemo(() => {
+    if (!screening?.rmsdRef) return 0;
+    return candidates.filter(
+      (c) => !!c.pdbPath && c.pdbExists && c.metrics?.rmsd === undefined,
+    ).length;
+  }, [candidates, screening?.rmsdRef]);
 
   /** D3: export the Markdown screening report (same row semantics as the CSV). */
   function exportReport() {
@@ -883,6 +907,13 @@ export function ScreeningPanel() {
     rmsdRefPick,
     onRmsdRefPick: setRmsdRefPick,
     onComputeRmsd: (refId: string) => void computeRmsd(refId),
+    // I1a/I1b: disk-truth + missing-rmsd visibility.
+    rmsdDangling,
+    rmsdMissing,
+    onRecomputeRmsd: () => {
+      const refId = screening?.rmsdRef?.id;
+      if (refId) void computeRmsd(refId);
+    },
   };
 
   return (
@@ -1177,6 +1208,7 @@ export function ScreeningPanel() {
                   onTogglePageAll={togglePageAll}
                   onStar={(id, starred) => void patchCandidates([id], { starred })}
                   onView={(id) => setDetailId(id)}
+                  rmsdRefId={screening?.rmsdRef?.id ?? null}
                   onBulkStar={() => void patchCandidates(selectedIds, { starred: true })}
                   onBulkStatus={(status) =>
                     void patchCandidates(selectedIds, { status })

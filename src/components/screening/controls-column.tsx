@@ -73,6 +73,12 @@ export interface ControlsColumnProps {
   onRmsdRefPick: (id: string) => void;
   /** Compute (or recompute against a new reference) — fires the POST. */
   onComputeRmsd: (refId: string) => void;
+  /** I1a: candidates whose linked PDB no longer exists on disk. */
+  rmsdDangling: number;
+  /** I1b: candidates with a PDB but no rmsd value while an axis exists. */
+  rmsdMissing: number;
+  /** I1b: one-click recompute against the CURRENT reference. */
+  onRecomputeRmsd: () => void;
 }
 
 export function ControlsColumn({
@@ -101,6 +107,9 @@ export function ControlsColumn({
   rmsdRefPick,
   onRmsdRefPick,
   onComputeRmsd,
+  rmsdDangling,
+  rmsdMissing,
+  onRecomputeRmsd,
 }: ControlsColumnProps) {
   return (
     <Card className="shadow-sm">
@@ -318,26 +327,63 @@ export function ControlsColumn({
         {/* H1c: structural-RMSD axis — compute a real "rmsd" metric for every
             candidate against one reference (server-side superposition). The
             values land in candidate metrics, so sorting / range filters /
-            weights / CSV / report all treat it like any engine metric. */}
+            weights / CSV / report all treat it like any engine metric.
+            I1a/I1b: the selector only offers candidates whose PDB STILL
+            exists (pdbExists served per row), and gaps in the axis are
+            surfaced instead of silently scored-around. */}
         <div className="space-y-2 border-t pt-3">
           <Label className="flex items-center gap-1.5">
             <Box className="size-3.5" />
             Structural RMSD
           </Label>
+          {rmsdRef && (
+            <p
+              className="rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground"
+              data-testid="rmsd-ref-chip"
+            >
+              Axis reference: <span className="font-medium text-foreground">{rmsdRef.name}</span>
+              <span className="text-muted-foreground"> (rmsd 0 Å)</span>
+            </p>
+          )}
           {rmsdCandidates.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No candidates with a linked PDB file yet.
+              {rmsdDangling > 0
+                ? `${rmsdDangling} candidate${rmsdDangling === 1 ? "" : "s"} reference a PDB file that is no longer on disk — re-run the source node, then rescan.`
+                : "No candidates with a linked PDB file yet."}
             </p>
           ) : (
             <>
-              {rmsdRef && (
-                <p
-                  className="rounded-md bg-muted/60 px-2 py-1 text-[11px] text-muted-foreground"
-                  data-testid="rmsd-ref-chip"
+              {/* I1b: the axis exists but some PDB-backed candidates carry no
+                  rmsd value (rescan added them after the compute, or their
+                  alignment failed) — the scorer quietly renormalizes around
+                  the gap; this banner makes the gap + the fix visible. */}
+              {rmsdRef && rmsdMissing > 0 && (
+                <div
+                  className="space-y-1.5 rounded-md border border-amber-500/40 bg-amber-500/10 px-2 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-400"
+                  data-testid="rmsd-missing-hint"
+                  role="status"
                 >
-                  Axis reference: <span className="font-medium text-foreground">{rmsdRef.name}</span>
-                  <span className="text-muted-foreground"> (rmsd 0 Å)</span>
-                </p>
+                  <p>
+                    {rmsdMissing} candidate{rmsdMissing === 1 ? "" : "s"} with a PDB
+                    {rmsdMissing === 1 ? " has" : " have"} no RMSD value yet (added after
+                    the last compute, or alignment failed).
+                  </p>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-11 w-full gap-1 px-2 text-[11px] md:h-8"
+                    disabled={rmsdBusy}
+                    onClick={onRecomputeRmsd}
+                    title={`Recompute the RMSD axis against ${rmsdRef.name}`}
+                  >
+                    {rmsdBusy ? (
+                      <Loader2 className="size-3 animate-spin" />
+                    ) : (
+                      <RotateCcw className="size-3" />
+                    )}
+                    Recompute vs {rmsdRef.name}
+                  </Button>
+                </div>
               )}
               <Select
                 // "" (not undefined): Radix treats it as cleared → placeholder,
@@ -361,6 +407,15 @@ export function ControlsColumn({
                   ))}
                 </SelectContent>
               </Select>
+              {rmsdDangling > 0 && (
+                <p
+                  className="text-[11px] leading-relaxed text-muted-foreground"
+                  data-testid="rmsd-dangling-hint"
+                >
+                  {rmsdDangling} candidate{rmsdDangling === 1 ? "" : "s"} not offered —
+                  linked PDB missing from disk.
+                </p>
+              )}
               <Button
                 size="sm"
                 className="h-11 w-full gap-1.5 md:h-9"

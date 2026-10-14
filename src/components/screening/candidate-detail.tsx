@@ -555,13 +555,21 @@ export function CandidateDetail({
                     variant="outline"
                     size="sm"
                     className="h-11 shrink-0 gap-1.5 md:h-9"
-                    disabled={!superposeTarget || !candidate.pdbPath}
+                    disabled={
+                      !superposeTarget ||
+                      !candidate.pdbPath ||
+                      // I1a (QA I-line P2-1): the CURRENT candidate's file must
+                      // exist too — a dangling reference opens a dead overlay.
+                      !candidate.pdbExists
+                    }
                     title={
                       !candidate.pdbPath
                         ? "This candidate has no linked PDB file"
-                        : superposeTarget
-                          ? "Open the 3D superposition overlay (this candidate is the reference)"
-                          : "Pick a candidate to superpose against"
+                        : candidate.pdbPath && !candidate.pdbExists
+                          ? "This candidate's PDB file is no longer on disk"
+                          : superposeTarget
+                            ? "Open the 3D superposition overlay (this candidate is the reference)"
+                            : "Pick a candidate to superpose against"
                     }
                     data-testid="detail-superpose-launch"
                     onClick={() => {
