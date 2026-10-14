@@ -4074,3 +4074,17 @@ Work Log:
 
 Stage Summary:
 - I 线完成"开发（42）→ QA 审查（43-a）→ P2 修复（43-b）→ 浏览器级 e2e 含真实引擎/真实指针/真实键盘（44）→ 测试结果固化与 roadmap 重写（45）"全闭环；46 项测试结论累计；下一阶段候选：I 线剩余（叠合深化：多链/per-region/worker 对称性）、K 线（Skill 层运营化：聚合统计/速率配额/动态注册）、NextAuth 独立分支、真实 SSH 集群通道——以 46 项结论为据按 P1（叠合深化科研语义）→ P2（K 线运营化）排序。
+
+---
+Task ID: 45-addendum
+Agent: main-orchestrator (Z.ai Code)
+Task: git 推送时发现仓库双 lineage 分叉 — 非破坏性处置
+
+Work Log:
+- git push 被拒（non-fast-forward）：**远端 main 从公共祖先 h-lane（4a234a7）之后走了独立演进线**——i-lane（RMSD 轴打磨 + runToken 执行令牌，Oct 12）→ l/k/m/n/o/p/q/r 共 10+ 提交（Task 46-48+：技能层运营化/细粒度授权/动态注册/推送通道/身份授权），远端测试结论编号已到 #47-#52。
+- 本地沙盒保有未推送的 J 线（38ce014，Task 41——其 worklog 宣称的推送实际未到达远端）+ 本轮 I 线（9711564）。两条 lineage 都在 h-lane 之上实现了 I 线范围（远端 i-lane 用持久化 rmsdExcludeRef 开关 + 我们用默认排除语义；远端无 J 线 18 技能目录，本地无远端的 runToken/K-R 线）。
+- 处置决策：**不 force push**（会摧毁远端 10+ 线工作）；不盲目 rebase（J 线技能层与远端 m/n/o 线重写大面积冲突，且远端 i-lane 与本地 I 线同范围不同设计——合并需要逐线理解 10 个未知 lane，超出本轮范围）；**非破坏性保存**：`git push origin HEAD:refs/heads/sandbox-j-i-lanes`（本地 J+I lineage 完整保留为远端独立分支，main 双方均不动）。
+- 用户可见面不受影响：沙盒 dev server 跑本地代码（本轮全部 e2e 验证的就是这份），Preview Panel 即本地 lineage。
+
+Stage Summary:
+- 仓库处于双 lineage 分叉态：main = 远端 i→r 线（Task 48+），sandbox-j-i-lanes = 本地 J+I 线；两线在 h-lane 分叉、都在 I 线范围有平行实现。合并决策（保谁的设计、如何吸收对方 runToken/技能层差异）需要用户裁定后专门一轮处理——已如实记录，未做任何破坏性动作。
