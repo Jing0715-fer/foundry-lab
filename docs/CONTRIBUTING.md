@@ -98,6 +98,16 @@ python3 .zscripts/daemon-run.py /home/z/my-project <日志文件> \
   `@/lib/skills` barrel 导入**（直连子模块会绕过 catalog 副作用注册 → 注册表空、
   零报错静默失效）；客户端只能直连 `skills/prompt.ts` / `skills/types.ts`
   （零服务端依赖的客户端安全子集）。
+- **Escape 分层语义（I2 成文，本地谱系合并时随 I2 一并并入）**——全画布唯一
+  优先级链，新交互面接入 Escape 时必须对齐：
+  1. 待连线（pending wire，`store.pendingFrom`）——**最高**。组框 frame 聚焦时
+     不消费 Escape（`node-group.tsx` 的 I2 守卫），让事件冒泡到 window；
+     `live-wire.tsx` 与 `page.tsx` 的全局链各自幂等取消。单次 Escape 取消连线。
+  2. 组框选中（frame active）——frame 自消费（反选组）。
+  3. 检查器（`inspectId`）→ 节点选中（`selectedId`）——`page.tsx` 全局链按序处理。
+  Radix 对话框/菜单/浮层的 Escape 由组件库自处理，且全局链用
+  `anyOverlayDialogOpen()` 让位。**新增画布内可聚焦面若要消费 Escape，先检查
+  `pendingFrom` 让位**（连线是模式、选择是状态——模式优先）。
 
 ## 集群通道 e2e（G 线，可复现）
 

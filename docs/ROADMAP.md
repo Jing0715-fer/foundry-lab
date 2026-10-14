@@ -195,6 +195,11 @@
 | 65 | **LLM 指令遵从的"停笔"语义可用强指令达成（R2 实证）**：Q 线 #58 记录的预猜段（围栏同轮正文里的先验结果描述）在 manifest 加"CRITICAL — stop after each skill fence: END your reply immediately after its closing ```"指令后**双采样零残留**（两个 agent、custom webhook 与 built-in bio 两种技能族；流式路由 `content = fullText + "\n\n" + followUpText` 的拼接边界让判定可机械验证：第一轮末字符恒为围栏闭合）。指令要点：陈述**为什么**（此时任何结果描述必然是猜测）+ 给出机械动作（END reply at the closing fence） | LLM 语义 | 已交付（R2） |
 | 66 | **网关前转的 socket.io 会话在客户端死亡后服务端残留**：浏览器经 Caddy `XTransformPort` 前转的连接，浏览器关闭后页面 socket 本身干净离开（transport close），但**代理持留的上游连接**会话不亡——close 握手不传播（客户端侧 socket 由 root Caddy 进程持有、/proc 不可读；残留会话零房间订阅零数据暴露，仅 health clients 计数失真）。多实例/长周期部署需要**服务端空闲会话清扫**（activity-based sweep，S 线候选） | 基础设施 | 边界已记录（S 线） |
 | 67 | **e2e 抽屉/面板多实例与代理持留的连接计数解读**：页面常驻 drawer + 面板 drawer 双挂载共用单例 socket（refCount）；连接计数异常时先关闭浏览器定归属（浏览器关 → 页面 socket 全离 → 残留即代理持留）再下结论，避免把 Caddy 上游池误诊为客户端泄漏（本轮差点发生）。**socket 生命周期类缺陷的定位顺序：进程归属（/proc inode 全局搜）→ 浏览器开关对照 → 代码层排查** | e2e 工程标准 | 验收参考 |
+| 68 | **文案复数化模板叠加**（本地谱系 #43，合并时重编号）：rescan 提示 "a PDBs have"——两处复数化模板叠加渲染。教训：**插值文案 e2e 断言完整字符串**，不只断言关键词 | UX/文案 | 已修复（e2e 抓到当场修） |
+| 69 | **agent-browser 合成事件不透传修饰键**（本地谱系 #44）：`keydown Shift` 不与合成 mouse 事件合并（CDP modifier 不进 dispatchMouseEvent）。替代路径：**需修饰键的指针交互用 API 备料 + eval 探针先行验证 modifier 透传** | e2e 工程标准 | 验收参考 |
+| 70 | **坐标测量前断言 rect 非零**（本地谱系 #45）：`data-node-card` 标记在包裹层（`> div` 才有 rect）——0×0 = 错层/隐藏层。**e2e 坐标测量前必须断言 rect 非零** | e2e 工程标准 | 验收参考 |
+| 71 | **同模式选择器普查启发式**（本地谱系 #46）：修一个选择器的陷阱时，同一模式的所有选择器都要过一遍（本地 I 线 QA 2 个 P2 同病在详情抽屉/Compare 对话框当场修复） | QA 工程 | 已遵守（当场修复） |
+| 72 | **skill-events 冷启动密钥惰性生成需显式引导**（谱系合并轮发现）：服务端密钥 env-first + 文件兜底 + **首次使用才生成落盘**——不带 Bearer 的 /emit 401 早退不触发 getSecrets，冷启动后 app 侧 events-session 在首次真实使用前 503（浏览器按设计降级轮询）。引导法：**一次带任意 Bearer 的 POST /emit（或任一 socket 连接）即触发生成**，此后 app/服务两侧文件共识。教训：**惰性密钥生成的双进程架构（生成方与消费方分属两个进程）需要文档化引导顺序或改为 boot 时生成** | 运维/架构 | 边界已记录（引导法实证） |
 
 ## I 线 — RMSD 轴打磨与遗留收口（主体已交付，余项见下）
 
@@ -203,8 +208,11 @@
    Compute 按钮的主动禁态提示（当前依赖选择器禁用项 + 服务端 400 兑底）。
 2. ~~**execution token（#47）**~~ **已交付**（I-6）：领占原子写 runToken + 全
    persist 守卫令牌化 + SSE reconcile 令牌化；#47 窗口封死（QA 三重实证）。
-3. **Escape 分层语义成文**（QA 38-a P2-3，未动）：pending 连线 + frame 激活时
-   Escape 需两次——已知矩阵，CONTRIBUTING/验收参考记录或改为单次冒泡到全局。
+3. ~~**Escape 分层语义成文 + 单次冒泡**（QA 38-a P2-3）~~ **已交付**（I2，本地
+   J+I 谱系合并并入）：pending 连线时组框不消费 Escape（`node-group.tsx` 的
+   `pendingFrom` 守卫）——单次 Escape 取消连线、组保持选中；优先级矩阵成文进
+   CONTRIBUTING；合并后浏览器级决定性复验通过（连线取消 + 组框保持 + 二次
+   反选全链）。
 4. **叠合深化遗留**（D 线延续，未动）：多链叠合选择（当前自动取对齐链）；
    per-region RMSD（CDR/loop 区段统计）；大结构 worker 对称性（H5，>5K 残基）。
 5. **认证与团队协作**（NextAuth，H4 延续，未动）：工作流/campaign 共享与操作
@@ -435,7 +443,7 @@ M 线收口后，custom 技能底座完整（注册/执行/同步/治理/深链�
    已在 schema、label/description/endpoint/params 编辑）+ 注册对话框复用
    为编辑对话框 + headers 字段进 UI（API 已支持）。
 3. **低优先池滚动**（P2）：Runs sheet cancelled 行 Retry 直达；file-missing
-   进筛选列；Escape 分层语义成文（I 线余项）；Insights 大窗口服务端聚合
+   进筛选列；Insights 大窗口服务端聚合
    （当前 20k 行进程内聚合可接受）；叠合深化（多链/per-region）；认证与
    团队协作（独立分支）；真实 SSH 集群通道（待真实环境）。
 

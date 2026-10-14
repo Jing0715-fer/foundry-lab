@@ -4273,3 +4273,256 @@ Stage Summary:
 - R 线三项全部落地：R1 推送通道身份化（HMAC 会话 grant + 连接中间件 + 服务端强制房间钳制 + 偷听防护 QA 对照实证 + 秘密 env 化 + **轮换双向传播 ≤5s 不停服**）+ R2 工具循环预猜抑制（"围栏后停笔"指令——**真 LLM 双采样零残留**：两个 agent 两种技能族第一轮末字符恒为 ```；#58 预猜段源头消除，与 Q1 接地构成双保险）+ R3 包身份持久化（packName 落库 + Registry 徽章/Origin + 按包身份整体卸载含改名副本随删/无包免疫/审计保留 + Templates 卸载闭环）。QA 31/31（101 断言）+ 浏览器金路径全绿（真 LLM/真推送/真钳制/真卸载）。
 - 最重要的过程发现：**秘密轮换的失配重读只覆盖单方向**（#64）——旧凭证对陈旧缓存继续通过，修复 = TTL 缓存双向传播，"轮换不停服"测试必须双向断言；**LLM 停笔语义可指令化达成**（#65：陈述为什么 + 机械动作的强指令双采样实证，流式拼接边界使判定可机械验证）；**网关代理持留的 socket 会话残留**（#66：Caddy 前转的连接在浏览器死亡后服务端不亡，多实例前需 activity 清扫）；**连接计数异常的定位顺序**（#67：进程归属 → 浏览器开关对照 → 代码层）。
 - 后续开发计划（基于测试结果，ROADMAP S 线）：**S1 NextAuth 会话身份接入 R1 grant**（grant 机制已是身份决策的服务端钩子，当前决策恒全权——认证落地即激活全部钳制基建零改动继承）为 P1 主推；S2 推送通道空闲会话清扫（#66 治理）；S3 Insights 服务端聚合；低优先池滚动（stop detail 措辞/cancelled Retry 直达/file-missing 筛选列/Escape 成文/叠合深化/真实集群通道）。
+
+---
+
+# 谱系归档（2026-10-14 双谱系合并，Task 51）
+
+> 以下两段谱系记录在合并时归档保全（原文未改）。**编号冲突说明**：本地 J+I 谱系
+> 的 Task 42/43/44/45 与主线（远端）的 Task 42-L/43-I'/44-K/45-M 为**同号不同物**
+> （双谱系并行期各自编号）；谱系归档内保持原编号，阅读时以本说明为准。主线自
+> Task 51（合并轮）起继续。本地谱系 Task 41（J 线）与主线共享同源内容，故附录
+> 从 Task 42 起。
+
+## 附录 A · 本地 J+I 谱系（sandbox-j-i-lanes 线，I 线实现已被远端 I-1/I-6 取代，I2 Escape 分层存活进合并树）
+
+
+---
+Task ID: 42
+Agent: main-orchestrator (Z.ai Code)
+Task: I 线开发（ROADMAP 下一阶段）：I1 RMSD 轴打磨三件套 + I2 Escape 分层语义
+
+Work Log:
+- 前置：恢复上下文（worklog 尾部 Task 36–41 已闭环 J 线）；发现工作库偏离基线（0 screening/0 node）→ demo:fresh 恢复 + daemon-run.py 重启（纪律 #20/#41）；基线三 screening 86 候选 PDB 全悬空 = #38 的真实案例（outputs/ 是运行时产物不随冻结库分发）。
+- I1a（磁盘预检）：ScreeningCandidateDTO 新增 pdbExists（toCandidateDTO 内 existsSync，列表端点仍走 lite 投影零开销）；rmsdCandidates 过滤 pdbPath&&pdbExists；Select 只出真可用参考；悬空计数三处可见（空态专属文案 / 选择器下 hint / data-testid=rmsd-dangling-hint）。
+- I1b（rescan 新候选提示）：rmsdMissing memo（有 PDB 且存在但无 rmsd 键，仅当 rmsdRef 存在）→ ControlsColumn amber 提示条（role=status）+ Recompute vs <ref> 一键按钮（h-11 移动端触控对齐）。
+- I1c（参考域锚定）：computeScreeningMetricDefs 包装——参考的 rmsd 自比 0 是轴的定义不是数据点，从域计算排除（其他指标照常参与）；三处统一（toScreeningDTO / refreshScreeningMetrics / promote 摘要）；表格 REF 徽章（桌面 data-testid=rmsd-ref-badge + title 语义说明，移动端同行 flex）；参考行 0 显示归一化满格 = "与自身相同"诚实读法；computeRmsdAxis 文档块补 Domain semantics 段。
+- I2（Escape 分层）：node-group frame Escape 处理器加 pendingFrom 让位守卫（连线是模式、选择是状态——模式优先）——修复前 pending 连线 + frame 激活需两次 Escape（frame stopPropagation 吞掉第一次）；LiveWire 与 page.tsx 全局链各自幂等取消；单次 Escape 现在取消连线、frame 保持选中；CONTRIBUTING 新增 Escape 优先级矩阵成文（4 层：pending wire > frame > inspector > node selection + Radix 浮层让位）。
+- 自查修复两处：rmsdRef chip 移出条件分支（全悬空时仍显示当前参考——信息不丢失）；提示内 Recompute 按钮 h-7→h-11 md:h-8（触控目标规范对齐 SelectionBar 模式）。
+- 验证：tsc 零新增（仅 examples/skills 4 条预存）；lint 零告警；API 冒烟（外科手术式：3 真实 PDB + 直插 screening）全过——POST /rmsd 200（scored 3，值 0/1.4/1.01）、DTO 域 [1.01,1.4] 排除参考 0、落库 metricDefs 同语义、空 body 400 / 未知 refId 404、删文件后 pdbExists=false + 悬空 ref POST 400、I1b 数据面（PDB+exists+无 rmsd 键计数=1）；冒烟后零残留（screening+文件已删）。
+
+Stage Summary:
+- I 线四项（I1a/I1b/I1c/I2）代码级完成且 API 冒烟全绿；域排除语义三处统一（DTO/落库/promote）；Escape 矩阵修复+成文；基线恢复纪律遵守。待 QA 审查（43-a）与浏览器级 e2e（44）。
+
+---
+Task ID: 43-a + 43-b
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 深度审查（I 线改动，模式对齐 38-a）+ P2 当场修复
+
+Work Log:
+- 全改动面精读 + 对照 #31–#42 验收标准逐条核查（记录于 qa-review-i-lane.md）。
+- 结论：无 P0 无 P1；2 P2 + 3 P3 备注。
+- **P2-1（I1a 同类陷阱残留）**：详情抽屉 Superpose 伙伴选择器 superposeOptions 只查 pdbPath 不查 pdbExists——基线全悬空态下列出全部悬空伙伴、launch 不查当前候选磁盘存在 → 打开必内联报错。修复：memo 加 pdbExists 过滤 + launch disabled 加 !candidate.pdbExists + title 三态文案；superpose-dialog 内联守卫保留为纵深防线。
+- **P2-2**：compare-dialog bothHavePdb 门控同病 → every 加 pdbExists + 悬空专属 title 文案。
+- P3-1/2/3（不修，备注）：promote Markdown 列参考 RMSD 0 无注记（UI 是注记面）；stats-strip 参考满格 clamp 语义一致；pdbExists 是请求时快照（服务端 400 兜底）。
+- 复验：tsc 零新增、lint 零告警、GET / 200。
+
+Stage Summary:
+- I 线 QA 闭环：2 个 I1a 同类陷阱在相邻选择器（详情抽屉 + Compare 对话框）当场修复——"修一个选择器时同一模式的所有选择器都要过一遍"是新固化的审查启发式；Escape 分层核查通过（事件时 getState / 幂等双取消 / 矩阵成文）；e2e 必测清单已产出（5 项）。
+
+---
+Task ID: 44
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 浏览器级验证：I 线四项 + H2 回归 + 基线零污染（真实引擎 + 真实指针 + 真实键盘）
+
+Work Log:
+- **素材（真实引擎链路）**：一次性工作流 + rfdiffusion 节点（num_designs=3, seed=42）真跑（run 响应同步完成）→ 从节点建 screening（3 真实候选 pdbExists 全 true、sourceType=node → rescan 可用）。
+- **I1c（UI+API 双侧一致）**：真实点击参考选择器选 run1/design_0 → 真实点击 Compute RMSD → toast + chip "Axis reference: run1/design_0 (rmsd 0 Å)" + 表格出现 RMSD 列（26.52/29.67/0）+ **REF 徽章恰好在 design_0 行**（行级 DOM 断言 name 含 REF）+ **度量过滤区显示域 26.5–29.7（参考 0 被排除——旧实现恒 0–29.7）**；无 missing 提示（全评分）。
+- **I1b（完整闭环）**：PATCH 节点参数 num_designs=4 + 重跑（新 run 目录）→ UI 真实点击 Rescan → 7 候选 + **amber 提示 "4 candidates with a PDB have no RMSD value yet…" + Recompute vs run1/design_0 按钮** → 真实点击 Recompute → **提示消失 + 7 候选全部获得 rmsd + REF 徽章保留**。
+- **e2e 抓到并修复 1 个 bug（#43）**：提示文案复数叠加渲染 "a PDBs have"（两处复数化模板叠加）→ 修为单处复数 + 重载复验完整字符串。
+- **I1a（基线全悬空真实场景）**：切到 Scaffold Campaign（60 候选 PDB 全悬空，#38 真实案例）→ RMSD 区诚实空态 "60 candidates reference a PDB file that is no longer on disk — re-run the source node, then rescan."；详情抽屉 Superpose 区 "No other candidates with a PDB file to superpose against."（P2-1 修复生效——悬空伙伴被过滤）。
+- **I2（真实键盘决定性验证）**：API PATCH 建组（Shift+橡皮筋被 #44 阻断后的替代路径）→ 真实指针点组框空白区（卡片层级高于组框——点卡片无效）→ 激活+聚焦（group-active + ✎/× 按钮 + activeElement 断言）→ 真实指针从 Design Brief 输出口拖出 **pending 连线（dashed path 断言）** → **单次真实 Escape：wirePending=false + frameActive=true（I2 修复前必为 frame 被反选 + 连线残留）** → 第二次 Escape：frame 反选。
+- **H2 回归（P1-1 不受 I2 守卫影响）**：真实键盘 Tab 到 ✎ 编辑按钮 → Enter 打开内联编辑器（input 聚焦 + 组框保持激活）→ Escape 关闭编辑器。
+- **移动端 375×812**：main 319 / docScrollWidth 375（零溢出）/ footer bottom 812 贴底 / REF 徽章 DOM 可见；console 零警告零 page errors。
+- **VLM 复核两截图全 PASS**（30-rmsd-ref-badge.png：REF 徽章 + chip + RMSD 列 + 域 14.7–29.7 不从 0 起 + 无视觉缺陷；31-mobile-ref.png：无溢出 + footer 贴底 + 无 glitch）——第二张首拍误捕残留删除确认浮层（Escape 关闭后重拍，教训同 #29 浮层清场）。
+- **零污染收尾**：E2E screening + 工作流 API 删除、两个 engine outputs 目录清理、临时脚本删除、demo:fresh + 守护器重启、字段级核对：My First 14/12 + groups null（测试组经 UI Remove + 基线恢复双保险）+ Antibody 5/3 + 3 screening 60/20/6 + rmsdRefId 全 null + toolJobs 16 + skillInvocations 0 + chatMessages 12 + GET / 200 + dev.log 干净。
+- **e2e 工程教训（新增 3 条固化）**：#44 agent-browser `keydown Shift` 不与合成 mouse 事件合并（CDP modifier 不透传 dispatchMouseEvent）——需修饰键的指针交互用 API 备料替代 + eval 探针先行验证；#45 data-node-card 标记在包裹层（`> div` 才有 rect）——坐标测量前必须断言 rect 非零（0×0 = 错层）；组框点击落点在成员卡片上无效（卡片层级高于组框）——点组框空白区。
+
+Stage Summary:
+- I 线四项全部浏览器级/DB 级实证：I1c 域排除 UI 侧实证（26.5–29.7）+ REF 徽章行级断言；I1b rescan→提示→Recompute→消失完整闭环；I1a 全悬空真实场景（基线 86 候选）诚实引导；I2 单次 Escape 取消连线且组保持激活（修复的决定性行为对比）；H2 键盘回归通过；e2e 抓到 1 个文案 bug（#43）+ 3 条新工程教训（#44/#45 + 组框层级）；移动端 + console + VLM + 基线零污染全过。
+
+---
+Task ID: 45
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：测试结果固化进 ROADMAP + README + CONTRIBUTING + git 提交推送 + 后续规划
+
+Work Log:
+- ROADMAP.md：本阶段成果新增 I 线条目（I1a/I1b/I1c/I2 四项含 e2e 证据）；测试结论表 42→46 项（#38/#39 标记已交付；新增 #43 插值文案复数叠加 / #44 CDP modifier 不透传 / #45 rect 零检查 / #46 同模式选择器普查启发式）；I 线段重写（已交付四项 ✅ + 剩余三项：叠合深化遗留含 P3-1 promote 摘要注记、NextAuth 独立分支、真实 SSH 集群）；验收标准扩充三条（pdbExists 消费面 / Escape 让位 pendingFrom / 文案整体读 + rect 非零 + modifier 探针）。
+- README.md：手绘分组条目补 Escape 分层语义（模式优先）；结构 RMSD 条目补 REF 徽章 + 域排除 + 选择器磁盘预检 + rescan 提示与一键重算。
+- CONTRIBUTING.md（Task 42 已完成）：Escape 优先级矩阵成文（pending wire > frame > inspector > node selection + Radix 浮层让位）。
+- 最终检查：lint 零告警、tsc 全仓仅 4 条预存（examples/skills）、GET / 200、dev.log 零运行时错误、基线字段级核对全一致（Task 44 收尾时）。
+- git 提交推送。
+
+Stage Summary:
+- I 线完成"开发（42）→ QA 审查（43-a）→ P2 修复（43-b）→ 浏览器级 e2e 含真实引擎/真实指针/真实键盘（44）→ 测试结果固化与 roadmap 重写（45）"全闭环；46 项测试结论累计；下一阶段候选：I 线剩余（叠合深化：多链/per-region/worker 对称性）、K 线（Skill 层运营化：聚合统计/速率配额/动态注册）、NextAuth 独立分支、真实 SSH 集群通道——以 46 项结论为据按 P1（叠合深化科研语义）→ P2（K 线运营化）排序。
+
+---
+Task ID: 45-addendum
+Agent: main-orchestrator (Z.ai Code)
+Task: git 推送时发现仓库双 lineage 分叉 — 非破坏性处置
+
+Work Log:
+- git push 被拒（non-fast-forward）：**远端 main 从公共祖先 h-lane（4a234a7）之后走了独立演进线**——i-lane（RMSD 轴打磨 + runToken 执行令牌，Oct 12）→ l/k/m/n/o/p/q/r 共 10+ 提交（Task 46-48+：技能层运营化/细粒度授权/动态注册/推送通道/身份授权），远端测试结论编号已到 #47-#52。
+- 本地沙盒保有未推送的 J 线（38ce014，Task 41——其 worklog 宣称的推送实际未到达远端）+ 本轮 I 线（9711564）。两条 lineage 都在 h-lane 之上实现了 I 线范围（远端 i-lane 用持久化 rmsdExcludeRef 开关 + 我们用默认排除语义；远端无 J 线 18 技能目录，本地无远端的 runToken/K-R 线）。
+- 处置决策：**不 force push**（会摧毁远端 10+ 线工作）；不盲目 rebase（J 线技能层与远端 m/n/o 线重写大面积冲突，且远端 i-lane 与本地 I 线同范围不同设计——合并需要逐线理解 10 个未知 lane，超出本轮范围）；**非破坏性保存**：`git push origin HEAD:refs/heads/sandbox-j-i-lanes`（本地 J+I lineage 完整保留为远端独立分支，main 双方均不动）。
+- 用户可见面不受影响：沙盒 dev server 跑本地代码（本轮全部 e2e 验证的就是这份），Preview Panel 即本地 lineage。
+
+Stage Summary:
+- 仓库处于双 lineage 分叉态：main = 远端 i→r 线（Task 48+），sandbox-j-i-lanes = 本地 J+I 线；两线在 h-lane 分叉、都在 I 线范围有平行实现。合并决策（保谁的设计、如何吸收对方 runToken/技能层差异）需要用户裁定后专门一轮处理——已如实记录，未做任何破坏性动作。
+
+## 附录 B · parallel/s-e-lane-22 参考谱系（S/E 线；三件套已由主线 L 线移植，Task 22-merge 保存为参考分支，本轮归档并谱系合并后删除）
+
+---
+Task ID: 22-s1
+Agent: main-orchestrator (Z.ai Code)
+Task: S 线基础设施：Agent Skill 标准化协议（用户方向「所有 agent 操作用 skill 标准化」）
+
+Work Log:
+- 调研结论：agent 层此前无 skill 机制——工具调用（comp/bio 两分支）硬编码在 runAgentTurn；webSearchEnabled 配置项形同虚设（从未接线）。
+- 新建 `src/lib/skills/`：types.ts（SkillDefinition/参数 schema/权限门/超时/审计类型）、registry.ts（注册表 + describeSkillsForPrompt 从注册表自动生成系统提示词文档——单一事实来源）、executor.ts（统一执行管线：查找→权限门→参数校验→看门狗超时→DB 审计→规范化 LLM 反馈）、compute-skills.ts（11 个 comp.* 包装 executeCompToolReal，参数 schema 从 COMP_TOOLS 派生）、bio-skills.ts（4 个 bio.* 包装 runBio）、search-skills.ts（search.websearch——z-ai SDK functions.invoke("web_search") 真实联网搜索）、parse.ts（三协议 fence 解析：```skill 前向 + ```tool/```bio 遗留归一化）、index.ts。
+- Prisma：新增 SkillInvocation 审计模型（skillId/caller/agentId/status/durationMs/params/resultSummary/error + 三索引）；db:push 完成；dev server 重启（stale Prisma client 教训 C4）。
+- API：GET /api/skills（目录 + groupBy 状态统计）、GET /api/skills/invocations?agentId=&limit=（审计 feed）。
+- 冒烟：16 skill 注册（11 compute + 4 bio + 1 search）；解析/门控/校验/denied/unknown 全通过；bio.pubmed live 746ms、search.websearch live 1455ms 返回真实结果；审计行落库。
+
+Stage Summary:
+- Skill 基础设施就绪：注册表（16 skills）+ 统一执行器 + 审计 + 目录 API；web search 从「无效配置」变为真实能力。
+
+---
+Task ID: 22-s2
+Agent: main-orchestrator (Z.ai Code)
+Task: Agent 循环 skill 化：runAgentTurn 统一 invokeSkill + 系统提示词 registry 生成
+
+Work Log:
+- run-utils.ts：runAgentTurn 的 comp/bio 双分支删除，改为统一 skill lane（extractSkillCalls → invokeSkill → ToolCall + 规范化 feedback 入 convo）；AgentRunOptions 新增 skillCaller 审计维度（agent-chat/agent-chat-stream/agent-node/meeting/research/manual，6 个调用点全部标注）。
+- agents.ts：generateAgentSystemPrompt(agent, skillsDoc?) 接受 registry 渲染的技能文档（客户端无 registry 时的静态回退保留）；run-utils buildAgentSystemPrompt 与流式路由均传入 describeSkillsForPrompt(agent.knowledge)（按 bioToolsEnabled/webSearchEnabled 门控过滤）。
+- 流式 chat 路由：tool round 重构为 skill 协议（bio/search 走 invokeSkill 即时执行；compute 保持延迟提示——真实引擎可能跑数分钟）；系统提示词接 registry。
+- types.ts：ToolCall.kind 增加 "search"。
+- LLM 驱动实测：Immunologist agent 一轮对话自主发出 5 次 skill 调用（bio.pubmed ×4 + search.websearch ×1）全部 live 完成，最终回复引用结果（PMID 与 URL 真实）。
+- tsc src/ 零错误。
+
+Stage Summary:
+- agent 层全部操作统一走 skill 标准化协议（校验/门控/超时/审计/反馈五环节）；遗留 fence 协议向后兼容；LLM 实测全链路真实执行。
+
+---
+Task ID: 22-e
+Agent: main-orchestrator (Z.ai Code)
+Task: E 线执行健壮性：E1 看门狗 + E2 Retry 异步化 + E4 运行中止
+
+Work Log:
+- E1：新建 src/lib/node-run-control.ts（STOP 注册表 + nodeWatchdogMs 预算函数 + executeNodeGuarded：Promise.race 看门狗 + stop 守卫）；workflow-runner.runNode 与单节点 run 路由均改走守卫执行。预算：默认 15min；cluster 工具节点 = 轮询上限（30/120min）+ 5min 缓冲（绝不先于轮询上限触发）。看门狗触发→failed+看门狗横幅+下游解锁（worker pool 不再被挂起引擎楔死）。
+- E2：POST /api/workflow/nodes/:id/run 新增 ?async=1 模式（claim→立即响应 running 节点→后台执行+级联，catch 兜底落 failed 行）。实测响应 0.06s、后台 2s 完成。
+- E4：NodeStatus 新增 "cancelled"；real-executor 新增 ACTIVE_PROCS 进程注册表（runKey=节点 id，SIGTERM+2s 后 SIGKILL）贯穿全部 6 个 runProcess 调用点（native/foundry/builtin 引擎进程全部可击杀）；executeCompTool 接受 runKey（本地 lane 传 executeCompToolReal；cluster lane triggeredBy="node:<id>" 供 stop 查找）；新建 POST /api/workflow/nodes/:id/stop（注册 stop + 杀本地进程 + stopClusterJob 取消集群作业 + 行立即翻 cancelled）；executeNodeGuarded 的 stop 守卫使迟到的自然结果永不覆盖用户中止；单节点路由 reclaimer 纳入 cancelled（可重跑）。
+- 消费面适配：runs 路由 recent 纳入 cancelled（排序置顶）；stream 路由 terminal 检查纳入 cancelled；minimap STATUS_HEX 补 cancelled（zinc）；PATCH 状态白名单补 cancelled。
+- 实测：rfdiffusion 节点（num_designs=24）异步运行 1.5s 后 stop → HTTP 200 "local engine process killed"（SIGTERM 真实击杀）→ 终态 cancelled + 'Stopped by user'；看门狗竞速机制 300ms 预算 301ms 触发 failed 横幅；tsc/lint 零错误零告警。
+
+Stage Summary:
+- 「看得见也管得住」闭环：运行队列可视化（B4）+ 真实进程级中止（E4）+ 挂起防护（E1）+ 即时 Retry（E2）；cancelled 成为全链路一等状态。
+
+---
+Task ID: 22-u
+Agent: full-stack-developer (Z.ai Code)
+Task: S/E 线 UI：Skills 面板 + RunsSheet Stop/异步 Retry + node-card cancelled + chat search 图标 + sweep 语义提示
+
+Work Log:
+- 通读 worklog.md 22-s1/s2/e 三节 + skills 类型/路由源码（/api/skills、/api/skills/invocations、stop route 的 {ok,detail}/409 语义），curl 实测两个端点的真实返回形状后才开始写 UI。
+- 新建 `src/components/panels/skills-panel.tsx`：Header（标题+协议描述+Skills/Invocations/Success rate 三格统计+Refresh）；Catalog 按 Compute/Bio/Search 三段分组（Cpu/Dna/Globe 图标 + 每段计数），每 skill 一张 Card（mono id+名称、gate Badge tools→secondary "Agent tools"/search→outline "Web search"/none→default "Always on"、描述、人性化 timeout、紧凑 params 表 name/type/required*/default（semantic <table>+sr-only caption，仅在有参数时渲染）、```skill 围栏示例行 pre、stats 非空时 invocations·success%·avg 的小字）；Recent invocations feed（status pill completed=emerald/failed=rose/timeout=amber/denied=slate、skillId mono、agentTitle、caller outline badge、时长+相对时间、resultSummary/error line-clamp-2，max-h-96 overflow-y-auto 走全局细滚动条样式）；Promise.allSettled 双端点独立容错（目录挂→Skeleton→EmptyState+Retry，feed 单挂→内联灰字不毁目录）；空态文案 "No skill invocations yet — chat with an agent…"；移动端单列、sm: 双列。
+- 接线：store.ts activePanel union 加 "skills"；sidebar NAV_ITEMS 在 Agents 后加 { key:"skills", label:"Skills", icon: Puzzle }（Puzzle 全仓未用过）；page.tsx 在 agents 行后渲染 SkillsPanel；顺手把 command-palette NAV_TARGETS 补 "Go to Skills"（保持导航一致性，超范围小改）。
+- runs-sheet.tsx：Retry 改 POST …/run?async=1（E2，res.ok 即成功，spinner 只覆盖秒级 fetch，3s 轮询接管进度）；Active lane 每行尾加真实 <Button> Stop（Square 图标、outline/sm、e.stopPropagation()，与 ChevronRight 并列——行根是 div[role=button]，不能嵌套交互元素）→ POST …/stop → toast "Stop requested"+detail，409 走 destructive toast，stoppingId 每行 spinner；Active 段头加 "Stop all"（仅 active 行存在时显示，按钮放在 h3 之外保住 heading 可访问名）Promise.allSettled 批停→"Stopped N nodes" 汇总；Row 状态枚举补 cancelled：zinc 图标圈+Ban 图标+名称 line-through 置灰（Recent lane 的 cancelled 行由此正确渲染）。
+- node-card.tsx：STATUS_PILL/STATUS_STRIP 补 cancelled（zinc）；卡身 ring 补 ring-1 ring-zinc-500/30；右上角补 zinc Ban 圆徽标；第三行补 cancelled 分支（result 截断展示，默认 "Stopped"）；running 行改 flex（进度条 flex-1 + 尾部 h-7 真实 <button> Stop：Square/Loader2 切换、stopPropagation、依赖 pointer-capture 守卫已排除 button 所以真实点击可达——B 线 e2e 教训不重演）；上下文菜单 Run 本就无条件显示，cancelled 节点重跑通道天然可用（reclaimer 已接受 cancelled）。stopping 局部 state，memo 比较器不受影响。
+- agent-chat-drawer.tsx ToolCallCard：kind=search → Globe 图标（此前 Wrench/Database 二分）；kind label 加 per-lane 微色调（search=emerald、bio=teal、comp 保持 muted）。
+- sweep-dialog.tsx：preview 盒（data-sweep-preview）内主提示行下补 C5 语义提示行（text-[11px] muted）："Variants inherit the source node's incoming edges — variants without upstream dependencies start immediately and run in parallel with the source."
+- 复验：`bun run lint` 零输出零告警；`bunx tsc --noEmit | grep ^src/` 零错误；GET / 200 且 SSR HTML 含 "Skills" 导航项；GET /api/skills 200；dev.log 无新运行时错误（仅一条编辑中途 Fast Refresh 全量重载告警，恢复后干净）。未触碰任何后端/API 代码，未建测试文件。
+
+Stage Summary:
+- S/E 线五项 UI 全部落地：Skills 面板（目录+审计 feed+统计）、RunsSheet 看得见也管得住（单行 Stop/Stop all/异步 Retry）、cancelled 成为 canvas 与 Runs 双面一等状态（pill/strip/ring/徽标/行样式）、chat 工具卡 search 车道有专属图标、sweep 依赖语义就地文档化。lint/tsc/页面冒烟三绿。
+
+---
+Task ID: 22-qa
+Agent: qa-code-reviewer (Z.ai Code)
+Task: S/E/U 线深度代码审查（skill 标准化 + 执行健壮性 + UI）
+
+Work Log:
+- 读 worklog 尾部（22-s1/s2/e/u）+ 全量 git diff（23 文件）+ 8 个新文件逐行（skills/*、node-run-control、skills/stop API、skills-panel）。
+- 逐项推演 13 个指定正确性问题：executor never-throws 全路径（timer 在 finally 于胜负两种结局都会清除——skill 层无泄漏）；fence 注入（只解析 assistant 回复 + maxRounds 封顶 → P2）；registry 客户端隔离（@/lib/skills 仅两个 server route 引用，agents.ts 纯类型导入，skills-panel 只 fetch）；runAgentTurn 回归对比（旧版 bio 失败/未知工具静默——新版规范反馈是改进）；E1 看门狗（node 层 timer 不清不 unref → 泄漏 15/35/125min → P2）；E4 停止语义（runNode 正常路径 cancelled 得以保留；claim 失败仍经 pump finally 解锁下游——验证正确）；E2 异步（claim 先于 async 分支，双 POST → 409）；cancelled 全消费面清单（PATCH/stream/minimap/runs/node-card/screening/scheduler/instrumentation 均适配或正确排除）；skills 面板（groupBy 容错、双端点 allSettled 降级、375px 单列）；Prisma（迁移已推、审计 fire-and-forget .catch 无未处理拒绝）；node-card Stop 为裸 <button> 且被 pointer-capture 排除覆盖（B 线教训未重演）。
+- 竞态专项：stopNodeRun 的 row flip 排在 cluster cancel 之后 + stream 路由 reconcile 把 cancelled 作业映射为 failed（:144）→ 打开的 inspector SSE 在窗口内会把用户停止的集群节点落成红色 failed；poll-ceiling 节点停止后 STOP_REQUESTED 标志无人消费 → 下一次重跑完整执行后才落 cancelled（烧掉整次计算）。
+- 复验：bunx tsc --noEmit（src/ 零错误）、bun run lint（零告警）、curl /api/skills 与 /api/skills/invocations（200 + 真实审计行）；未改任何代码。
+
+Stage Summary:
+- P0×0 / P1×4 / P2×14。P1：①停用标志滞留毒化下一次重跑（node-run-control，建议 guard 入口 clearStop）；②停止与 SSE reconcile 竞态（cancelled 作业→failed 映射 + flip 排序，含 sub-ms 复活 running 窗口）；③流式 chat 延迟执行的 compute skill 记为 failed ToolCall（红色误导卡，建议 "deferred" 状态）；④RunsSheet 行 onKeyDown 吞掉内部 Stop/Retry 按钮的 Enter（键盘用户触发跳转而非停止）。P2 要点：E1 看门狗 timer 泄漏、unknown-skill 未审计、反馈围栏转义加固、异步 catch 覆写 cancelled、排队中被停节点从 Runs 视图消失、BFS 级联 completed-only 不对称（failed 语义继承）、extractToolCalls 死代码、本地击杀无进程组、重启后集群停止仅翻行、db/custom.db 被 git 追踪等。已验证正确清单（executor 契约/管道六环、parse 三协议、registry 纯净、runKey 六处 spawn 贯通、runner finally 解锁、双 POST 409、cancelled 消费面 14 处、面板容错、tsc/lint/API 冒烟三绿）全文见 qa-review-s-e-lane.md。修复顺序建议：P1-2 → P1-1 → P1-4 → P1-3 →（顺手 P2-1）。
+
+---
+Task ID: 22-f
+Agent: main-orchestrator (Z.ai Code)
+Task: QA 修复：P1×4 + P2×9 + lint/tsc/实测复验
+
+Work Log:
+- P1-1（stale stop 标志烧掉下一次运行）：executeNodeGuarded 入口 clearStop——新执行丢弃旧 stop（执行期间的 stop 仍被赛后检查捕获）；poll-ceiling 集群节点 stop 后重跑不再"白跑几分钟然后 cancelled"。
+- P1-2（stop vs SSE reconcile 竞态三连修）：①stream 路由 job cancelled→node cancelled（原先一律 failed，用户按 Stop 得红 FAILED）；②stopNodeRun 行翻转提前到集群取消之前（reconciler 只处理 running 行，先翻 cancelled 即不可再竞态）；③runner/runOne 的 running 与终态写全部改条件 updateMany（where status="running"）——迟到 lane 永不复活已取消行。
+- P1-3（流式 lane 延迟 compute skill 误标 failed）：ToolCall.status 增加 "deferred"；stream 路由改用之；chat drawer 中性 zinc pill（非失败语义）。
+- P1-4（RunsSheet 行键盘被内嵌按钮冒泡劫持）：Row onKeyDown 对源自 button/a/[role=button] 内部的按键早退——键盘用户 Enter 到 Stop/Retry 按钮现在触发按钮而非行跳转。
+- P2 修复：P2-1 看门狗 timer finally 清理（消 15/35/125min 残留）；P2-2 unknown-skill 补审计行（category="unknown"，面板可见——提示词调优信号）；P2-3 feedback 中 ``` fence 零宽转义（防模型回声执行）；P2-4/7 async/runner catch 条件写（不覆盖 cancelled）；P2-5 排队即停节点 runs 查询 OR completedAt 匹配（不再从队列消失）；P2-6 summary 新增 cancelled 计数（RunsSheet 显示 "N stopped"）；P2-13 .gitignore 补 db/*.db+agent-ctx/(*.pid/outputs/)+git rm --cached（seed 路由可恢复演示基线，安全）；P2-14 面板细节（Timer 图标/NaN 守卫/审计真实总数）。
+- 修复过程发现并修复 1 处编辑损坏（node-run-control 反引号错配致 Turbopack 语法错误，重启 dev server 恢复）。
+- 复验：E4 实测（rfdiffusion 异步运行 1.5s→stop→"local engine process killed"→cancelled）；runs API summary 含 cancelled 计数；tsc src/ 零错误、lint 零告警。
+
+Stage Summary:
+- QA 全部 P1 闭环（4/4）+ P2 修 9 项（其余 5 项为体验/加固项已记 ROADMAP）；E4 链路复测保持真实进程级中止。
+
+---
+Task ID: 22-e2e
+Agent: main-orchestrator (Z.ai Code)
+Task: E2E 浏览器测试：S/E/U 线全链路 + 回归 + 演示 DB 零污染（agent-browser + VLM）
+
+Work Log:
+- **Skills 面板**：sidebar Skills 导航 → 面板渲染（统计条 SKILLS 16 / INVOCATIONS 9 / SUCCESS RATE 78% 为真实审计数；Compute 11 + Bio 4 + Search 1 三组目录卡片：mono id/gate badge/params 表/```skill 示例行/超时/用量统计；审计 feed 状态 pill + 时长 + caller badge + 真实结果摘要；P2-14b 真实总数修复生效 "audit trail · 9 total"）。VLM 视口复核零缺陷。
+- **Agent chat 全链路（流式）**：Immunologist chat 发消息 → LLM 自主发出 skill 调用 → bio.pubmed + search.websearch live 执行（nature.com 真实结果）→ follow-up 流式回复含真实引用（PMID/Liu et al. 2024）→ ToolCall 卡片渲染（kind=bio/search 正确、completed 状态、Globe 图标）→ 审计行 caller=agent-chat-stream 正确归因。
+- **前向 fence 协议实测**：LLM 在后续轮次自主使用 ```skill {"id":"comp.rfdiffusion",...} 新协议（非遗留 ```tool）——registry 生成的系统提示词文档被真实模型正确遵循。
+- **deferred 路径（生产数据级验证）**：流式 lane 的 comp.rfdiffusion 调用持久化为 status="deferred" + 诚实延迟文案（不内联执行分钟级引擎）；渲染为中性 zinc pill（代码级验证 + 类型检查；浏览器视觉依赖 LLM 自主发 fence，本轮已触发并落库）。
+- **E4 stop 浏览器全链路（真实指针点击——B 线 P0 教训复测）**：隔离测试工作流 rfdiffusion 节点（num_designs=24）→ Inspector Run → 卡片 RUNNING → 物理点击卡片内 Stop 按钮（aria-label "Stop Stop-Target"）→ 卡片即时 CANCELLED（zinc）→ 服务端 cancelled + 'Stopped by user' → 引擎进程真实 SIGTERM。RunsSheet 摘要显示 "1 stopped (48h)" + Recent 行含 Ban 图标。
+- **E2 异步 Retry**：失败节点（proteinmpnn 无 pdb_path 快速失败）→ RunsSheet Failed lane 物理点击 Retry → 秒级响应（不再贯穿整执行）→ 后台重跑（startedAt 更新为新时间戳）→ 3s 轮询呈现。
+- **回归**：移动端 375px（Skills 面板无横向溢出、footer sticky-at-bottom、单列布局）；演示 DB 基线完好（My First Workflow 14 节点 + Antibody Campaign 5 节点）；跨工作流操作后无撤销串图（历史栈修复保持）；页面错误零（一条合成 PointerEvent 测试产物 setPointerCapture 报错——非真实用户路径，真实指针事件无此问题）；控制台零告警。
+- **清理**：E2E Stop Test 工作流删除；manual 冒烟审计行清除（保留 7 条真实 agent-chat 历史——Skills 面板演示价值）；僵尸测试工作流（E4/E-Line，崩溃脚本遗留）清除。
+- 发现并处置：工作流切换菜单在页面加载后创建/删除的工作流上数据过期（需 reload）——轻微 UX 项记入 ROADMAP。
+
+Stage Summary:
+- S/E/U 三线浏览器全链路通过：skill 协议（LLM 真实遵循前向 fence）+ 真实进程级中止（物理点击）+ 异步 Retry + 移动端 + 演示 DB 零污染。
+
+---
+Task ID: 22-fin
+Agent: main-orchestrator (Z.ai Code)
+Task: 收尾：ROADMAP 重写 + README 更新 + git 提交
+
+Work Log:
+- docs/ROADMAP.md 重写：S/E 线交付记录 + 测试结论表（10 项：LLM 遵循前向 fence 协议/webSearchEnabled 首次生效/进程级 stop 实测/deferred 诚实语义/切换菜单数据过期/进程组击杀/重启后集群 stop/Stop all 措辞/fence 回声加固/审计 feed 筛选）+ 下一阶段 = C 线 P1（数据与可信度 + C6 切换菜单/C7 审计筛选）+ 新增 S2 线 P1.5（skill 体系深化：workflow 工具节点合流/配置化/测试台/page_reader）+ E 线 P2 收尾（进程组/重启后 stop/组卡拖拽）；验收标准新增「agent 层新能力必须走 skill 协议」与「运行状态竞态必须条件写守卫」条款。
+- README.md：智能体层章节重写为 Skill 标准化协议（管线五环节/前向 fence/真实联网搜索/Skills 面板）；运行队列章节补四项 E 线能力（进程级中止/看门狗/异步重试）；API 表新增 /api/skills、/api/skills/invocations、/nodes/:id/stop。
+- .gitignore 治理：db/*.db + agent-ctx/ + *.pid + outputs/ 不再入库；git rm --cached（/api/seed 可恢复演示基线）。
+- 最终检查：lint 零告警、tsc src/ 零错误、dev.log 无运行时错误、应用 200、演示 DB 基线完整（My First Workflow 14 + Antibody Campaign 5）。
+- git 提交推送。
+
+Stage Summary:
+- 下一阶段以本轮 10 项实测结论为据：C 线（数据与可信度）与 S2 线（skill 体系向 workflow 节点延伸）并行推进；agent 层 skill 化成为架构基线（验收条款化）。
+
+---
+
+Task ID: 51
+Agent: main-orchestrator (Z.ai Code)
+Task: 整理远程仓库不同分支进行合并（用户指令）——Task 45-addendum 遗留的"双谱系分叉专门一轮处置"
+
+Work Log:
+- **谱系判定（推翻 45-addendum 的一处误判）**：本地 main（=远端 sandbox-j-i-lanes：J 38ce014 → I 9711564 → 45-addendum 30f093a）与远端 main（J' 1f9f187 → 22-merge → 3de7faf → L 4585642 → I' 4d0f31c → bd5f5c4 → K d1a0531 → M → N → O → P → Q → R 5f536a2）在 h-lane 4a234a7 分叉。**关键证据：两条 J 提交树内容完全一致**（`git diff --raw` 37 文件全部 mode 位 100755→100644、blob 哈希逐文件相同；author date 同为 10-10 15:33，38ce014 的 commit date 10-13 = 跨会话重提交）——J 线技能层两线同源，45-addendum 所述"远端无 J 线 18 技能目录"不成立（远端 1f9f187 即 J 线本体）。
+- **冲突实测与解决**（合并提交 4d96d43，merge base 4a234a7）：62 文件双改、25 冲突（21 UU + 4 AA）。策略：**代码全取远端**（J 同源 ⊂ 远端演化；本地 I 线筛选/RMSD/UI 被 I-1 超集取代——含 candidate-detail/compare-dialog 两处自动合并结果重置为远端防语义叠加）；**I2 Escape 分层（本地独有，远端未触碰 node-group.tsx）三方合并自动存活**（pendingFrom 守卫 + 注释完整）；db/demo-baseline.db 取远端（与 CustomSkill/runToken/rmsdExcludeRef 同冻结）；合并提交内 docs 取远端，本地独有条目在下一提交移植。
+- **基建重启**：bun install（+socket.io-client）→ demo:fresh（远端冻结基线）→ db:push（schema 同步确认）→ daemon-run.py 重启 Next dev(:3000) + mock-cluster(:3022) + **skill-events(:3031) 与 skill-webhook(:3030)**（远端 P/N 线新增 mini-service，本沙盒首次启动；K5 孤儿清扫/M2 保留策略/调度器启动日志实证）。
+- **QA**：lint 零告警；tsc 仅 4 条预存；API 冒烟全 200（skills/insights/invocations/workflow/screening/agents；invoke 诚实错误信封）；**集群 e2e 51/51**（L 停止/cancelled + I-6 令牌 + 直连/sbatch 全链，P6 基线恢复含内）。
+- **R1 冷启动引导（新发现 #72）**：skill-events 密钥惰性生成（首次 getSecrets 落盘）；无 Bearer 的 /emit 401 早退不触发 → **带哑 Bearer 的 POST /emit 触发 .signing-key/.token 落盘** → app 侧 events-session 铸造恢复 200（grant token v1.* 实证）。引导前浏览器按 Q/R 线既定设计降级轮询。
+- **E2E 浏览器级**（agent-browser）：Skip tour 精确点击 → 全页渲染；**Skills 四 Tab**（Registry 18/18（comp=11）+ Insights（K1 聚合）+ Templates（Q3：Echo Diagnostics/Failure Lab/Trusted Header Echo 三策展包 + Import pack/View in Registry）+ Activity）；**Screening I-1**（RMSD 参考选择器 + Compute 禁用空态；API 层 pdbExists/rmsdExcludeRef 实证）；**I2 Escape 决定性测试全链**（API 建组 → 真实指针点组框空白区激活（group-active + 焦点 + ✎/×）→ 真实指针从 Design Brief 输出口拖出 pending 连线（dashed path 断言在场）→ **单次 Escape：连线取消 + 组框保持激活（I2 语义决定性证据）** → 二次 Escape 反选 → 测试组清理零残留）；移动端 375×812（docW=375 零溢出 + 外层 footer bottom=812 精确贴底）；console/page errors 零。
+- **聊天金路径（环境受限如实记录）**：真消息管道全通（落库 + 流式 + 抽屉渲染），LLM 端点本窗口 429 限流（dev.log：chatStream 429 实证）→ 诚实降级占位符按设计渲染；围栏协议栈与远端 R 线 QA 版本逐字节一致（合并取 theirs），LLM 金路径由远端 K/Q/R 线 e2e 背书；**runSkill 管道 /api/skills/invoke 实证**（bio.pdb 真实 RCSB 3 hits：168L/169L/150L + api 源审计行 + 1580ms）。
+- **基线纪律**：E2E 后 demo:reset --force + daemon 重启 + 字段级核对（workflows 2 = My First 14/12 + Antibody 5/3；toolJobs 16；screenings 3/86 候选；chatMessages 12；skillInvocations 0；customSkills 0；测试组 groups 清空）。
+- **文档移植**：CONTRIBUTING 优先级矩阵（本地 I2 成文）插至 skills barrel 条目后；README 手绘分组条目补 Escape 分层语义；ROADMAP：本地 #43-#46 → **#68-#71** 重编号（带谱系标注）+ 新发现 **#72**（冷启动引导）+ I 线第 3 项标记已交付（I2）+ 低优先池移除 Escape 成文项。
+- **谱系归档**：worklog 追加附录 A（本地 J+I 谱系 Task 42→45-addendum 原文）+ 附录 B（parallel/s-e-lane-22 谱系 Task 22-s1→22-fin 原文）+ 编号冲突说明（两谱系与主线在 42-45/22-24 号段同号不同物——附录保持原编号，主线自 Task 51 续）。
+- **s-e-lane-22 谱系合并**：`git merge -s ours`（树取 main、谱系进历史）——S/E 三件套已由远端 L 线移植（Task 42-L），worklog 记录经附录 B 保全，分支可安全删除。
+- **推送与清理**：合并树推送 origin/main（fast-forward）；删除远端 sandbox-j-i-lanes 与 parallel/s-e-lane-22——远端整理为单一 main。
+
+Stage Summary:
+- 双谱系分叉收口完成：远端 i→r 线为幸存基线（L/I'/K→R 全量保留），本地 J 线确认同源（树一致仅 mode 位），本地 I 线拆解吸收（I1* 被远端 I-1 超集取代；I2 Escape 分层为唯一存活本地实现，经浏览器级决定性复验），s-e-lane-22 以 -s ours 归档合并。远端仓库整理为单一 main 分支。
+- 验证矩阵全绿：lint/tsc/API 冒烟/集群 e2e 51/51/浏览器级（Skills 四 Tab + RMSD I-1 + I2 决定性 + 移动端贴底 + console 零）/字段级基线核对；LLM 429 为环境窗口（降级路径按设计工作，围栏协议由远端 e2e 背书）。
+- 新工程结论 1 条（#72）：惰性密钥生成的双进程架构需要引导顺序文档化（一次 Bearer-bearing /emit 或 socket 连接触发生成）。
+- 后续开发计划（沿用远端 R 线收尾的 S 线规划）：S1 NextAuth 会话身份接入 R1 grant（P1 主推）→ S2 推送通道空闲会话清扫（#66）→ S3 Insights 服务端聚合；低优先池滚动不变。
